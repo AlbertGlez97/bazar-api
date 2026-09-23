@@ -28,12 +28,13 @@ model Account {
 }
 
 model Member {
-  id        String     @id @default(uuid()) @db.Uuid
-  name      String
-  role      MemberRole @default(colaborador)
-  contextId String     @default("legacy-unassigned")
-  createdAt DateTime   @default(now()) @db.Timestamptz(3)
-  sales     Sale[]
+  id            String         @id @default(uuid()) @db.Uuid
+  name          String
+  role          MemberRole     @default(colaborador)
+  contextId     String         @default("legacy-unassigned")
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  sales         Sale[]
+  productAudits ProductAudit[]
 }
 
 model Device {
@@ -47,18 +48,38 @@ model Device {
 }
 
 model Product {
-  id                String      @id @default(uuid()) @db.Uuid
+  id                String         @id @default(uuid()) @db.Uuid
   name              String
   tipo              ProductType
-  salePriceMinor    Int
+  unitPriceMinor    Int
+  contextId         String         @default("legacy-unassigned")
+  imagePath         String?
   initialStock      Int
   stock             Int
   category          String?
   purchaseCostMinor Int?
   supplier          String?
   notes             String?
-  createdAt         DateTime    @default(now()) @db.Timestamptz(3)
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
   saleItems         SaleItem[]
+  audits            ProductAudit[]
+
+  @@index([contextId, createdAt, id])
+}
+
+model ProductAudit {
+  id                String   @id @default(uuid()) @db.Uuid
+  productId         String   @db.Uuid
+  memberId          String   @db.Uuid
+  changedAt         DateTime @default(now()) @db.Timestamptz(3)
+  oldUnitPriceMinor Int?
+  newUnitPriceMinor Int
+  before            Json?
+  after             Json
+  product           Product  @relation(fields: [productId], references: [id])
+  member            Member   @relation(fields: [memberId], references: [id])
+
+  @@index([productId, changedAt, id])
 }
 
 model Sale {
