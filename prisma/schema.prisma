@@ -23,6 +23,16 @@ enum SaleStatus {
   rechazada_por_conflicto
 }
 
+enum IncidenciaType {
+  conflicto_stock
+  incidencia_fecha
+}
+
+enum IncidenciaResolutionStatus {
+  pendiente
+  resuelta
+}
+
 model Account {
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
@@ -40,6 +50,10 @@ model Member {
   createdAt     DateTime       @default(now()) @db.Timestamptz(3)
   sales         Sale[]
   productAudits ProductAudit[]
+  // Only ever populated for a Member whose role is "socio" (enforced in
+  // IncidenciasService, not at the schema level): colaboradores never
+  // resolve incidencias.
+  resolvedIncidencias Incidencia[]
 }
 
 model Device {
@@ -113,6 +127,13 @@ model Sale {
   member             Member    @relation(fields: [memberId], references: [id])
   device             Device    @relation(fields: [deviceId], references: [id])
   items              SaleItem[]
+  // Since BE-07, both a "conflicto_stock" and an "incidencia_fecha" also
+  // create an Incidencia row (see Incidencia model); `status` is kept as
+  // the cheap/fast filter for "did this sale apply to inventory", while
+  // Incidencia carries the richer, independently-resolvable review
+  // workflow. A sale can have more than one Incidencia (e.g. a stock
+  // conflict *and* an out-of-range occurredAt on the same attempt).
+  incidencias        Incidencia[]
 
   @@index([status, receivedAt, id])
 }
@@ -127,4 +148,31 @@ model SaleItem {
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
   sale           Sale     @relation(fields: [saleId], references: [id])
   product        Product  @relation(fields: [productId], references: [id])
+}
+
+// A standing, independently-resolvable record of something that needed a
+// human's attention while registering a sale — a lost stock race between
+// offline sales synchronizing concurrently ("conflicto_stock"), or an
+// occurredAt outside the plausible clock-skew/offline-queue window
+// ("incidencia_fecha"). Deliberately its own table rather than only a
+// Sale.status value: a Sale is either applied to inventory or it isn't,
+// but an Incidencia has its own lifecycle (pendiente -> resuelta) that a
+// socio works through independently, days after the sale itself is done.
+model Incidencia {
+  id       String                     @id @default(uuid()) @db.Uuid
+  saleId   String                     @db.Uuid
+  type     IncidenciaType
+  reason   String
+  detectedAt DateTime                 @default(now()) @db.Timestamptz(3)
+  // "pendiente" until a socio explicitly resolves it; there is no automatic
+  // resolution (refund, re-stocking, reassigning stock, correcting the
+  // date) — that is always a human decision made with the customer.
+  resolutionStatus   IncidenciaResolutionStatus @default(pendiente)
+  resolvedByMemberId String?                    @db.Uuid
+  resolvedAt         DateTime?                  @db.Timestamptz(3)
+  resolutionNotes    String?
+  sale               Sale                       @relation(fields: [saleId], references: [id])
+  resolvedBy         Member?                    @relation(fields: [resolvedByMemberId], references: [id])
+
+  @@index([resolutionStatus, detectedAt, id])
 }

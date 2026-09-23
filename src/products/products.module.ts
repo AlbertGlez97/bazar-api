@@ -3,7 +3,6 @@ import { AuthModule } from '../auth/auth.module.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { ProductsController } from './products.controller.js';
 import { ProductsService } from './products.service.js';
-import { SocioGuard } from './socio.guard.js';
 import {
   LocalStorageService,
   StorageService,
@@ -14,7 +13,6 @@ import {
   controllers: [ProductsController],
   providers: [
     ProductsService,
-    SocioGuard,
     LocalStorageService,
     { provide: StorageService, useExisting: LocalStorageService },
   ],

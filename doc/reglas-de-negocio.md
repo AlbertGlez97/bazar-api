@@ -1,4 +1,4 @@
-# Reglas de negocio consolidadas (hasta BE-05)
+# Reglas de negocio consolidadas (hasta BE-07)
 
 ## Productos
 - Un producto es "unica" o "cantidad". Única inicia con existencia 1; al venderse pasa a 0 (nunca se marca "vendida", el estado vendido se infiere de existencia=0). El frontend muestra en gris y deshabilita productos con existencia 0.
@@ -50,12 +50,20 @@
 - Solo se registra si ENABLE_API_DOCS=true está presente en el entorno; si no, la ruta no existe (404, no 401), para no revelar su existencia.
 - No usar el mismo mecanismo de credenciales que la API de negocio; son capas de acceso distintas.
 
-## Idempotencia y conflictos offline (BE-06)
-- Reenviar una venta con el mismo id y el mismo payload devuelve el resultado ya persistido, sin duplicar ni volver a descontar stock. Si el payload difiere, se rechaza con 409.
+## Idempotencia y conflictos offline (BE-06, extendido en BE-07)
+- Reenviar una venta con el mismo id y el mismo payload devuelve el resultado ya persistido con 200 OK (no 201, que queda reservado para la creación real de una venta nueva), sin duplicar ni volver a descontar stock. Si el payload difiere, se rechaza con 409.
+- Dos requests con el mismo id nuevo en carrera real (ambos pasan la verificación previa como "no existe") pueden chocar en la escritura misma: el segundo intento captura específicamente el error P2002 (violación de unicidad) del id de Sale, relee la venta ya persistida por el primero y aplica la misma regla de idempotencia (200 si el payload coincide, 409 si no) — nunca revienta como error 500 genérico.
 - Ante conflicto de stock entre ventas offline sincronizadas sobre el mismo producto, gana la que el servidor procesa primero (orden real de procesamiento, no hora del dispositivo).
-- Las ventas que pierden el conflicto no se pierden ni se descartan: quedan guardadas con status="rechazada_por_conflicto" y motivo, sin afectar inventario, disponibles para revisión y resolución manual con el cliente.
+- Las ventas que pierden el conflicto no se pierden ni se descartan: quedan guardadas con status="rechazada_por_conflicto" y motivo, sin afectar inventario, disponibles para revisión y resolución manual con el cliente. Desde BE-07 este conflicto también genera un registro en la tabla Incidencia (ver sección siguiente); Sale.status se conserva además de Incidencia porque sirve como filtro barato/rápido ("¿esta venta afectó inventario?"), mientras que Incidencia sostiene el flujo de seguimiento y resolución.
 - No hay resolución automática de conflictos (reembolso, reasignación de stock); es una decisión humana fuera del sistema.
+
+## Incidencias
+- Las incidencias (conflicto de stock, fecha fuera de rango) se registran en una tabla propia (Incidencia), no solo como un estado de Sale, para permitir consulta, filtrado, paginación y seguimiento de resolución independiente del ciclo de vida de la venta.
+- Toda incidencia queda en estado "pendiente" hasta que un socio la marca como "resuelta" con notas de qué se acordó con el cliente. No hay resolución automática.
+- Solo socios pueden ver y resolver incidencias; colaboradores no tienen acceso.
+- occurredAt fuera de rango (futuro, o más de 2 días en el pasado respecto a receivedAt) genera una incidencia tipo "incidencia_fecha" sin bloquear la venta si es válida en lo demás.
+- JWT de dispositivos: expiresIn extendido a 12h para cubrir una jornada de bazar sin requerir refresh token, dado que los dispositivos ya están pre-autorizados por seed.
 
 ---
 
-Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-06.
+Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-07.

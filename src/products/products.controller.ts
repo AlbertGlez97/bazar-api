@@ -18,7 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ProductsService } from './products.service.js';
-import { SocioGuard } from './socio.guard.js';
+import { SocioGuard } from '../auth/socio.guard.js';
 import {
   CreateProductDto,
   PatchProductDto,

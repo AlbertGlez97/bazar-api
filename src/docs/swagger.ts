@@ -52,7 +52,7 @@ export function configureApiDocs(app: NestExpressApplication): void {
   const config = new DocumentBuilder()
     .setTitle('Bazar API')
     .setDescription(
-      'Internal point-of-sale backend for the bazar (auth, members, devices, products, sales)',
+      'Internal point-of-sale backend for the bazar (auth, members, devices, products, sales, incidencias)',
     )
     .setVersion('1.0')
     .addBearerAuth()

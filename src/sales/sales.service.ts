@@ -9,16 +9,20 @@ import {
 import { add, multiply, subtract } from 'dinero.js';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
-import type { Prisma, Sale, SaleItem } from '../generated/prisma/client.js';
+import {
+  Prisma,
+  PrismaClientKnownRequestError,
+} from '../generated/prisma/client.js';
+import type { Sale, SaleItem } from '../generated/prisma/client.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import type {
   CreateSaleDto,
   CreateSaleItemDto,
 } from './dto/create-sale.dto.js';
+import type { SaleListDto } from './dto/sale-list.dto.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 type SaleWithItems = Sale & { items: SaleItem[] };
-type SaleStatusFilter = 'completada' | 'rechazada_por_conflicto';
 
 /**
  * Thrown only for a genuine concurrency race — an item's stock was
@@ -31,6 +35,25 @@ type SaleStatusFilter = 'completada' | 'rechazada_por_conflicto';
  * persist a "rechazada_por_conflicto" sale instead of just rejecting.
  */
 class SaleStockConflictError extends Error {}
+
+// A duplicate `Sale.id` unique/primary-key violation only ever comes from
+// this one constraint in the whole schema, but we still check `meta.target`
+// rather than trusting the error code alone: P2002 is Prisma's generic
+// "unique constraint failed" code and could in principle fire for some
+// other constraint on the same table in the future. Matching on target
+// keeps this handler from silently swallowing an unrelated uniqueness
+// violation as if it were the sale-id race.
+function isSaleIdConflict(err: unknown): err is PrismaClientKnownRequestError {
+  if (!(err instanceof PrismaClientKnownRequestError)) return false;
+  if (err.code !== 'P2002') return false;
+  const target = err.meta?.target;
+  const targets = Array.isArray(target) ? target : [target];
+  return targets.some(
+    (value) =>
+      typeof value === 'string' &&
+      (value.includes('Sale_pkey') || value === 'id'),
+  );
+}
 
 function response(sale: SaleWithItems) {
   const { items, ...header } = sale;
@@ -45,6 +68,28 @@ function response(sale: SaleWithItems) {
       createdAt: item.createdAt,
     })),
   };
+}
+
+// A device that queued a sale offline can legitimately submit it hours or
+// even a day or two later than `occurredAt`; a genuinely future date, or
+// one implausibly far in the past, is more likely a clock bug on the
+// device than a real sale. Either way BE-07 never blocks the sale over
+// this alone (unlike stock/cash, which are hard business rules) — it only
+// flags an Incidencia for a socio to look at, since the money and stock
+// are already real and in hand.
+const MAX_OCCURRED_AT_PAST_DAYS = 2;
+
+function occurredAtIssue(occurredAt: Date, receivedAt: Date): string | null {
+  const diffMs = occurredAt.getTime() - receivedAt.getTime();
+  if (diffMs > 0) {
+    const hours = (diffMs / 3_600_000).toFixed(1);
+    return `occurredAt es ${hours}h posterior a receivedAt (fecha futura)`;
+  }
+  const pastDays = -diffMs / 86_400_000;
+  if (pastDays > MAX_OCCURRED_AT_PAST_DAYS) {
+    return `occurredAt es ${pastDays.toFixed(1)} días anterior a receivedAt (excede el máximo de ${MAX_OCCURRED_AT_PAST_DAYS} días)`;
+  }
+  return null;
 }
 
 // Order-independent comparison of {productId, quantity} pairs. Price is
@@ -192,6 +237,13 @@ export class SalesService {
    * read before any row lock was attempted (for `unica` products, stock is
    * always 1, so any `quantity > 1` is rejected the same way), or
    * `cashReceivedMinor` is less than the server-calculated total.
+   *
+   * @returns `{ sale, created }` — `created` is `false` only for an
+   * idempotent replay of an already-persisted sale (controller uses this
+   * to answer 200 instead of 201); every other outcome that returns
+   * normally (a fresh "completada" sale, or a "rechazada_por_conflicto"
+   * sale persisted after losing a real stock race) is a genuinely new row
+   * and answers 201.
    */
   async create(actor: Actor, dto: CreateSaleDto) {
     // The persisted sale attributes its member/device from the authenticated
@@ -212,7 +264,8 @@ export class SalesService {
       include: { items: true },
     });
     if (existing) {
-      if (isIdempotentReplay(existing, dto)) return response(existing);
+      if (isIdempotentReplay(existing, dto))
+        return { sale: response(existing), created: false };
       throw new ConflictException(
         `Sale ${dto.id} already exists with different data`,
       );
@@ -286,12 +339,20 @@ export class SalesService {
         const changeMinor = toMinorUnits(
           subtract(toDinero(dto.cashReceivedMinor), toDinero(totalMinor)),
         );
-        return tx.sale.create({
+        const receivedAt = new Date();
+        const occurredAt = new Date(dto.occurredAt);
+        // Flagged, never blocking: the cash and stock are already
+        // real/committed by this point, so an implausible occurredAt is
+        // handled as a data-quality signal for a socio to review, not a
+        // reason to refuse a sale that is otherwise entirely valid.
+        const dateIssue = occurredAtIssue(occurredAt, receivedAt);
+        const created = await tx.sale.create({
           data: {
             id: dto.id,
             memberId,
             deviceId,
-            occurredAt: new Date(dto.occurredAt),
+            occurredAt,
+            receivedAt,
             currency: dto.currency,
             status: 'completada',
             totalMinor,
@@ -305,16 +366,46 @@ export class SalesService {
                 subtotalMinor: line.subtotalMinor,
               })),
             },
+            ...(dateIssue
+              ? {
+                  incidencias: {
+                    create: {
+                      type: 'incidencia_fecha',
+                      reason: dateIssue,
+                    },
+                  },
+                }
+              : {}),
           },
           include: { items: true },
         });
+        return created;
       });
-      return response(sale);
+      return { sale: response(sale), created: true };
     } catch (err) {
+      if (isSaleIdConflict(err)) {
+        // Two requests carrying the same brand-new id raced each other:
+        // both passed the pre-check above as "does not exist yet", but
+        // only one `tx.sale.create` could win the id's primary key. The
+        // loser re-reads what the winner actually persisted and applies
+        // the exact same idempotency rule as a normal resend (see
+        // isIdempotentReplay) — it must not surface as a generic 500, and
+        // it must not silently pretend to have created a second sale.
+        const persisted = await this.prisma.sale.findUnique({
+          where: { id: dto.id },
+          include: { items: true },
+        });
+        if (persisted && isIdempotentReplay(persisted, dto))
+          return { sale: response(persisted), created: false };
+        throw new ConflictException(
+          `Sale ${dto.id} already exists with different data`,
+        );
+      }
       if (!(err instanceof SaleStockConflictError)) throw err;
       // The failed attempt above was fully rolled back (no stock touched,
       // no Sale/SaleItem rows from it survive); this is a fresh, separate
-      // write recording the rejection itself.
+      // write recording the rejection itself, together with the
+      // Incidencia a socio will use to review/resolve it manually.
       const rejected = await this.prisma.sale.create({
         data: {
           id: dto.id,
@@ -326,10 +417,16 @@ export class SalesService {
           cashReceivedMinor: dto.cashReceivedMinor,
           conflictReason: err.message,
           conflictDetectedAt: new Date(),
+          incidencias: {
+            create: {
+              type: 'conflicto_stock',
+              reason: err.message,
+            },
+          },
         },
         include: { items: true },
       });
-      return response(rejected);
+      return { sale: response(rejected), created: true };
     }
   }
 
@@ -360,13 +457,43 @@ export class SalesService {
    * — which are never surfaced by {@link create}'s caller as a normal
    * success — can still be found and manually reviewed/resolved with the
    * customer; there is no endpoint that resolves them automatically.
+   *
+   * Restricted to socios at the controller (see {@link SocioGuard}): a
+   * colaborador may register sales but should not see the full
+   * "movimientos" history of everyone else's sales, only their own
+   * receipts via {@link findOne}. Paginated, searchable by the selling
+   * Member's name and orderable by `receivedAt`, mirroring
+   * ProductsService.list's pattern (BE-04) so a socio's review workflow
+   * behaves consistently across both listings.
    */
-  async list(contextId: string, status?: SaleStatusFilter) {
-    const sales = await this.prisma.sale.findMany({
-      where: { member: { contextId }, ...(status ? { status } : {}) },
-      include: { items: true },
-      orderBy: [{ receivedAt: 'desc' }, { id: 'asc' }],
-    });
-    return sales.map(response);
+  async list(contextId: string, query: SaleListDto) {
+    const where = {
+      member: {
+        contextId,
+        ...(query.search
+          ? { name: { contains: query.search, mode: 'insensitive' as const } }
+          : {}),
+      },
+      ...(query.status ? { status: query.status } : {}),
+    };
+    const [sales, total] = await this.prisma.$transaction(
+      [
+        this.prisma.sale.findMany({
+          where,
+          include: { items: true },
+          orderBy: [{ receivedAt: query.sort }, { id: 'asc' }],
+          skip: (query.page - 1) * query.limit,
+          take: query.limit,
+        }),
+        this.prisma.sale.count({ where }),
+      ],
+      { isolationLevel: 'RepeatableRead' },
+    );
+    return {
+      items: sales.map(response),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 }

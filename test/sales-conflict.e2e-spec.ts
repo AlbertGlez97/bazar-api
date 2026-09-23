@@ -114,9 +114,11 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     const first = await write(request(app.getHttpServer()).post('/sales'))
       .send(body)
       .expect(201);
+    // Same id, identical payload: this is a replay of an already-persisted
+    // sale, not a new creation, so BE-07 answers 200 rather than 201.
     const second = await write(request(app.getHttpServer()).post('/sales'))
       .send(body)
-      .expect(201);
+      .expect(200);
     expect(second.body).toEqual(first.body);
     expect(second.body.status).toBe('completada');
     expect(
@@ -265,7 +267,7 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     const res = await write(
       request(app.getHttpServer()).get('/sales?status=rechazada_por_conflicto'),
     ).expect(200);
-    const bodies = res.body as { id: string; status: string }[];
+    const bodies = res.body.items as { id: string; status: string }[];
     expect(bodies.every((sale) => sale.status === 'rechazada_por_conflicto')).toBe(
       true,
     );
