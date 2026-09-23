@@ -10,6 +10,7 @@ import {
   Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ApiProperty } from '@nestjs/swagger';
 import { MAX_MINOR_UNITS } from '../../common/money.js';
 import { ProductPriceDto } from './product-price.dto.js';
 
@@ -23,11 +24,18 @@ export class ProductMetadataDto {
 
 export class CreateProductDto extends ProductPriceDto {
   @IsString() @Length(1, 200) @Matches(/\S/) name!: string;
-  @IsIn(['unica', 'cantidad']) tipo!: 'unica' | 'cantidad';
+  @ApiProperty({ enum: ['unica', 'cantidad'] })
+  @IsIn(['unica', 'cantidad'])
+  tipo!: 'unica' | 'cantidad';
   // Required only for tipo 'cantidad'; a 'unica' product is forced to
   // stock 1 by the service regardless of what is sent here (see
   // ProductsService.create), so it stays optional/validated but is never
   // the actual source of truth for a unique piece's stock.
+  @ApiProperty({
+    required: false,
+    description:
+      "Required for tipo 'cantidad'. Ignored for tipo 'unica', which is always forced to stock 1 by the server.",
+  })
   @ValidateIf(
     (o: CreateProductDto) =>
       o.tipo === 'cantidad' || o.initialStock !== undefined,

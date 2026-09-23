@@ -7,6 +7,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { IsString, Length } from 'class-validator';
+import { ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service.js';
 
 export class LoginDto {
@@ -14,6 +15,7 @@ export class LoginDto {
   @IsString() @Length(1, 256) password!: string;
 }
 
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}

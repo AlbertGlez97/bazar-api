@@ -10,11 +10,20 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { IsString, Length } from 'class-validator';
+import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { PrismaService } from '../database/prisma.service.js';
 
 export class IdentifyDeviceDto {
-  @IsString() @Length(1, 100) identifier!: string;
+  // The stable identifier assigned out-of-band (currently via seed), not
+  // the internal database id; this call resolves one to the other.
+  @ApiProperty({
+    description:
+      'Stable device identifier assigned out-of-band (e.g. via seed), not the internal device id',
+  })
+  @IsString()
+  @Length(1, 100)
+  identifier!: string;
   @IsString() @Length(1, 100) name!: string;
 }
 
@@ -26,6 +35,8 @@ export class IdentifyDeviceDto {
  * or compromised devices can be revoked centrally without depending on the
  * device itself to stop presenting its old credentials.
  */
+@ApiTags('devices')
+@ApiBearerAuth()
 @Controller('devices')
 @UseGuards(AuthGuard)
 export class DevicesController {

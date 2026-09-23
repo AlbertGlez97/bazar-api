@@ -46,6 +46,11 @@
 ## Metodología de desarrollo
 - TDD desactivado en BE-02 a BE-04 (infraestructura, auth, productos). Activo desde BE-05 (venta, cálculos, idempotencia).
 
+## Documentación de API
+- La documentación OpenAPI/Swagger vive en /docs, protegida con HTTP Basic Auth (credenciales independientes del sistema de auth de socios/colaboradores, vía DOCS_USER/DOCS_PASSWORD).
+- Solo se registra si ENABLE_API_DOCS=true está presente en el entorno; si no, la ruta no existe (404, no 401), para no revelar su existencia.
+- No usar el mismo mecanismo de credenciales que la API de negocio; son capas de acceso distintas.
+
 ---
 
 Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-05.

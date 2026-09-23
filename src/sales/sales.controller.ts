@@ -10,6 +10,7 @@ import {
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ContextGuard } from '../auth/context.guard.js';
 import { CreateSaleDto } from './dto/create-sale.dto.js';
@@ -30,6 +31,8 @@ const validate = (expectedType: new () => object) =>
  * previously confirmed sale (e.g. after a lost response) does not need a
  * fresh selection.
  */
+@ApiTags('sales')
+@ApiBearerAuth()
 @Controller('sales')
 export class SalesController {
   constructor(@Inject(SalesService) private readonly sales: SalesService) {}

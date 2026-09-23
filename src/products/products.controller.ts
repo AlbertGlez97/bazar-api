@@ -15,6 +15,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ProductsService } from './products.service.js';
 import { SocioGuard } from './socio.guard.js';
@@ -39,6 +40,8 @@ const validate = (expectedType: new () => object) =>
  * since colaboradores must be able to browse the catalog and price history
  * to sell, even though they cannot change it.
  */
+@ApiTags('products')
+@ApiBearerAuth()
 @Controller('products')
 export class ProductsController {
   constructor(

@@ -1,4 +1,5 @@
 import { Controller, Get, Inject, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { PrismaService } from '../database/prisma.service.js';
 
@@ -10,6 +11,8 @@ import { PrismaService } from '../database/prisma.service.js';
  * the shared-tablet person selector needs every eligible member visible,
  * not just socios, so a colaborador can pick themselves before selling.
  */
+@ApiTags('members')
+@ApiBearerAuth()
 @Controller('members')
 @UseGuards(AuthGuard)
 export class MembersController {

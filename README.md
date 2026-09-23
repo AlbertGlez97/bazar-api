@@ -161,6 +161,31 @@ without deciding future insufficient-cash policy.
 Verification and remaining limitations are recorded in
 [`odd/tasks/backend-e0-be02.md`](odd/tasks/backend-e0-be02.md).
 
+## API documentation (Swagger)
+
+`GET /docs` serves OpenAPI documentation generated from the existing controllers
+and DTOs (`@nestjs/swagger`), but only when explicitly enabled — set
+`ENABLE_API_DOCS=true` in `.env`. Otherwise the route does not exist at all
+(plain 404, not a 401), so it never reveals that documentation exists in a
+production deployment.
+
+When enabled, `/docs` is additionally protected by its own HTTP Basic Auth
+layer (`express-basic-auth`), configured with `DOCS_USER` and `DOCS_PASSWORD`
+in `.env`. These credentials are **independent** from the JWT-based
+socio/colaborador authentication used by the business API — they exist only
+to gate documentation access and must not be reused as, or derived from,
+business account credentials.
+
+```
+ENABLE_API_DOCS=true
+DOCS_USER=some-docs-username
+DOCS_PASSWORD=a-strong-unique-password
+```
+
+Requires `npm install` to pull in `@nestjs/swagger` and `express-basic-auth`
+(added to `package.json`, not yet installed as of this commit).
+
+
 ---
 
 <p align="center">
