@@ -33,6 +33,16 @@ enum IncidenciaResolutionStatus {
   resuelta
 }
 
+enum DeudaType {
+  fiado
+  apartado
+}
+
+enum DeudaStatus {
+  pendiente
+  saldada
+}
+
 model Account {
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
@@ -63,6 +73,11 @@ model Member {
   // role="colaborador" (enforced in CommissionsService, not here); a
   // socio is never paid a sales commission.
   commissionRateBps Int?
+  // A socio's authorization to create a Deuda (fiado/apartado); a
+  // colaborador may still *receive* an abono against one (see
+  // Abono.receivedByMember) without ever appearing here.
+  deudasCreadas Deuda[] @relation("DeudaCreatedBy")
+  abonosRecibidos Abono[] @relation("AbonoReceivedBy")
 }
 
 model Device {
@@ -91,6 +106,7 @@ model Product {
   createdAt         DateTime       @default(now()) @db.Timestamptz(3)
   saleItems         SaleItem[]
   audits            ProductAudit[]
+  deudas            Deuda[]
 
   @@index([contextId, createdAt, id])
 }
@@ -205,4 +221,74 @@ model AppSettings {
   // commissions on every sale.
   defaultCommissionRateBps Int      @default(0)
   updatedAt                DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// An informal debtor record — just enough to know who owes what, not a
+// full customer/identity system. No context-transitive relation exists
+// (unlike Incidencia -> Sale -> Member), since a Deudor is not "owned" by
+// any single Member, so it is scoped directly by contextId like
+// Product/Member/Device, rather than only being reachable through a Deuda.
+model Deudor {
+  id        String   @id @default(uuid()) @db.Uuid
+  nombre    String
+  telefono  String?
+  notas     String?
+  contextId String   @default("legacy-unassigned")
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  deudas    Deuda[]
+
+  @@index([contextId, nombre])
+}
+
+// Unifies "fiado" (the product already left the bazar with the customer)
+// and "apartado" (the product is being held for the customer) under one
+// concept: from an inventory standpoint both are identical — the piece is
+// no longer available for sale to anyone else — and both are settled the
+// same way (abonos against a running balance), so a separate model per
+// type would only duplicate the abono/balance machinery for no behavioral
+// difference. `type` is kept purely as a label for the socio's own
+// bookkeeping (e.g. "should I still be holding this apartado, or did it
+// already leave as a fiado").
+//
+// Deliberately single-product (`productId`/`cantidad`), not a `DeudaItem[]`
+// like Sale/SaleItem: the task that introduced this model specified these
+// exact scalar fields (not a line-items array), and in practice an
+// informal fiado/apartado is negotiated per-piece with a customer, not as
+// a shopping-cart checkout. A customer wanting credit on several distinct
+// products at once is expected to be represented as multiple Deuda rows
+// today; graduating to a multi-item Deuda (mirroring SaleItem) is left as
+// a future entry if that assumption turns out to be wrong in practice.
+model Deuda {
+  id                String      @id @default(uuid()) @db.Uuid
+  type              DeudaType
+  deudorId          String      @db.Uuid
+  productId         String      @db.Uuid
+  cantidad          Int
+  totalMinor        Int
+  // Never set directly through the API — always derived from the sum of
+  // this Deuda's abonos inside the same transaction that inserts an
+  // Abono (see DeudasService.registerAbono), so it can never drift from
+  // reality or be overwritten by mistake.
+  status            DeudaStatus @default(pendiente)
+  createdByMemberId String      @db.Uuid
+  createdAt         DateTime    @default(now()) @db.Timestamptz(3)
+  deudor            Deudor      @relation(fields: [deudorId], references: [id])
+  product           Product     @relation(fields: [productId], references: [id])
+  createdByMember   Member      @relation("DeudaCreatedBy", fields: [createdByMemberId], references: [id])
+  abonos            Abono[]
+
+  @@index([status, createdAt, id])
+}
+
+model Abono {
+  id                 String   @id @default(uuid()) @db.Uuid
+  deudaId            String   @db.Uuid
+  montoMinor         Int
+  receivedByMemberId String   @db.Uuid
+  receivedAt         DateTime @default(now()) @db.Timestamptz(3)
+  nota               String?
+  deuda              Deuda    @relation(fields: [deudaId], references: [id])
+  receivedByMember   Member   @relation("AbonoReceivedBy", fields: [receivedByMemberId], references: [id])
+
+  @@index([deudaId, receivedAt, id])
 }

@@ -10,6 +10,7 @@ import { SalesModule } from './sales/sales.module.js';
 import { IncidenciasModule } from './incidencias/incidencias.module.js';
 import { CommissionsModule } from './commissions/commissions.module.js';
 import { ReportsModule } from './reports/reports.module.js';
+import { DeudasModule } from './deudas/deudas.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ReportsModule } from './reports/reports.module.js';
     IncidenciasModule,
     CommissionsModule,
     ReportsModule,
+    DeudasModule,
   ],
   controllers: [AppController, MembersController, DevicesController],
   providers: [AppService],

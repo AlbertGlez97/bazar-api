@@ -1,4 +1,4 @@
-# Reglas de negocio consolidadas (hasta BE-08)
+# Reglas de negocio consolidadas (hasta BE-09)
 
 ## Productos
 - Un producto es "unica" o "cantidad". Única inicia con existencia 1; al venderse pasa a 0 (nunca se marca "vendida", el estado vendido se infiere de existencia=0). El frontend muestra en gris y deshabilita productos con existencia 0.
@@ -30,7 +30,7 @@
 ## Ventas (BE-05)
 - Venta presencial al contado en el bazar, no e-commerce.
 - El servidor SIEMPRE calcula el total con el precio actual de Product en base de datos; el unitPriceMinor que manda el cliente en el request se ignora para el cálculo.
-- Si cashReceivedMinor es menor al total, se rechaza la venta completa (400). No hay fiado en este flujo.
+- Si cashReceivedMinor es menor al total, se rechaza la venta completa (400). No hay fiado en este flujo de venta al contado; ver sección "Fiado y apartados (Deuda)" para el concepto de crédito/apartado, implementado por separado en BE-09.
 - Si algún item no tiene stock suficiente, se rechaza LA VENTA COMPLETA (atómica, todo o nada), no una venta parcial.
 - Toda la venta ocurre dentro de una única transacción: cálculo, validación de stock, descuento de existencia y persistencia. Un fallo revierte todo.
 - El memberId y deviceId del body deben coincidir con el contexto autenticado (ContextGuard); si no coinciden, se rechaza con 403.
@@ -38,7 +38,6 @@
 
 ## Explícitamente fuera de alcance de E0 (pendiente para entregas futuras)
 - Resolución automática de conflictos de sincronización offline (reembolso, reasignación de stock a la venta perdedora): permanece una decisión humana fuera del sistema (ver BE-06).
-- Fiado / apartados de clientes con pagos a plazos: concepto separado (tipo Debt/Layaway) con registro de deudor y abonos. No implementado.
 - Migración de almacenamiento de imágenes de disco local a object storage (MinIO en home-lab). No implementado.
 - Pago efectivo de comisiones (marcar una comisión como "pagada", integración con algún medio de pago): BE-08 solo calcula el monto; el pago en sí sigue siendo manual y fuera del sistema.
 
@@ -79,6 +78,16 @@
 - Solo cuentan ventas con status="completada".
 - Un valor from/to de solo fecha (sin hora) se interpreta como el día completo en la zona horaria de negocio (inicio de ese día para from, fin de ese día para to), para que un socio pueda pedir "las ventas del 5 de mayo" sin tener que calcular instantes UTC a mano.
 
+## Fiado y apartados (Deuda)
+- Un solo concepto "Deuda" con dos tipos: "fiado" (producto ya entregado) y "apartado" (producto reservado). Ambos descuentan inventario de inmediato al crearse, para evitar que el producto se venda dos veces mientras el cliente abona.
+- Solo socios pueden autorizar una Deuda (crear un fiado/apartado). Cualquier Member (socio o colaborador) puede registrar abonos.
+- El total se calcula con el precio actual del producto, igual que en ventas — el servidor no confía en el precio que mande el cliente.
+- Un abono no puede exceder el saldo pendiente. El estado "saldada" se deriva automáticamente cuando los abonos cubren el total; no se marca manualmente.
+- El deudor se registra con nombre, teléfono opcional y notas opcionales — sin validación de identidad formal.
+- Deuda es deliberadamente de un solo producto/cantidad (no una lista de items como Sale/SaleItem): la especificación de BE-09 define campos escalares (productId, cantidad), y en la práctica un fiado/apartado informal se negocia por pieza con el cliente, no como un carrito de compras. Un cliente que quiere crédito sobre varios productos distintos se representa hoy como varias filas de Deuda; graduar a un modelo multi-item (espejo de SaleItem) queda pendiente si esta suposición resulta incorrecta en la práctica.
+- POST /deudas acepta un deudorId existente o un objeto deudor inline (nombre/telefono/notas) para crear uno nuevo en la misma transacción; exactamente uno de los dos debe enviarse.
+- No hay reconciliación de conflictos de sincronización offline para Deuda (a diferencia de Sale/BE-06): una Deuda siempre se crea en persona, en línea, por un socio, así que stock insuficiente es siempre un rechazo simple (400), nunca un registro de conflicto persistido.
+
 ---
 
-Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-08.
+Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-09.
