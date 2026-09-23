@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { argon2id, hash, verify } from 'argon2';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service.js';
+import { JWT_EXPIRES_IN_SECONDS } from './jwt.constants.js';
 
 @Injectable()
 export class AuthService {
@@ -49,7 +50,10 @@ export class AuthService {
     return {
       accessToken: await this.jwt.signAsync({ sub: account.id }),
       tokenType: 'Bearer',
-      expiresIn: 3600,
+      // Mirrors JwtModule's signOptions.expiresIn (JWT_EXPIRES_IN_SECONDS)
+      // exactly, rather than a separately hardcoded number, so this value
+      // can never silently drift from the token's real lifetime.
+      expiresIn: JWT_EXPIRES_IN_SECONDS,
     };
   }
 }

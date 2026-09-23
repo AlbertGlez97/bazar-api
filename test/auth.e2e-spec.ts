@@ -132,10 +132,11 @@ describe('authenticated context', () => {
     expect(res.body).toEqual({
       accessToken: expect.any(String),
       tokenType: 'Bearer',
-      expiresIn: 3600,
+      // 12h (BE-07): see JWT_EXPIRES_IN_SECONDS.
+      expiresIn: 43200,
     });
     const payload = await jwt.verifyAsync(res.body.accessToken);
-    expect(payload.exp - payload.iat).toBe(3600);
+    expect(payload.exp - payload.iat).toBe(43200);
     expect(payload.passwordHash).toBeUndefined();
   });
   it.each([

@@ -5,6 +5,8 @@ import { AuthController } from './auth.controller.js';
 import { AuthGuard } from './auth.guard.js';
 import { AuthService } from './auth.service.js';
 import { ContextGuard } from './context.guard.js';
+import { JWT_EXPIRES_IN_SECONDS } from './jwt.constants.js';
+import { SocioGuard } from './socio.guard.js';
 
 @Module({
   imports: [
@@ -22,7 +24,16 @@ import { ContextGuard } from './context.guard.js';
             // deployment/service, and `alg: none`/downgrade attacks are
             // rejected outright rather than silently accepted.
             algorithm: 'HS256',
-            expiresIn: '1h',
+            // 12h (JWT_EXPIRES_IN_SECONDS) covers a full bazaar-day session
+            // without needing a refresh token: devices are already
+            // pre-authorized via seed (not self-registered), so a
+            // longer-lived token only extends how long an *already-trusted*
+            // device/session can act, not who can obtain one in the first
+            // place. This directly supports the offline-sale flow: a device
+            // that logs in once in the morning can keep queuing and later
+            // syncing sales for the whole event without re-authenticating
+            // over the network.
+            expiresIn: JWT_EXPIRES_IN_SECONDS,
             issuer: 'bazar-api',
             audience: 'bazar-client',
           },
@@ -36,7 +47,7 @@ import { ContextGuard } from './context.guard.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, AuthGuard, ContextGuard],
-  exports: [AuthGuard, ContextGuard, JwtModule],
+  providers: [AuthService, AuthGuard, ContextGuard, SocioGuard],
+  exports: [AuthGuard, ContextGuard, SocioGuard, JwtModule],
 })
 export class AuthModule {}

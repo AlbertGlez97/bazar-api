@@ -76,11 +76,13 @@ This seed provisions one installation, not a general multi-tenant onboarding API
 
 | Endpoint | Input | Access/result |
 | --- | --- | --- |
-| `POST /auth/login` | `{ "username": "...", "password": "..." }` | Argon2id verification; `{ accessToken, tokenType, expiresIn: 3600 }`, or 401 |
+| `POST /auth/login` | `{ "username": "...", "password": "..." }` | Argon2id verification; `{ accessToken, tokenType, expiresIn: 43200 }`, or 401 |
 | `GET /members` | `Authorization: Bearer <token>` | Current account context only; `id`, `name`, `role` (`socio` or `colaborador`) |
 | `POST /devices/identify` | Bearer token plus `{ "identifier": "shared-tablet", "name": "Shared tablet" }` | `{ deviceId }`; unknown, mismatched or revoked devices return 403 |
 
-JWTs use HS256, issuer/audience checks and one-hour expiration. Every request
+JWTs use HS256, issuer/audience checks and a 12-hour expiration (covers a full
+bazaar-day session for an already-seed-authorized device without a refresh
+token; see `src/auth/jwt.constants.ts`). Every request
 reloads the active account, so deactivation and context changes apply immediately.
 `ContextGuard` authenticates and checks `x-member-id` and `x-device-id` against the
 account context and current device authorization. It is exported for future
