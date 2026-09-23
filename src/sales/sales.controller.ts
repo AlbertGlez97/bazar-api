@@ -23,6 +23,13 @@ const validate = (expectedType: new () => object) =>
     expectedType,
   });
 
+/**
+ * `create` requires {@link ContextGuard} (member/device selection), since
+ * registering a sale must be attributable to a specific person and
+ * device; `findOne` only requires {@link AuthGuard}, since reading back a
+ * previously confirmed sale (e.g. after a lost response) does not need a
+ * fresh selection.
+ */
 @Controller('sales')
 export class SalesController {
   constructor(@Inject(SalesService) private readonly sales: SalesService) {}

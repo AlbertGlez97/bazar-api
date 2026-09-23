@@ -9,6 +9,15 @@ import { ContextGuard } from '../auth/context.guard.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import { PrismaService } from '../database/prisma.service.js';
 
+/**
+ * Restricts an endpoint to the selected Member having `role: 'socio'`.
+ *
+ * Socios (Alberto and Adid) hold full administrative privileges, including
+ * managing the catalog; colaboradores (e.g. occasional family help) may
+ * only sell and read the catalog. Product mutations are gated here rather
+ * than trusting the account/session alone, because the shared-tablet
+ * selection (not a personal login) is what determines the acting role.
+ */
 @Injectable()
 export class SocioGuard implements CanActivate {
   constructor(

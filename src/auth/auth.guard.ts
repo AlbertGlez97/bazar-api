@@ -15,6 +15,21 @@ export interface AuthenticatedRequest extends Request {
   selection?: { memberId: string; deviceId: string };
 }
 
+/**
+ * Verifies the bearer JWT identifies an active {@link Account} and attaches
+ * it to the request as `request.account`.
+ *
+ * This only proves *who is logged in*; it does not select *which* Member is
+ * attending or *which* Device is in use — the tablet/phone is shared, so a
+ * single account session does not identify the socio/colaborador at the
+ * counter. That selection is a separate concern handled by
+ * {@link ContextGuard}. Endpoints that only need the account (e.g.
+ * read-only catalog listing) may use this guard alone.
+ *
+ * The account is re-read from the database on every request instead of
+ * trusting the JWT payload, so revoking or deactivating an account takes
+ * effect immediately, even for a still-unexpired token.
+ */
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(
@@ -31,6 +46,8 @@ export class AuthGuard implements CanActivate {
     let subject: string;
     try {
       const payload = await this.jwt.verifyAsync<{ sub: string }>(match[1]);
+      // A forged or malformed subject must fail the same way an unknown one
+      // does, so reject it before it ever reaches the database query.
       if (typeof payload.sub !== 'string' || !isUUID(payload.sub))
         throw new Error('Invalid subject');
       subject = payload.sub;

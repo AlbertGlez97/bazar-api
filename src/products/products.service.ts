@@ -17,6 +17,12 @@ import type {
 import { StorageService } from '../storage/storage.service.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
+/**
+ * The Product's own current fields are already the source of truth for a
+ * product's audit history, so a full field-by-field snapshot (rather than
+ * only the price) is stored on every audit row — otherwise a metadata-only
+ * edit (e.g. notes, supplier) would leave no record of what changed.
+ */
 function snapshot(product: Product): Prisma.InputJsonObject {
   return {
     name: product.name,
@@ -44,10 +50,25 @@ export class ProductsService {
     const { imagePath, ...data } = product;
     return {
       ...data,
+      // The stored imagePath is an internal storage key, not a public URL;
+      // never leak it — only expose the derived, servable URL.
       image: imagePath ? this.storage.getUrl(imagePath) : null,
     };
   }
 
+  /**
+   * Re-checks, inside the same transaction that will write the mutation,
+   * that the account is active and that the selected member/device both
+   * belong to it and that the member has the `socio` role. This does not
+   * merely repeat {@link SocioGuard}: the guard runs before the
+   * transaction starts, so without this re-check a revoked device or a
+   * role change made concurrently would not be honored for a request
+   * already past the guard but not yet committed.
+   *
+   * @throws ForbiddenException when there is no selection, or the account,
+   * member (with role `socio`) or device do not resolve within the actor's
+   * `contextId`.
+   */
   private async authorize(tx: Prisma.TransactionClient, actor: Actor) {
     if (!actor.selection) throw new ForbiddenException();
     const account = await tx.account.findFirst({
@@ -74,6 +95,15 @@ export class ProductsService {
     if (!account || !member || !device) throw new ForbiddenException();
     return member.id;
   }
+  /**
+   * Creates a single audit row per mutation, capturing actor, timestamp and
+   * before/after snapshots so price and metadata changes remain traceable
+   * without ever deleting or overwriting history (creations have no
+   * `before`). `oldUnitPriceMinor`/`newUnitPriceMinor` are denormalized
+   * alongside the JSON snapshots specifically to keep price-change queries
+   * (e.g. "who changed this product's price and when") simple and indexed,
+   * without parsing JSON.
+   */
   private async audit(
     tx: Prisma.TransactionClient,
     memberId: string,
@@ -93,6 +123,19 @@ export class ProductsService {
       },
     });
   }
+  /**
+   * Creates a product for the actor's context.
+   *
+   * A `unica` (unique-piece) product always starts at stock 1 regardless
+   * of any `initialStock` the DTO may carry — a unique piece cannot have
+   * more or less than one unit by definition, so the field is silently
+   * normalized rather than rejected. Creation and its audit row are
+   * written in the same transaction so a product is never persisted
+   * without a corresponding "who created this and at what price" record.
+   *
+   * @throws ForbiddenException via {@link authorize} when the actor is not
+   * an authorized socio for this context.
+   */
   create(actor: Actor, dto: CreateProductDto) {
     const initialStock = dto.tipo === 'unica' ? 1 : dto.initialStock!;
     return this.prisma.$transaction(async (tx) => {
@@ -115,6 +158,18 @@ export class ProductsService {
       return this.response(product);
     });
   }
+  /**
+   * Shared by `patch` and `image`: locks the product row first (before
+   * authorization/read), so concurrent edits to the same product serialize
+   * instead of racing. Without that lock ordering, two concurrent PATCHes
+   * could both read the same "before" state and each record a different,
+   * both-wrong predecessor price in their audit rows; the lock guarantees
+   * the second edit's `before` snapshot is the true result of the first.
+   *
+   * @throws NotFoundException when the product does not exist in this
+   * context (including a product belonging to another context, which must
+   * be indistinguishable from nonexistent).
+   */
   private async mutate(
     actor: Actor,
     id: string,
@@ -132,6 +187,17 @@ export class ProductsService {
       return this.response(product);
     });
   }
+  /**
+   * Edits price/metadata fields only. `tipo`, `initialStock` and `stock`
+   * are intentionally not editable here: type and initial stock describe
+   * how the product was created, and current `stock` is only meant to
+   * change through sales/inventory movements, not a direct administrative
+   * overwrite that could silently hide a sale or a discrepancy.
+   *
+   * @throws BadRequestException when every field in the DTO is `undefined`
+   * (a PATCH with no actual change is rejected rather than creating a
+   * vacuous audit row).
+   */
   patch(actor: Actor, id: string, dto: PatchProductDto) {
     if (Object.values(dto).every((value) => value === undefined))
       throw new BadRequestException('At least one editable field is required');
@@ -144,6 +210,14 @@ export class ProductsService {
       notes: dto.notes,
     });
   }
+  /**
+   * Lists a context's catalog, optionally filtered by a case-insensitive
+   * name search, paginated (added in BE-04). Count and page are read in
+   * the same `RepeatableRead` transaction so a page and its reported
+   * `total` describe one consistent snapshot even if products are being
+   * created/edited concurrently — otherwise a page boundary could shift
+   * mid-scroll and duplicate or skip an item.
+   */
   async list(contextId: string, query: ProductListDto) {
     const where = {
       contextId,
@@ -170,6 +244,13 @@ export class ProductsService {
       limit: query.limit,
     };
   }
+  /**
+   * Lists a product's paginated audit trail (any authenticated account may
+   * read it; only socios may write it). Existence is checked scoped to
+   * `contextId` first and returns `NotFoundException` for a foreign-context
+   * product, so an account cannot use this endpoint to probe which product
+   * ids exist in another bazar's catalog.
+   */
   async audits(contextId: string, id: string, query: ProductListDto) {
     if (!(await this.prisma.product.findFirst({ where: { id, contextId } })))
       throw new NotFoundException();
@@ -188,6 +269,17 @@ export class ProductsService {
     );
     return { items, total, page: query.page, limit: query.limit };
   }
+  /**
+   * Replaces a product's image. The file is decoded/validated and saved to
+   * storage *before* the database mutation runs, and is deleted again if
+   * that mutation then fails — an uploaded file must never be referenced
+   * by a product row that doesn't (or no longer) exists, but a failure to
+   * delete the orphan is only logged, not thrown, so a storage cleanup
+   * hiccup does not mask the original database error to the caller.
+   *
+   * @throws NotFoundException when the product does not exist in this
+   * context.
+   */
   async image(actor: Actor, id: string, file: Express.Multer.File) {
     if (
       !(await this.prisma.product.findFirst({

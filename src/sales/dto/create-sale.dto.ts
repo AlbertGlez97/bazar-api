@@ -28,10 +28,20 @@ export class CreateSaleItemDto {
 }
 
 export class CreateSaleDto extends SalePaymentDto {
+  // Client-generated (offline-first: the device must be able to name a
+  // sale before it ever reaches the server). Currently only enforced as a
+  // unique primary key (BE-02); handling a resend of the same id is BE-06.
   @IsUUID() id!: string;
+  // Must match ContextGuard's header-selected member/device or
+  // SalesService.create rejects the sale with 403 — these are carried in
+  // the body (rather than only implied by the headers) so the persisted
+  // sale is self-describing and, later, comparable across resends.
   @IsUUID() memberId!: string;
   @IsUUID() deviceId!: string;
   @IsISO8601({ strict: true }) occurredAt!: string;
+  // Only 'MXN' is accepted because the money helpers (dinero.js usage in
+  // SalesService) are hardcoded to MXN; a multi-currency bazar is not a
+  // supported scenario.
   @IsIn(['MXN']) currency!: string;
   @IsArray()
   @ArrayNotEmpty()

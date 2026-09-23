@@ -17,6 +17,10 @@ import { ContextGuard } from './context.guard.js';
         return {
           secret,
           signOptions: {
+            // Algorithm, issuer and audience are pinned on both sign and
+            // verify so a token cannot be replayed against a different
+            // deployment/service, and `alg: none`/downgrade attacks are
+            // rejected outright rather than silently accepted.
             algorithm: 'HS256',
             expiresIn: '1h',
             issuer: 'bazar-api',

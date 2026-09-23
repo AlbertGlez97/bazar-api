@@ -18,6 +18,14 @@ export class IdentifyDeviceDto {
   @IsString() @Length(1, 100) name!: string;
 }
 
+/**
+ * Resolves a device's stable `identifier` (assigned out-of-band, currently
+ * via seed) to its internal id, so the frontend can then send that id as
+ * `x-device-id` on every request. Devices are never self-registered here:
+ * a device must already exist and be `authorized` in this context, so lost
+ * or compromised devices can be revoked centrally without depending on the
+ * device itself to stop presenting its old credentials.
+ */
 @Controller('devices')
 @UseGuards(AuthGuard)
 export class DevicesController {

@@ -24,6 +24,10 @@ export class ProductMetadataDto {
 export class CreateProductDto extends ProductPriceDto {
   @IsString() @Length(1, 200) @Matches(/\S/) name!: string;
   @IsIn(['unica', 'cantidad']) tipo!: 'unica' | 'cantidad';
+  // Required only for tipo 'cantidad'; a 'unica' product is forced to
+  // stock 1 by the service regardless of what is sent here (see
+  // ProductsService.create), so it stays optional/validated but is never
+  // the actual source of truth for a unique piece's stock.
   @ValidateIf(
     (o: CreateProductDto) =>
       o.tipo === 'cantidad' || o.initialStock !== undefined,
@@ -40,6 +44,9 @@ export class CreateProductDto extends ProductPriceDto {
 }
 
 export class PatchProductDto extends ProductMetadataDto {
+  // tipo/initialStock/stock are deliberately absent from this DTO: they are
+  // immutable after creation (see ProductsService.patch); only whitelisted
+  // fields can ever reach the update, regardless of what a client sends.
   @ValidateIf((o: PatchProductDto) => o.name !== undefined)
   @IsString()
   @Length(1, 200)

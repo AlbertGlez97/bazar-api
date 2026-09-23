@@ -33,6 +33,12 @@ const validate = (expectedType: new () => object) =>
     forbidNonWhitelisted: true,
     expectedType,
   });
+/**
+ * Writes (`create`, `patch`, `image`) require {@link SocioGuard}
+ * (socio-only); reads (`list`, `audit`) only require {@link AuthGuard},
+ * since colaboradores must be able to browse the catalog and price history
+ * to sell, even though they cannot change it.
+ */
 @Controller('products')
 export class ProductsController {
   constructor(
@@ -76,6 +82,9 @@ export class ProductsController {
   @UseGuards(SocioGuard)
   @UseInterceptors(
     FileInterceptor('image', {
+      // fields: 0 rejects any multipart field besides the file itself, so
+      // an attacker cannot smuggle extra form fields past the JSON DTO
+      // validation that only applies to the JSON-body endpoints.
       limits: { fileSize: MAX_IMAGE_BYTES, files: 1, fields: 0 },
     }),
   )
