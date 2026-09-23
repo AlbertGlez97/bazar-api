@@ -1,4 +1,4 @@
-# Reglas de negocio consolidadas (hasta BE-07)
+# Reglas de negocio consolidadas (hasta BE-08)
 
 ## Productos
 - Un producto es "unica" o "cantidad". Única inicia con existencia 1; al venderse pasa a 0 (nunca se marca "vendida", el estado vendido se infiere de existencia=0). El frontend muestra en gris y deshabilita productos con existencia 0.
@@ -38,9 +38,9 @@
 
 ## Explícitamente fuera de alcance de E0 (pendiente para entregas futuras)
 - Resolución automática de conflictos de sincronización offline (reembolso, reasignación de stock a la venta perdedora): permanece una decisión humana fuera del sistema (ver BE-06).
-- Comisiones para colaboradores: pago semanal (domingo) por defecto, con día de pago y porcentaje configurables desde el frontend. No implementado.
 - Fiado / apartados de clientes con pagos a plazos: concepto separado (tipo Debt/Layaway) con registro de deudor y abonos. No implementado.
 - Migración de almacenamiento de imágenes de disco local a object storage (MinIO en home-lab). No implementado.
+- Pago efectivo de comisiones (marcar una comisión como "pagada", integración con algún medio de pago): BE-08 solo calcula el monto; el pago en sí sigue siendo manual y fuera del sistema.
 
 ## Metodología de desarrollo
 - TDD desactivado en BE-02 a BE-04 (infraestructura, auth, productos). Activo desde BE-05 (venta, cálculos, idempotencia).
@@ -64,6 +64,21 @@
 - occurredAt fuera de rango (futuro, o más de 2 días en el pasado respecto a receivedAt) genera una incidencia tipo "incidencia_fecha" sin bloquear la venta si es válida en lo demás.
 - JWT de dispositivos: expiresIn extendido a 12h para cubrir una jornada de bazar sin requerir refresh token, dado que los dispositivos ya están pre-autorizados por seed.
 
+## Comisiones (BE-08)
+- La comisión de un colaborador es un porcentaje del total que vendió en el periodo (no un monto fijo por venta), para que el pago escale con lo que realmente ayudó a vender, no de forma pareja entre un turno flojo y uno fuerte.
+- Existe un porcentaje global por defecto (AppSettings, una fila por contexto); cada colaborador puede tener uno individual (Member.commissionRateBps) que lo sobrescribe cuando no es null. Solo socios los configuran (PATCH /settings/commission-rate y PATCH /members/:id/commission-rate).
+- Ambos porcentajes se almacenan como enteros en puntos base (1000 = 10.00%), siguiendo la misma convención de enteros que el dinero, para evitar imprecisión de punto flotante.
+- El corte de periodo es semanal, domingo a sábado, usando receivedAt (fecha del servidor) como referencia, no occurredAt. La zona horaria asumida es America/Mexico_City, fija en UTC-6 todo el año (la reforma de 2022 eliminó el horario de verano en la mayor parte del país), documentada explícitamente en src/common/business-time.ts ya que el proyecto no tenía una convención de zona horaria previa a esta entrega.
+- Si no se pasan fechas explícitas a GET /commissions, se resuelve automáticamente la semana domingo-sábado actual.
+- El cálculo solo considera ventas con status="completada"; ventas con una Incidencia pendiente de resolver igual se incluyen en el cálculo (la incidencia se resuelve por separado; si su resolución cambia el resultado de una venta, el recálculo es manual, el sistema no oculta ventas del cálculo solo por tener una incidencia pendiente).
+- La multiplicación por el porcentaje se hace con dinero.js (factor racional exacto vía scale, redondeo half-up al convertir de vuelta a centavos), nunca con Number/Decimal.
+- Esta entrega solo calcula el monto de comisión; no implementa pago ni lo marca como pagado (ver sección "fuera de alcance").
+
+## Reportes (BE-08)
+- Dos reportes disponibles: GET /reports/sales-by-period (total vendido y número de ventas en un rango), y GET /reports/sales-by-member (desglose del total vendido por cada Member, socio o colaborador), ambos filtrables por rango de fechas (from/to, aceptando fecha simple o instante ISO-8601 completo) y restringidos a socios.
+- Solo cuentan ventas con status="completada".
+- Un valor from/to de solo fecha (sin hora) se interpreta como el día completo en la zona horaria de negocio (inicio de ese día para from, fin de ese día para to), para que un socio pueda pedir "las ventas del 5 de mayo" sin tener que calcular instantes UTC a mano.
+
 ---
 
-Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-07.
+Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-08.

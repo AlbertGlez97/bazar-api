@@ -8,6 +8,8 @@ import { DevicesController } from './devices/devices.controller.js';
 import { ProductsModule } from './products/products.module.js';
 import { SalesModule } from './sales/sales.module.js';
 import { IncidenciasModule } from './incidencias/incidencias.module.js';
+import { CommissionsModule } from './commissions/commissions.module.js';
+import { ReportsModule } from './reports/reports.module.js';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { IncidenciasModule } from './incidencias/incidencias.module.js';
     ProductsModule,
     SalesModule,
     IncidenciasModule,
+    CommissionsModule,
+    ReportsModule,
   ],
   controllers: [AppController, MembersController, DevicesController],
   providers: [AppService],
