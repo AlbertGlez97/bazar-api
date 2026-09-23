@@ -37,8 +37,7 @@
 - Descuento de existencia: única pasa de 1 a 0; cantidad resta las unidades vendidas.
 
 ## Explícitamente fuera de alcance de E0 (pendiente para entregas futuras)
-- Idempotencia ante reenvíos duplicados de una venta y resolución de conflictos por reenvío simultáneo offline (BE-06).
-- Política de "última pieza" en conflicto de sincronización offline (BE-06).
+- Resolución automática de conflictos de sincronización offline (reembolso, reasignación de stock a la venta perdedora): permanece una decisión humana fuera del sistema (ver BE-06).
 - Comisiones para colaboradores: pago semanal (domingo) por defecto, con día de pago y porcentaje configurables desde el frontend. No implementado.
 - Fiado / apartados de clientes con pagos a plazos: concepto separado (tipo Debt/Layaway) con registro de deudor y abonos. No implementado.
 - Migración de almacenamiento de imágenes de disco local a object storage (MinIO en home-lab). No implementado.
@@ -51,6 +50,12 @@
 - Solo se registra si ENABLE_API_DOCS=true está presente en el entorno; si no, la ruta no existe (404, no 401), para no revelar su existencia.
 - No usar el mismo mecanismo de credenciales que la API de negocio; son capas de acceso distintas.
 
+## Idempotencia y conflictos offline (BE-06)
+- Reenviar una venta con el mismo id y el mismo payload devuelve el resultado ya persistido, sin duplicar ni volver a descontar stock. Si el payload difiere, se rechaza con 409.
+- Ante conflicto de stock entre ventas offline sincronizadas sobre el mismo producto, gana la que el servidor procesa primero (orden real de procesamiento, no hora del dispositivo).
+- Las ventas que pierden el conflicto no se pierden ni se descartan: quedan guardadas con status="rechazada_por_conflicto" y motivo, sin afectar inventario, disponibles para revisión y resolución manual con el cliente.
+- No hay resolución automática de conflictos (reembolso, reasignación de stock); es una decisión humana fuera del sistema.
+
 ---
 
-Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-05.
+Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-06.

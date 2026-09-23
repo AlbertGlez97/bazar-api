@@ -6,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UseGuards,
   ValidationPipe,
@@ -14,6 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ContextGuard } from '../auth/context.guard.js';
 import { CreateSaleDto } from './dto/create-sale.dto.js';
+import { SaleListDto } from './dto/sale-list.dto.js';
 import { SalesService } from './sales.service.js';
 
 const validate = (expectedType: new () => object) =>
@@ -27,9 +29,9 @@ const validate = (expectedType: new () => object) =>
 /**
  * `create` requires {@link ContextGuard} (member/device selection), since
  * registering a sale must be attributable to a specific person and
- * device; `findOne` only requires {@link AuthGuard}, since reading back a
- * previously confirmed sale (e.g. after a lost response) does not need a
- * fresh selection.
+ * device; `findOne` and `list` only require {@link AuthGuard}, since
+ * reading sales back (e.g. after a lost response, or reviewing sales
+ * rejected by an offline sync conflict) does not need a fresh selection.
  */
 @ApiTags('sales')
 @ApiBearerAuth()
@@ -46,6 +48,15 @@ export class SalesController {
     return this.sales.create(req, dto);
   }
 
+  @Get()
+  @UseGuards(AuthGuard)
+  list(
+    @Req() req: AuthenticatedRequest,
+    @Query(validate(SaleListDto)) query: SaleListDto,
+  ) {
+    return this.sales.list(req.account.contextId, query.status);
+  }
+
   @Get(':id')
   @UseGuards(AuthGuard)
   findOne(
@@ -55,3 +66,4 @@ export class SalesController {
     return this.sales.findOne(req.account.contextId, id);
   }
 }
+

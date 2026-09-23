@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -10,10 +11,26 @@ import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { Prisma, Sale, SaleItem } from '../generated/prisma/client.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
-import type { CreateSaleDto } from './dto/create-sale.dto.js';
+import type {
+  CreateSaleDto,
+  CreateSaleItemDto,
+} from './dto/create-sale.dto.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 type SaleWithItems = Sale & { items: SaleItem[] };
+type SaleStatusFilter = 'completada' | 'rechazada_por_conflicto';
+
+/**
+ * Thrown only for a genuine concurrency race — an item's stock was
+ * sufficient moments ago (before this transaction contended for the row
+ * lock) but insufficient once the lock was actually acquired, meaning a
+ * concurrently-processed sale consumed it first. Distinct from
+ * BadRequestException, which still covers a request that was already
+ * unsatisfiable before any locking occurred (BE-05's plain "not enough
+ * stock" case). {@link SalesService.create} catches this specifically to
+ * persist a "rechazada_por_conflicto" sale instead of just rejecting.
+ */
+class SaleStockConflictError extends Error {}
 
 function response(sale: SaleWithItems) {
   const { items, ...header } = sale;
@@ -28,6 +45,56 @@ function response(sale: SaleWithItems) {
       createdAt: item.createdAt,
     })),
   };
+}
+
+// Order-independent comparison of {productId, quantity} pairs. Price is
+// deliberately excluded: it is never client-authoritative (see
+// CreateSaleItemDto.unitPriceMinor), so two requests describing the same
+// items/quantities are the same sale regardless of what price, if any,
+// the client happened to attach for its own logging.
+function sameItems(
+  existingItems: SaleItem[],
+  dtoItems: CreateSaleItemDto[],
+): boolean {
+  if (existingItems.length !== dtoItems.length) return false;
+  const byProduct = (a: { productId: string }, b: { productId: string }) =>
+    a.productId.localeCompare(b.productId);
+  const a = [...existingItems].sort(byProduct);
+  const b = [...dtoItems].sort(byProduct);
+  return a.every(
+    (item, index) =>
+      item.productId === b[index].productId &&
+      item.quantity === b[index].quantity,
+  );
+}
+
+/**
+ * Decides whether a POST /sales carrying an id that already exists is a
+ * legitimate resend of the exact same sale (offline sync retry, lost
+ * response, etc.) rather than an id collision or a buggy re-send with
+ * different data.
+ *
+ * Header fields (memberId, deviceId, currency, cashReceivedMinor,
+ * occurredAt) are always compared. Items are additionally compared for a
+ * "completada" sale, but intentionally skipped for a
+ * "rechazada_por_conflicto" sale: a conflict-rejected sale never persists
+ * its attempted items (see {@link SalesService.create}), so there is
+ * nothing stored left to compare them against — a resend that agrees on
+ * every header field is treated as the same replay.
+ */
+function isIdempotentReplay(
+  existing: SaleWithItems,
+  dto: CreateSaleDto,
+): boolean {
+  const sameHeader =
+    existing.memberId === dto.memberId &&
+    existing.deviceId === dto.deviceId &&
+    existing.currency === dto.currency &&
+    existing.cashReceivedMinor === dto.cashReceivedMinor &&
+    existing.occurredAt.getTime() === new Date(dto.occurredAt).getTime();
+  if (!sameHeader) return false;
+  if (existing.status === 'rechazada_por_conflicto') return true;
+  return sameItems(existing.items, dto.items);
 }
 
 @Injectable()
@@ -72,7 +139,9 @@ export class SalesService {
   }
 
   /**
-   * Registers a single in-person, cash-only, multi-item sale.
+   * Registers a single in-person, cash-only, multi-item sale — or, on a
+   * resend of the same client-generated `id`, replays or rejects it
+   * idempotently instead of reprocessing (see {@link isIdempotentReplay}).
    *
    * The client's per-item `unitPriceMinor` (if sent) is only for the
    * frontend's own traceability/logging; the server always recalculates
@@ -81,23 +150,48 @@ export class SalesService {
    * actually charged. Stock validation, the price/total/change
    * calculation and the Sale+SaleItem write all happen inside one
    * transaction: any failure — a nonexistent/foreign-context product,
-   * insufficient stock on any single line, insufficient cash, or a
-   * persistence error — rolls back every line already processed in this
-   * request, so a sale is never applied partially.
+   * insufficient stock on any single line from the very start, insufficient
+   * cash, or a persistence error — rolls back every line already processed
+   * in this request, so a sale is never applied partially.
    *
    * There is no fiado/apartado (deferred payment) path here: insufficient
    * cash simply rejects the whole sale rather than recording a partial
    * payment or a debtor.
    *
+   * Stock races between offline sales synchronizing concurrently for the
+   * same product are handled differently from a plain invalid request:
+   * each item is read once *before* attempting its row lock (an
+   * unlocked snapshot) and once more *after* acquiring the `FOR UPDATE`
+   * lock. If the unlocked snapshot already showed insufficient stock, the
+   * request was simply invalid from the start — BE-05's behavior applies
+   * (400, nothing persisted). If the unlocked snapshot showed enough stock
+   * but the post-lock read does not, another sale's transaction committed
+   * a decrement while this one waited for the lock — a genuine race, which
+   * this sale lost. The server does not resolve that race in favor of
+   * whichever device's clock claims to be earlier (device clocks are not
+   * trusted); it always favors whichever transaction the database itself
+   * finishes processing (and thus locks/commits) first. The loser is not
+   * discarded: it is persisted as `status = "rechazada_por_conflicto"`
+   * with a `conflictReason` and `conflictDetectedAt`, with no stock
+   * decremented and no items stored (there is nothing authoritative to
+   * store — the sale never priced or applied any line), so it remains
+   * available for a human to review and resolve with the customer. There
+   * is deliberately no automatic resolution (refund, re-stocking,
+   * reassigning the sale to different stock): that is a business decision
+   * outside this system.
+   *
    * @throws ForbiddenException when the body's `memberId`/`deviceId` do not
    * match the authenticated `x-member-id`/`x-device-id` selection (a
    * device cannot attribute a sale to a different member/device than the
    * one it was authorized for), or via {@link authorize}.
+   * @throws ConflictException when `id` already exists with a payload that
+   * does not match this request (see {@link isIdempotentReplay}) — a
+   * resend must be identical, not merely share an id.
    * @throws BadRequestException when any item's product does not exist in
-   * this context, any item's `quantity` exceeds that product's current
-   * stock (for `unica` products, stock is always 1, so any `quantity > 1`
-   * is rejected the same way), or `cashReceivedMinor` is less than the
-   * server-calculated total.
+   * this context, any item's `quantity` exceeds that product's stock as
+   * read before any row lock was attempted (for `unica` products, stock is
+   * always 1, so any `quantity > 1` is rejected the same way), or
+   * `cashReceivedMinor` is less than the server-calculated total.
    */
   async create(actor: Actor, dto: CreateSaleDto) {
     // The persisted sale attributes its member/device from the authenticated
@@ -112,77 +206,131 @@ export class SalesService {
         'Sale attribution must match the authenticated selection',
       );
     }
-    const sale = await this.prisma.$transaction(async (tx) => {
-      const { memberId, deviceId } = await this.authorize(tx, actor);
-      let totalDinero = toDinero(0);
-      const lines: {
-        productId: string;
-        quantity: number;
-        unitPriceMinor: number;
-        subtotalMinor: number;
-      }[] = [];
-      // Items are processed sequentially (not in parallel) so repeated
-      // productIds within the same sale see each other's stock decrements.
-      for (const item of dto.items) {
-        await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${item.productId}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
-        const product = await tx.product.findFirst({
-          where: { id: item.productId, contextId: actor.account.contextId },
-        });
-        if (!product)
-          throw new BadRequestException(
-            `Product ${item.productId} does not exist in this context`,
-          );
-        if (item.quantity > product.stock)
-          throw new BadRequestException(
-            `Insufficient stock for product ${item.productId}`,
-          );
-        await tx.product.update({
-          where: { id: product.id },
-          data: { stock: product.stock - item.quantity },
-        });
-        const unitPriceMinor = product.unitPriceMinor;
-        const subtotalMinor = toMinorUnits(
-          multiply(toDinero(unitPriceMinor), item.quantity),
-        );
-        totalDinero = add(totalDinero, toDinero(subtotalMinor));
-        lines.push({
-          productId: product.id,
-          quantity: item.quantity,
-          unitPriceMinor,
-          subtotalMinor,
-        });
-      }
-      const totalMinor = toMinorUnits(totalDinero);
-      if (dto.cashReceivedMinor < totalMinor)
-        throw new BadRequestException(
-          'Cash received is insufficient for the calculated total',
-        );
-      const changeMinor = toMinorUnits(
-        subtract(toDinero(dto.cashReceivedMinor), toDinero(totalMinor)),
+
+    const existing = await this.prisma.sale.findUnique({
+      where: { id: dto.id },
+      include: { items: true },
+    });
+    if (existing) {
+      if (isIdempotentReplay(existing, dto)) return response(existing);
+      throw new ConflictException(
+        `Sale ${dto.id} already exists with different data`,
       );
-      return tx.sale.create({
+    }
+
+    try {
+      const sale = await this.prisma.$transaction(async (tx) => {
+        const { memberId, deviceId } = await this.authorize(tx, actor);
+        let totalDinero = toDinero(0);
+        const lines: {
+          productId: string;
+          quantity: number;
+          unitPriceMinor: number;
+          subtotalMinor: number;
+        }[] = [];
+        // Items are processed sequentially (not in parallel) so repeated
+        // productIds within the same sale see each other's stock decrements.
+        for (const item of dto.items) {
+          // Unlocked snapshot, taken before contending for the row lock:
+          // reveals whether this item was already unsatisfiable before our
+          // own transaction could possibly have raced anyone for it.
+          const before = await tx.product.findFirst({
+            where: { id: item.productId, contextId: actor.account.contextId },
+          });
+          if (!before)
+            throw new BadRequestException(
+              `Product ${item.productId} does not exist in this context`,
+            );
+          if (item.quantity > before.stock)
+            throw new BadRequestException(
+              `Insufficient stock for product ${item.productId}`,
+            );
+
+          await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${item.productId}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
+          const product = await tx.product.findFirst({
+            where: { id: item.productId, contextId: actor.account.contextId },
+          });
+          if (!product)
+            throw new BadRequestException(
+              `Product ${item.productId} does not exist in this context`,
+            );
+          if (item.quantity > product.stock)
+            // Sufficient a moment ago, insufficient now that we hold the
+            // lock: a concurrently-processed sale won the race for this
+            // stock while we waited. Not the requester's fault.
+            throw new SaleStockConflictError(
+              `stock insuficiente al sincronizar: producto ${item.productId}, solicitado ${item.quantity}, disponible ${product.stock}`,
+            );
+
+          await tx.product.update({
+            where: { id: product.id },
+            data: { stock: product.stock - item.quantity },
+          });
+          const unitPriceMinor = product.unitPriceMinor;
+          const subtotalMinor = toMinorUnits(
+            multiply(toDinero(unitPriceMinor), item.quantity),
+          );
+          totalDinero = add(totalDinero, toDinero(subtotalMinor));
+          lines.push({
+            productId: product.id,
+            quantity: item.quantity,
+            unitPriceMinor,
+            subtotalMinor,
+          });
+        }
+        const totalMinor = toMinorUnits(totalDinero);
+        if (dto.cashReceivedMinor < totalMinor)
+          throw new BadRequestException(
+            'Cash received is insufficient for the calculated total',
+          );
+        const changeMinor = toMinorUnits(
+          subtract(toDinero(dto.cashReceivedMinor), toDinero(totalMinor)),
+        );
+        return tx.sale.create({
+          data: {
+            id: dto.id,
+            memberId,
+            deviceId,
+            occurredAt: new Date(dto.occurredAt),
+            currency: dto.currency,
+            status: 'completada',
+            totalMinor,
+            cashReceivedMinor: dto.cashReceivedMinor,
+            changeMinor,
+            items: {
+              create: lines.map((line) => ({
+                productId: line.productId,
+                quantity: line.quantity,
+                unitPriceMinor: line.unitPriceMinor,
+                subtotalMinor: line.subtotalMinor,
+              })),
+            },
+          },
+          include: { items: true },
+        });
+      });
+      return response(sale);
+    } catch (err) {
+      if (!(err instanceof SaleStockConflictError)) throw err;
+      // The failed attempt above was fully rolled back (no stock touched,
+      // no Sale/SaleItem rows from it survive); this is a fresh, separate
+      // write recording the rejection itself.
+      const rejected = await this.prisma.sale.create({
         data: {
           id: dto.id,
-          memberId,
-          deviceId,
+          memberId: dto.memberId,
+          deviceId: dto.deviceId,
           occurredAt: new Date(dto.occurredAt),
           currency: dto.currency,
-          totalMinor,
+          status: 'rechazada_por_conflicto',
           cashReceivedMinor: dto.cashReceivedMinor,
-          changeMinor,
-          items: {
-            create: lines.map((line) => ({
-              productId: line.productId,
-              quantity: line.quantity,
-              unitPriceMinor: line.unitPriceMinor,
-              subtotalMinor: line.subtotalMinor,
-            })),
-          },
+          conflictReason: err.message,
+          conflictDetectedAt: new Date(),
         },
         include: { items: true },
       });
-    });
-    return response(sale);
+      return response(rejected);
+    }
   }
 
   /**
@@ -190,7 +338,9 @@ export class SalesService {
    * authenticated context via the Member relation (Sale itself carries no
    * `contextId` column). Used, among other things, so a client that lost
    * the HTTP response to a sale it already submitted can re-fetch the
-   * confirmed result instead of assuming it failed.
+   * confirmed result instead of assuming it failed. Returns a
+   * "rechazada_por_conflicto" sale the same way as a "completada" one; the
+   * `status` field is how a caller distinguishes them.
    *
    * @throws NotFoundException when the sale does not exist or belongs to
    * another context (both must be indistinguishable to the caller).
@@ -202,5 +352,21 @@ export class SalesService {
     });
     if (!sale) throw new NotFoundException();
     return response(sale);
+  }
+
+  /**
+   * Lists sales for the authenticated context, optionally filtered to a
+   * single `status`. Exists primarily so `rechazada_por_conflicto` sales
+   * — which are never surfaced by {@link create}'s caller as a normal
+   * success — can still be found and manually reviewed/resolved with the
+   * customer; there is no endpoint that resolves them automatically.
+   */
+  async list(contextId: string, status?: SaleStatusFilter) {
+    const sales = await this.prisma.sale.findMany({
+      where: { member: { contextId }, ...(status ? { status } : {}) },
+      include: { items: true },
+      orderBy: [{ receivedAt: 'desc' }, { id: 'asc' }],
+    });
+    return sales.map(response);
   }
 }

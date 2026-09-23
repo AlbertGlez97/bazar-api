@@ -39,11 +39,13 @@ export class CreateSaleItemDto {
 
 export class CreateSaleDto extends SalePaymentDto {
   // Client-generated (offline-first: the device must be able to name a
-  // sale before it ever reaches the server). Currently only enforced as a
-  // unique primary key (BE-02); handling a resend of the same id is BE-06.
+  // sale before it ever reaches the server). Also the idempotency key for
+  // resends (see SalesService.create): a resend with the same id and an
+  // identical payload replays the stored result instead of reprocessing;
+  // a resend with the same id and a different payload is a 409 Conflict.
   @ApiProperty({
     description:
-      'Client-generated sale id (offline-first). Only enforced as a unique key for now; handling resends of the same id is a future entry (BE-06).',
+      'Client-generated sale id (offline-first). Also the idempotency key: resending the same id with an identical payload replays the stored result; a different payload is rejected with 409.',
   })
   @IsUUID()
   id!: string;

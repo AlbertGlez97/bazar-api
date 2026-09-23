@@ -18,6 +18,11 @@ enum MemberRole {
   colaborador
 }
 
+enum SaleStatus {
+  completada
+  rechazada_por_conflicto
+}
+
 model Account {
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
@@ -84,18 +89,32 @@ model ProductAudit {
 
 model Sale {
   // Client-generated stable identity; primary key enforces uniqueness.
-  id                String     @id @db.Uuid
-  memberId          String     @db.Uuid
-  deviceId          String     @db.Uuid
-  occurredAt        DateTime   @db.Timestamptz(3)
-  receivedAt        DateTime   @default(now()) @db.Timestamptz(3)
-  currency          String     @default("MXN") @db.Char(3)
-  totalMinor        Int
+  id         String     @id @db.Uuid
+  memberId   String     @db.Uuid
+  deviceId   String     @db.Uuid
+  occurredAt DateTime   @db.Timestamptz(3)
+  receivedAt DateTime   @default(now()) @db.Timestamptz(3)
+  currency   String     @default("MXN") @db.Char(3)
+  // "completada" is the only status BE-05 ever produced; BE-06 adds
+  // "rechazada_por_conflicto" for sales that lost a real stock race
+  // between offline sales synchronizing concurrently (see SalesService).
+  status     SaleStatus @default(completada)
+  // Null only for a "rechazada_por_conflicto" sale: the total/change could
+  // not be (and is not) computed once processing is aborted mid-sale, so
+  // these are never a stand-in for zero.
+  totalMinor        Int?
   cashReceivedMinor Int
-  changeMinor       Int
-  member            Member     @relation(fields: [memberId], references: [id])
-  device            Device     @relation(fields: [deviceId], references: [id])
-  items             SaleItem[]
+  changeMinor       Int?
+  // Populated only when status = rechazada_por_conflicto; explains which
+  // product lost the race and when the conflict was detected, for manual
+  // review — there is no automatic resolution.
+  conflictReason     String?
+  conflictDetectedAt DateTime? @db.Timestamptz(3)
+  member             Member    @relation(fields: [memberId], references: [id])
+  device             Device    @relation(fields: [deviceId], references: [id])
+  items              SaleItem[]
+
+  @@index([status, receivedAt, id])
 }
 
 model SaleItem {
