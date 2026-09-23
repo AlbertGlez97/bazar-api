@@ -5,9 +5,10 @@ import { DatabaseModule } from './database/database.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { MembersController } from './members/members.controller.js';
 import { DevicesController } from './devices/devices.controller.js';
+import { ProductsModule } from './products/products.module.js';
 
 @Module({
-  imports: [DatabaseModule, AuthModule],
+  imports: [DatabaseModule, AuthModule, ProductsModule],
   controllers: [AppController, MembersController, DevicesController],
   providers: [AppService],
 })

@@ -1,8 +1,106 @@
-# Bazar backend: local persistence (BE-02)
+# Bazar backend: audited product catalog (BE-04)
+
+Products are scoped to the authenticated account context. `unitPriceMinor` replaces
+`salePriceMinor` with a data-preserving database rename; all amounts remain integer
+MXN cents. Existing products stay in `legacy-unassigned`, not in a new account's catalog.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /products?search=...&page=1&limit=20` | JWT required; case-insensitive name search, items/total/page/limit. Limit 1-100; deterministic createdAt/id order. |
+| `POST /products` | JWT, x-member-id and x-device-id; selected socio only. Required name, tipo, unitPriceMinor. cantidad requires initialStock; unica always uses 1, ignoring any supplied valid initialStock. |
+| `PATCH /products/:id` | Selected socio only. Editable name, unitPriceMinor, category, purchaseCostMinor, supplier, notes. Optional metadata may be cleared with null. |
+| `GET /products/:id/audit?page=1&limit=20` | Context-scoped audit snapshots with memberId, changedAt, old/new prices; JWT required. |
+| `POST /products/:id/image` | Selected socio only; multipart field `image`, one file, maximum 5 MiB. Returns updated product with image URL. |
+
+Optional product fields: category, purchaseCostMinor, supplier, notes; image is
+set only through the upload endpoint, not by accepting arbitrary URLs. `tipo`,
+`initialStock` and `stock` cannot be patched. No stock adjustment, sale, commission
+or payment policy is implemented. Unknown request properties are rejected.
+
+Create/edit/image audit and product updates commit together. Row locks serialize
+edits so each audit captures the actual predecessor price. The selected actor's
+current database role is checked, never trusted from request input. This remains
+the approved shared-tablet selection model: a logged-in account can select a
+same-context socio; it does not authenticate that person individually.
+
+Pagination is offset-based, without a fixed global result truncation. Each response
+has a consistent count/page; separate requests are **not** a catalog snapshot.
+Inserts or edits during offline traversal may require a fresh download.
+
+## Local product images
+
+`StorageService.save(file)` returns `{ path, url }`; `getUrl(path)` derives the public URL and `remove(path)` handles cleanup. Product.imagePath stores only the key; product responses expose the computed `image` URL. By default normalized
+files live in `uploads/products` (ignored by Git); `PRODUCT_UPLOAD_DIR` can point
+to another dedicated directory. Static `/uploads/products/<random-uuid>.png`
+URLs are **public without JWT**, not private image storage. Back up the image
+directory separately from PostgreSQL.
+
+Only content-detected PNG/JPEG/WebP with matching MIME, one frame and at most
+16 million pixels are accepted. Sharp fully decodes and re-encodes to PNG,
+stripping uploaded metadata/content; input and normalized output are capped at
+5 MiB. Original filenames are ignored. SVG/HTML, corrupt data, MIME spoofing and
+oversized files are rejected. Responses set nosniff and restrictive CSP headers.
+
+Failed database/audit writes remove the newly saved file; cleanup failures are
+logged for operator attention. Replaced old images are retained to avoid breaking
+in-flight readers. There is no automatic orphan retention job or distributed
+filesystem/database transaction; process crashes can leave orphan files.
+
+Tests use an isolated temporary image directory and the guarded test database.
+Use the existing migration and test commands below. See
+[`odd/tasks/backend-e0-be04.md`](odd/tasks/backend-e0-be04.md) for verified evidence.
+
+# Authentication and device context (BE-03)
+
+BE-03 adds `POST /auth/login`, `GET /members` and `POST /devices/identify`.
+No sale, commission or payment logic is implemented.
+
+## Provision local access
+
+Set `JWT_SECRET` to an independently generated random secret (at least 32 characters).
+Set `SEED_CONTEXT_ID`, `SEED_USERNAME` and `SEED_PASSWORD` (at least 12 characters)
+in your ignored `.env`; there are no default account credentials. Then run:
+
+```sh
+npx prisma generate
+npx prisma migrate deploy
+npx prisma db seed
+```
+
+The seed creates Alberto and Adid as `socio`, a shared tablet and two backup phones.
+Stable member IDs and unique device identifiers make reruns idempotent. Reruns do
+not reset passwords, move contexts or reauthorize revoked devices. The provisioning
+context must not be `legacy-unassigned`; pre-existing BE-02 rows remain quarantined
+there, and existing devices remain unauthorized until deliberately provisioned.
+This seed provisions one installation, not a general multi-tenant onboarding API.
+
+| Endpoint | Input | Access/result |
+| --- | --- | --- |
+| `POST /auth/login` | `{ "username": "...", "password": "..." }` | Argon2id verification; `{ accessToken, tokenType, expiresIn: 3600 }`, or 401 |
+| `GET /members` | `Authorization: Bearer <token>` | Current account context only; `id`, `name`, `role` (`socio` or `colaborador`) |
+| `POST /devices/identify` | Bearer token plus `{ "identifier": "shared-tablet", "name": "Shared tablet" }` | `{ deviceId }`; unknown, mismatched or revoked devices return 403 |
+
+JWTs use HS256, issuer/audience checks and one-hour expiration. Every request
+reloads the active account, so deactivation and context changes apply immediately.
+`ContextGuard` authenticates and checks `x-member-id` and `x-device-id` against the
+account context and current device authorization. It is exported for future
+business routes; selection/bootstrap routes intentionally require JWT only. Its
+acceptance probe exists only in tests, not in the shipped API. Device identifiers
+are not hardware attestation; these checks bind stored records, not physical devices.
+
+Use HTTPS and request-rate limiting before public deployment. Refresh tokens,
+password recovery, public signup and device enrollment are outside BE-03.
+
+Tests use random fixture credentials in the isolated test database and remove only
+their own rows. Run `npm run db:migrate:test`, `npm test`, `npm run test:e2e`,
+`npm run build` and `npm run lint`. See the [BE-03 tracker](odd/tasks/backend-e0-be03.md)
+for actual evidence and remaining prerequisites.
+
+# Local persistence foundation (BE-02)
 
 Requires Node 24 and Docker Compose. This slice adds persistence and money input
-contracts only; the existing `GET /` smoke route is unchanged. No authentication,
-product operations or sale endpoints are implemented.
+contracts; the existing `GET /` smoke route is unchanged. BE-03 authentication
+is described above. Product operations and sale endpoints are not implemented.
 
 ## Start development
 
@@ -182,7 +280,7 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 
 ## Stay in touch
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
+- Author - [Kamil MyÅ›liwiec](https://twitter.com/kammysliwiec)
 - Website - [https://nestjs.com](https://nestjs.com/)
 - Twitter - [@nestframework](https://twitter.com/nestframework)
 

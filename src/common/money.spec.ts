@@ -52,7 +52,7 @@ describe('monetary DTO contracts', () => {
     async (amount) => {
       expect(
         await validate(
-          Object.assign(new ProductPriceDto(), { salePriceMinor: amount }),
+          Object.assign(new ProductPriceDto(), { unitPriceMinor: amount }),
         ),
       ).toEqual([]);
       expect(
@@ -68,7 +68,7 @@ describe('monetary DTO contracts', () => {
       expect(
         (
           await validate(
-            Object.assign(new ProductPriceDto(), { salePriceMinor: amount }),
+            Object.assign(new ProductPriceDto(), { unitPriceMinor: amount }),
           )
         ).length,
       ).toBeGreaterThan(0);
