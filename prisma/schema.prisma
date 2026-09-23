@@ -1,0 +1,71 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProductType {
+  unica
+  cantidad
+}
+
+model Member {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  sales     Sale[]
+}
+
+model Device {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  sales     Sale[]
+}
+
+model Product {
+  id                String      @id @default(uuid()) @db.Uuid
+  name              String
+  tipo              ProductType
+  salePriceMinor    Int
+  initialStock      Int
+  stock             Int
+  category          String?
+  purchaseCostMinor Int?
+  supplier          String?
+  notes             String?
+  createdAt         DateTime    @default(now()) @db.Timestamptz(3)
+  saleItems         SaleItem[]
+}
+
+model Sale {
+  // Client-generated stable identity; primary key enforces uniqueness.
+  id                String     @id @db.Uuid
+  memberId          String     @db.Uuid
+  deviceId          String     @db.Uuid
+  occurredAt        DateTime   @db.Timestamptz(3)
+  receivedAt        DateTime   @default(now()) @db.Timestamptz(3)
+  currency          String     @default("MXN") @db.Char(3)
+  totalMinor        Int
+  cashReceivedMinor Int
+  changeMinor       Int
+  member            Member     @relation(fields: [memberId], references: [id])
+  device            Device     @relation(fields: [deviceId], references: [id])
+  items             SaleItem[]
+}
+
+model SaleItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  saleId         String   @db.Uuid
+  productId      String   @db.Uuid
+  quantity       Int
+  unitPriceMinor Int
+  subtotalMinor  Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  sale           Sale     @relation(fields: [saleId], references: [id])
+  product        Product  @relation(fields: [productId], references: [id])
+}

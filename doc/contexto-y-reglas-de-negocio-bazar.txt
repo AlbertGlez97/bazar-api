@@ -1,0 +1,183 @@
+SISTEMA DE GESTIÓN DE BAZAR
+Contexto inicial, alcance y reglas de negocio
+
+Versión: 1.0
+Fecha de consolidación: 22 de septiembre de 2026
+Fuente: conversación «Planear sistema de negocio».
+Identificador de la conversación: 6ab2f9df-dd10-83e8-8dd0-2c603d5b4d9a
+Idioma: español. Formato: texto plano UTF-8.
+
+PROPÓSITO DEL DOCUMENTO
+
+Consolidar lo definido para construir un sistema práctico de operación y control del bazar. Este documento es una base de requisitos para el repositorio, no evidencia de que las funciones ya estén implementadas ni un diseño técnico cerrado.
+
+Cómo interpretar los estados:
+- CONFIRMADO: necesidad, elección o alcance expresado o aceptado por el usuario.
+- PROPUESTO: detalle recomendado en la conversación, sin una aprobación específica que cierre su funcionamiento.
+- PENDIENTE: política que requiere decisión de los responsables del negocio.
+
+Los ejemplos monetarios de la conversación fueron ilustrativos. No establecen precios, capital inicial, salarios, porcentajes ni montos obligatorios.
+
+1. CONTEXTO Y OBJETIVO
+
+Alberto y su pareja iniciarán un negocio en un bazar de Coacalco. Ya apartaron un espacio y realizaron una primera inversión. La idea inicial es vender bonsáis, pero el catálogo definitivo aún no estaba decidido. Por ello, el sistema debe contemplar productos sin limitar el negocio a una sola clase de planta.
+
+Ambos podrán aportar dinero y trabajar cantidades distintas de días u horas. También se prevé apoyo ocasional de los dos hermanos de la pareja. El sistema debe hacer visible quién aportó, quién trabajó, qué se vendió, qué se gastó y cómo está funcionando el negocio.
+
+La operación principal será desde una tablet compartida. Los teléfonos podrán funcionar como puestos adicionales o de respaldo para consultar productos y registrar ventas. La conexión a internet del bazar no es confiable: trabajar sin conexión es una necesidad central, no una mejora opcional.
+
+El proyecto urge y aprovechará los conocimientos actuales del usuario: Vue.js para frontend y NestJS para backend. La prioridad es disponer de una herramienta usable, rápida frente al cliente y suficientemente trazable para administrar después.
+
+Objetivo operativo: administrar el bazar desde la tablet y los teléfonos sin depender de la memoria, una libreta o una conexión permanente.
+
+2. PRINCIPIOS DEL PRODUCTO
+
+PR-01 [CONFIRMADO] Perder internet no debe detener una venta en un dispositivo previamente preparado para operar sin conexión.
+PR-02 [CONFIRMADO] La atención al cliente debe ser rápida. No se exige crear o entregar un ticket ni capturar datos del cliente en una venta normal.
+PR-03 [CONFIRMADO] Registrar una venta debe alimentar el control de inventario y la información financiera sin duplicar trabajo administrativo.
+PR-04 [CONFIRMADO] Debe ser posible identificar personas y dispositivos que intervienen en las operaciones.
+PR-05 [PROPUESTO] Separar capital aportado, trabajo realizado y utilidades. Registrar una aportación o una jornada no debe implicar automáticamente un porcentaje de propiedad o de reparto.
+PR-06 [PROPUESTO] Conservar historial: corregir o cancelar movimientos económicos en lugar de borrarlos sin rastro.
+PR-07 [PROPUESTO] Objetivo de experiencia: una venta sencilla en aproximadamente dos o tres acciones. No es un límite literal para compras con varios artículos, captura de efectivo o excepciones.
+
+3. ALCANCE FUNCIONAL DEL MVP
+
+El usuario confirmó expresamente que el MVP incluye ventas de varios productos, cancelaciones, cambios de precio, búsqueda sin QR, productos únicos y repetidos, apartados, reservas internas, mermas, entradas rápidas, fotos, historial, notas del día, gastos por pagador, reintegros y cierre del evento. El modo offline y la operación multidispositivo forman parte de la base.
+
+Agrupación funcional de referencia:
+- Ventas rápidas y cobro.
+- Productos, fichas, fotos y QR.
+- Inventario, reservas, apartados y mermas.
+- Gastos, aportaciones, retiros y reembolsos.
+- Socios, colaboradores y jornadas.
+- Eventos, cierres y reportes.
+- Usuarios, dispositivos, sincronización y auditoría.
+
+Esta agrupación no obliga a que cada sección sea un servicio, repositorio o despliegue independiente.
+
+4. REGLAS DE VENTAS Y COBRO
+
+VEN-01 [CONFIRMADO] Una venta puede incluir varios productos y cantidades, con un cobro conjunto; por ejemplo, dos bonsáis y una maceta.
+VEN-02 [CONFIRMADO] El vendedor puede localizar el producto escaneando su QR o buscándolo por nombre cuando la etiqueta no exista, se desprenda o falle la lectura.
+VEN-03 [CONFIRMADO] El flujo normal debe permitir consultar el precio, registrar el cobro y marcar la venta, sin generar un ticket como requisito de operación.
+VEN-04 [CONFIRMADO] Para efectivo, el sistema debe calcular el cambio: efectivo recibido menos total. Ejemplo ilustrativo: recibido 500, total 400, cambio 100.
+VEN-05 [PROPUESTO] Calcular cambio será opcional para no frenar ventas con importe exacto. Evitar cerrar como pagada una venta cuyo efectivo recibido sea insuficiente; el tratamiento de pagos parciales corresponde a apartados, no a una venta normal liquidada.
+VEN-06 [PROPUESTO] Registrar el método de pago: efectivo, transferencia o tarjeta. Registrar un pago no equivale a procesarlo ni a verificarlo con una institución financiera.
+VEN-07 [CONFIRMADO] Permitir cambiar manualmente el precio aplicado y conservar que existió un descuento o ajuste respecto del precio de referencia.
+VEN-08 [CONFIRMADO] Permitir cancelar una venta por error, devolución o desistimiento, con el regreso del producto al inventario como comportamiento previsto. La condición de devoluciones dañadas, parciales y reembolsos requiere política específica.
+VEN-09 [PROPUESTO] Cada registro interno de venta conservará fecha, hora, productos, cantidades, precios efectivamente cobrados, método de pago, persona que atendió y dispositivo de origen.
+VEN-10 [PENDIENTE] Definir quién puede descontar, cancelar o devolver, qué motivos son obligatorios y cómo se registran reembolsos, pagos mixtos y comisiones.
+
+5. PRODUCTOS, FICHAS Y QR
+
+PRO-01 [CONFIRMADO] El sistema debe generar QR y permitir leerlos con la cámara de la tablet o teléfono para consultar información y precio.
+PRO-02 [CONFIRMADO] El catálogo contempla piezas únicas y productos repetidos controlados por cantidad. No debe obligar a registrar individualmente todas las unidades cuando sean equivalentes.
+PRO-03 [CONFIRMADO] Permitir fotos tomadas desde la tablet al dar de alta productos.
+PRO-04 [CONFIRMADO] Conservar el historial del producto: ingreso, costo, cambios de precio y venta.
+PRO-05 [PROPUESTO] Ficha general: nombre, categoría, foto, costo de compra, precio de venta, existencia, fecha de ingreso, proveedor y notas. Para plantas: especie, cuidados, riego, luz, interior/exterior, tamaño y edad aproximada cuando se conozca. Falta definir cuáles campos serán obligatorios.
+PRO-06 [PROPUESTO] El QR debe identificar el producto o la pieza mediante un identificador o URL estable, no contener precio y ficha completos. Así, actualizar información no requiere reimprimir la etiqueta.
+PRO-07 [PROPUESTO] Permitir imprimir etiquetas y separar la información comercial mostrable al cliente de datos internos como costo, margen y proveedor.
+PRO-08 [PENDIENTE] Definir identidad y etiqueta para productos por cantidad frente a piezas únicas, formato de impresión y permisos de consulta y edición.
+
+6. INVENTARIO, RESERVAS Y APARTADOS
+
+INV-01 [CONFIRMADO] Registrar entradas rápidas, incluyendo varias unidades iguales en una sola captura.
+INV-02 [CONFIRMADO] Las ventas deben descontar existencias; las cancelaciones y devoluciones deben registrar el movimiento inverso conforme a su resolución.
+INV-03 [CONFIRMADO] Registrar mermas o salidas no comerciales con motivo, como seco, dañado, roto, perdido o regalado. Deben distinguirse de una venta.
+INV-04 [CONFIRMADO] Permitir reservas internas con marcas como «no vender», «apartado» o «en exhibición». Falta precisar el efecto de cada estado sobre la disponibilidad de venta.
+INV-05 [CONFIRMADO] Incluir apartados cuando un cliente deje dinero y vuelva después. Su existencia pertenece al MVP; su política financiera y ciclo de vida aún no están cerrados.
+INV-06 [PROPUESTO] Conservar movimientos de inventario (entrada, venta, devolución, merma y ajuste) para explicar cómo se obtuvo la existencia actual.
+INV-07 [PENDIENTE] Definir vencimiento, anticipo mínimo, saldo, devolución del anticipo, liberación y datos de contacto de un apartado.
+INV-08 [PENDIENTE] Definir ajustes manuales, inventario inicial, tratamiento del stock insuficiente y venta concurrente de una misma pieza desde dispositivos desconectados. No se acordó permitir stock negativo ni una regla automática de resolución.
+
+7. GASTOS Y CONTROL FINANCIERO
+
+FIN-01 [CONFIRMADO] Registrar gastos necesarios para evaluar el negocio, especialmente alimentos y transporte/gasolina; también se contemplaron renta, estacionamiento e insumos.
+FIN-02 [CONFIRMADO] Identificar quién pagó y contemplar gastos pagados por una persona o compartidos. Distinguir cuánto corresponde al negocio de cualquier parte personal.
+FIN-03 [CONFIRMADO] Llevar el dinero pendiente de reintegrar cuando un socio pague algo que corresponde al negocio.
+FIN-04 [CONFIRMADO] Registrar las inversiones o aportaciones realizadas por cada socio, sin perder su historial individual.
+FIN-05 [PROPUESTO] Separar aportaciones de capital, pagos de gastos con dinero personal, reembolsos y retiros. Un retiro personal no se clasifica como gasto operativo por el solo hecho de salir de caja.
+FIN-06 [PROPUESTO] Mostrar una utilidad operativa de referencia: ventas menos costo de los productos vendidos menos gastos del negocio. No equivale automáticamente a efectivo disponible ni a utilidad repartible.
+FIN-07 [PROPUESTO] Evitar contar dos veces una misma erogación: el gasto y el reembolso al socio describen hechos distintos; el reembolso liquida un pendiente, no crea de nuevo el gasto original.
+FIN-08 [PENDIENTE] Acordar si cada aportación se devuelve, aumenta participación o se compensa antes de repartir utilidades. No se acordó reparto 50/50 ni ninguna otra fórmula.
+FIN-09 [PENDIENTE] Definir método de costeo, distribución de gastos comunes, valoración de mermas, moneda, redondeos, reinversión y momento de reconocimiento de ingresos y anticipos.
+
+8. SOCIOS, COLABORADORES Y JORNADAS
+
+PER-01 [CONFIRMADO] Cada socio tendrá una cuenta personal. El uso de una tablet compartida no debe obligar a cerrar e iniciar sesión para cada venta.
+PER-02 [CONFIRMADO] Registrar días u horas trabajadas por persona, porque los dos socios pueden aportar cantidades de trabajo distintas.
+PER-03 [CONFIRMADO] Contemplar apoyo ocasional de los hermanos de la pareja, además del trabajo de los socios.
+PER-04 [PROPUESTO] Distinguir socio de colaborador. Trabajar o registrar ventas no convierte automáticamente a una persona en socia ni le concede participación en utilidades.
+PER-05 [PROPUESTO] Registrar jornadas por persona, fecha, evento y horario u horas. Permitir documentar apoyo familiar sin pago o una compensación acordada por día u hora.
+PER-06 [PROPUESTO] Si existe pago a un colaborador por su trabajo, distinguirlo del reparto de utilidades; se propuso tratarlo como costo operativo del evento.
+PER-07 [PROPUESTO] En la caja compartida, distinguir la sesión autorizada del dispositivo de la identidad de quien atiende. Se sugirió selección rápida de persona o PIN; el mecanismo definitivo no fue acordado.
+PER-08 [PENDIENTE] Definir compensación de socios y colaboradores, validación de jornadas y matriz de permisos. Los roles administrador, vendedor y colaborador mencionados son propuestas, no una matriz aprobada.
+
+9. EVENTOS, CAJA Y REPORTES
+
+EVT-01 [CONFIRMADO] Registrar notas del día, por ejemplo lluvia, poca afluencia o condiciones especiales.
+EVT-02 [CONFIRMADO] El cierre del evento debe resumir ventas, gastos, utilidad, horas trabajadas y productos vendidos durante ese bazar.
+EVT-03 [PROPUESTO] Asociar ventas, gastos y jornadas con el bazar o evento para comparar resultados por lugar y fecha.
+EVT-04 [PROPUESTO] Contemplar apertura y cierre de caja: fondo inicial, movimientos de efectivo, efectivo esperado, conteo real y diferencias. Separar efectivo de transferencias y tarjetas.
+EVT-05 [PROPUESTO] Reportes básicos: ventas, gastos, inventario, mermas, productos vendidos, rentabilidad por evento, aportaciones y pendientes con socios.
+EVT-06 [PENDIENTE] Definir responsables y reglas de apertura/cierre, caja compartida frente a varias cajas, reaperturas y cierre con movimientos todavía sin sincronizar.
+
+10. DISPOSITIVOS, OFFLINE Y SINCRONIZACIÓN
+
+DIS-01 [CONFIRMADO] Solicitar un nombre para el dispositivo al iniciar su registro mediante inicio de sesión; se propuso hacerlo en el primer acceso, no en cada venta.
+DIS-02 [CONFIRMADO] Permitir operar desde la tablet principal y teléfonos como terminales del sistema de ventas. Esto no incluye automáticamente cobro bancario por tarjeta o contactless.
+DIS-03 [PROPUESTO] Registrar un identificador estable y estado de autorización por dispositivo; disponer de una sección para consultar dispositivos y revocar acceso.
+SYN-01 [CONFIRMADO] Guardar las operaciones localmente y enviarlas al servidor cuando haya internet. La falta de conexión no debe impedir continuar atendiendo.
+SYN-02 [PROPUESTO] Mantener descargado el catálogo necesario para consultar fichas y precios mediante QR sin conexión. Aplicar almacenamiento local a ventas, inventario, gastos y jornadas.
+SYN-03 [PROPUESTO] Sincronizar automáticamente una cola de operaciones pendientes. Cada operación tendrá identidad propia y conservará usuario, dispositivo y fecha para su trazabilidad.
+SYN-04 [PROPUESTO] El servidor validará operaciones, evitará duplicarlas ante reintentos y confirmará las recibidas; solo entonces podrán considerarse sincronizadas.
+SYN-05 [PROPUESTO] Mostrar estado de conexión y pendientes de forma discreta, sin bloquear el flujo de ventas.
+SYN-06 [PENDIENTE] Definir resolución de conflictos, cambios concurrentes de precio o producto, sobreventa y operaciones rechazadas. No se acordó «gana el último cambio» ni otra política automática.
+SYN-07 [PENDIENTE] Precisar preparación inicial, datos disponibles por dispositivo, sesiones offline, revocación sin conexión, recuperación ante pérdida del equipo y respaldo de operaciones aún no sincronizadas. Offline-first no implica conocer en tiempo real lo vendido en otro dispositivo desconectado.
+
+11. AUDITORÍA Y PROTECCIÓN DE INFORMACIÓN
+
+AUD-01 [PROPUESTO] Auditar ventas, cancelaciones, cambios de precio, entradas y salidas de inventario, gastos, aportaciones, retiros, reembolsos y acciones de sincronización.
+AUD-02 [PROPUESTO] Conservar quién hizo la operación, desde qué dispositivo y cuándo; en modificaciones relevantes, conservar también el cambio realizado y su motivo cuando corresponda.
+AUD-03 [PROPUESTO] No eliminar movimientos de dinero sin historial. Una cancelación o corrección debe poder relacionarse con su operación original.
+AUD-04 [PROPUESTO] Separar información pública/comercial de costos y finanzas internas; proteger las acciones sensibles con permisos y, cuando se acuerde, reautenticación.
+AUD-05 [PENDIENTE] Definir permisos, duración de sesiones, autenticación offline, retención del historial, protección de datos locales y mecanismos de respaldo. No se fijaron plazos, PIN obligatorio ni expiraciones.
+
+12. BASE TÉCNICA SEPARADA DE LAS REGLAS DEL NEGOCIO
+
+Decisiones confirmadas:
+TEC-01 Frontend y backend separados.
+TEC-02 Vue.js para frontend y NestJS para backend, aprovechando tecnologías que el usuario ya conoce.
+TEC-03 Backend como monolito modular para iniciar, en lugar de microservicios. Se aceptó mantener módulos delimitados sin multiplicar despliegues.
+TEC-04 Arquitectura offline-first como requisito fundamental.
+
+Propuestas técnicas de la conversación, sujetas a validar en el repositorio:
+TEC-05 Vue 3, Pinia y Vue Router; PWA e IndexedDB para almacenamiento local.
+TEC-06 API REST en NestJS y PostgreSQL como base central.
+TEC-07 JWT con refresh token, registro de dispositivos y cola local de sincronización.
+TEC-08 Organización modular por autenticación, usuarios, dispositivos, productos, inventario, ventas, gastos, miembros, jornadas/eventos, sincronización y auditoría. No se cerraron nombres ni estructura definitiva.
+TEC-09 ESM con Vitest fue la recomendación ante el asistente de creación de NestJS. No hay evidencia en la conversación de la selección final ni de pruebas ejecutadas.
+TEC-10 Se recomendó no agregar @nestjs/observe al arranque. No se verificó la configuración efectiva del proyecto.
+
+No se requiere adoptar microservicios, event sourcing completo, bibliotecas adicionales o decoradores personalizados por el solo hecho de este documento. La conversación no fija ORM, alojamiento, proveedor de pagos ni esquema final de base de datos.
+
+13. FUNCIONES NO COMPROMETIDAS PARA EL ARRANQUE
+
+Se mencionaron como posibles evoluciones, no como obligaciones del MVP: predicción de ventas, fidelización de clientes, tickets personalizados, WhatsApp, múltiples sucursales, recomendaciones con IA, estadísticas avanzadas y microservicios. Proveedores con gestión completa, alertas de stock y análisis avanzado de antigüedad también quedaron como ideas; no deben confundirse con campos básicos del catálogo o reportes operativos.
+
+La integración de una terminal bancaria requiere una definición y proveedor separados. No es necesaria para usar un teléfono como punto de venta del sistema.
+
+14. DECISIONES PENDIENTES ANTES DE CERRAR EL MODELO
+
+PEN-01 Modelo financiero entre socios: capital, devoluciones, pago por trabajo, retiros, reinversión y reparto de utilidades.
+PEN-02 Colaboradores: compensación, registro de apoyo sin pago y permisos.
+PEN-03 Apartados y reservas: estados, disponibilidad, anticipo, vencimiento, cancelación y devolución.
+PEN-04 Ventas: límites de descuento, autorizaciones, devoluciones parciales o dañadas, pagos y reembolsos.
+PEN-05 Inventario: identidad por pieza/cantidad, costeo, ajustes y tratamiento de conflictos offline.
+PEN-06 Caja y eventos: responsables, varias terminales, diferencias y cierre con sincronización pendiente.
+PEN-07 Seguridad y continuidad: acceso offline, identificación en tablet compartida, revocación, respaldo y recuperación.
+PEN-08 Datos y configuración: campos obligatorios, moneda y redondeo, impresión de etiquetas y confirmación del stack complementario.
+
+Hasta resolver estas políticas, el sistema debe poder registrar hechos sin inventar automáticamente repartos, compensaciones o resoluciones de conflictos. Los pendientes no reducen el alcance confirmado: delimitan qué reglas todavía necesitan aprobación antes de implementarse.
+
+FIN DEL DOCUMENTO
