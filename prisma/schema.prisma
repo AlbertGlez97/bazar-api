@@ -13,18 +13,37 @@ enum ProductType {
   cantidad
 }
 
+enum MemberRole {
+  socio
+  colaborador
+}
+
+model Account {
+  id           String   @id @default(uuid()) @db.Uuid
+  username     String   @unique
+  passwordHash String
+  contextId    String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+}
+
 model Member {
-  id        String   @id @default(uuid()) @db.Uuid
+  id        String     @id @default(uuid()) @db.Uuid
   name      String
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  role      MemberRole @default(colaborador)
+  contextId String     @default("legacy-unassigned")
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
   sales     Sale[]
 }
 
 model Device {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  sales     Sale[]
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  identifier String   @unique @default(uuid())
+  contextId  String   @default("legacy-unassigned")
+  authorized Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  sales      Sale[]
 }
 
 model Product {
