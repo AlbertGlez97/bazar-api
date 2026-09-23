@@ -54,6 +54,15 @@ model Member {
   // IncidenciasService, not at the schema level): colaboradores never
   // resolve incidencias.
   resolvedIncidencias Incidencia[]
+  // Individual commission percentage override, expressed in basis points
+  // (1 bp = 0.01%, so 1000 = 10.00%) rather than a Decimal, matching the
+  // rest of the project's convention of using integers for anything
+  // money/percentage-related to avoid floating-point drift. Null means
+  // "no override" — CommissionsService falls back to
+  // AppSettings.defaultCommissionRateBps. Meaningful only for
+  // role="colaborador" (enforced in CommissionsService, not here); a
+  // socio is never paid a sales commission.
+  commissionRateBps Int?
 }
 
 model Device {
@@ -175,4 +184,25 @@ model Incidencia {
   resolvedBy         Member?                    @relation(fields: [resolvedByMemberId], references: [id])
 
   @@index([resolutionStatus, detectedAt, id])
+}
+
+// A single settings row per context (contextId as primary key, not a
+// synthetic id), matching every other model's context-scoping convention
+// rather than being a truly global singleton across the whole database —
+// each bazar "context" (a distinct authorized deployment/tenant, and in
+// tests, a distinct throwaway fixture) configures its own default
+// commission percentage independently. Modeled as one purpose-built table
+// (not a generic key-value Setting store) because there is exactly one
+// setting to hold today; a key-value table would only add indirection
+// (string-keyed, stringly-typed values) for no present benefit.
+model AppSettings {
+  contextId String @id
+  // Basis points (1 bp = 0.01%; 1000 = 10.00%), same integer convention as
+  // Member.commissionRateBps. Applies to every colaborador in this context
+  // that has no individual commissionRateBps override. Defaults to 0
+  // (no commission) rather than some non-zero placeholder, so a context
+  // that never explicitly configures this does not silently start owing
+  // commissions on every sale.
+  defaultCommissionRateBps Int      @default(0)
+  updatedAt                DateTime @updatedAt @db.Timestamptz(3)
 }
