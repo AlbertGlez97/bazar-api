@@ -27,7 +27,7 @@ export abstract class StorageService {
 
 @Injectable()
 export class LocalStorageService extends StorageService {
-  readonly root = resolve(process.env.PRODUCT_UPLOAD_DIR ?? 'uploads/products');
+  readonly root = resolve(process.env.PRODUCT_UPLOAD_DIR || 'uploads/products');
   private key(key: string) {
     // Keys are always our own randomUUID().png, never a client-supplied
     // filename; this also blocks path traversal (`../`) if a stored key is

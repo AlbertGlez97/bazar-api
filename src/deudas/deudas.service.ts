@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { multiply, subtract } from 'dinero.js';
+import { add, multiply, subtract } from 'dinero.js';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma, type Abono, type Deuda } from '../generated/prisma/client.js';
@@ -302,7 +302,9 @@ export class DeudasService {
         },
       });
 
-      const newPaidMinor = paidMinor + dto.montoMinor;
+      const newPaidMinor = toMinorUnits(
+        add(toDinero(paidMinor), toDinero(dto.montoMinor)),
+      );
       if (newPaidMinor >= existing.totalMinor) {
         await tx.deuda.update({
           where: { id: deudaId },

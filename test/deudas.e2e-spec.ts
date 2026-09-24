@@ -227,13 +227,18 @@ describe('deudas (BE-09)', () => {
       .expect(201);
     expect(created.body.totalMinor).toBe(60_00);
 
+    await asColaborador(
+      request(app.getHttpServer()).post(`/deudas/${created.body.id}/abonos`),
+    )
+      .send({ montoMinor: 20_00 })
+      .expect(201);
     const res = await asColaborador(
       request(app.getHttpServer()).post(`/deudas/${created.body.id}/abonos`),
     )
-      .send({ montoMinor: 60_00 })
+      .send({ montoMinor: 40_00 })
       .expect(201);
     expect(res.body.status).toBe('saldada');
-    expect(res.body.abonos).toHaveLength(1);
+    expect(res.body.abonos).toHaveLength(2);
   });
 
   it('an abono exceeding the remaining balance is rejected with 400 and not applied', async () => {
