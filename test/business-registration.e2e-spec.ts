@@ -360,6 +360,69 @@ describe('business registration (BE-11)', () => {
     expect(stored?.createdContextId).toBeNull();
   });
 
+  describe('stored XSS in the status pages', () => {
+    // Public form input reaches an HTML page opened in the approver's
+    // browser: it must be rendered as text, never as markup.
+    const registerHostile = async (nombreNegocio: string) => {
+      await request(app.getHttpServer())
+        .post('/api/v1/business-registration')
+        .send({
+          nombreNegocio,
+          nombreSocio: 'Socio Hostil',
+          contactoSocio: 'hostil@example.com',
+        })
+        .expect(201);
+      return sendApprovalEmail.mock.calls[0][0] as {
+        approveUrl: string;
+        rejectUrl: string;
+      };
+    };
+
+    it('escapes the business name on the approve page', async () => {
+      const { approveUrl } = await registerHostile(
+        name('<script>alert(1)</script>'),
+      );
+
+      const res = await request(app.getHttpServer())
+        .get(emailPath(approveUrl))
+        .expect(200);
+
+      expect(res.text).not.toContain('<script>');
+      expect(res.text).toContain(
+        `&lt;script&gt;alert(1)&lt;/script&gt; ${run}`,
+      );
+    });
+
+    it('escapes the business name on the reject page', async () => {
+      const { rejectUrl } = await registerHostile(
+        name('<script>alert(1)</script>'),
+      );
+
+      const res = await request(app.getHttpServer())
+        .get(emailPath(rejectUrl))
+        .expect(200);
+
+      expect(res.text).not.toContain('<script>');
+      expect(res.text).toContain(
+        `&lt;script&gt;alert(1)&lt;/script&gt; ${run}`,
+      );
+    });
+
+    it('escapes quotes and ampersands too (attribute-breaking payloads)', async () => {
+      const hostile = name(`"><img src=x onerror='a&b'>`);
+      const { rejectUrl } = await registerHostile(hostile);
+
+      const res = await request(app.getHttpServer())
+        .get(emailPath(rejectUrl))
+        .expect(200);
+
+      expect(res.text).not.toContain('<img');
+      expect(res.text).toContain(
+        `&quot;&gt;&lt;img src=x onerror=&#39;a&amp;b&#39;&gt; ${run}`,
+      );
+    });
+  });
+
   it('returns an invalid-link page for a token that does not match any request', async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/business-registration/approve')

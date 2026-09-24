@@ -82,6 +82,27 @@ describe('EmailService.sendBusinessRegistrationApprovalEmail', () => {
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining(API_KEY));
   });
 
+  it('escapes user-supplied text in the approval email HTML', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_xss' }, error: null });
+
+    await new EmailService().sendBusinessRegistrationApprovalEmail({
+      ...input,
+      nombreNegocio: '<script>alert(1)</script>',
+      nombreSocio: `"><img src=x onerror='a&b'>`,
+      contactoSocio: '<b>555</b>',
+    });
+
+    const { html } = send.mock.calls[0][0] as { html: string };
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<b>');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).toContain(
+      '&quot;&gt;&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;',
+    );
+    expect(html).toContain('&lt;b&gt;555&lt;/b&gt;');
+  });
+
   it('still fails fast when the approver address is not configured', async () => {
     vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', '');
 

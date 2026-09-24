@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
+import { escapeHtml } from '../common/escape-html.js';
 
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
@@ -71,16 +72,6 @@ export class EmailService {
       );
     this.logger.log(`Approval email accepted by Resend (id ${data?.id})`);
   }
-}
-
-/** Escapes untrusted user-supplied text before interpolating it into HTML. */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function renderApprovalEmailHtml(
