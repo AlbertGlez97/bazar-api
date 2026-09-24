@@ -27,7 +27,15 @@ const TENANT_SCOPED_MODELS = new Set([
   'Device',
 ]);
 
-const modelPropertyName = (model: string) =>
+// Prisma 7 no longer exports a named `TransactionOptions` type; this is the
+// shape of the second `$transaction` parameter in the generated client.
+interface TransactionOptions {
+  maxWait?: number;
+  timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+}
+
+const modelPropertyName =(model: string) =>
   model.charAt(0).toLowerCase() + model.slice(1);
 
 // Operations whose `where` is where a scoped filter belongs. findUnique/
@@ -64,26 +72,30 @@ function explicitContextId(operation: string, args: unknown): string | undefined
   return where?.contextId as string | undefined;
 }
 
-function injectArgs(operation: string, args: unknown, contextId: string): unknown {
+// Generic so the patched args keep the exact type of the operation's own
+// args (the extension's `query()` only accepts that type); the additions
+// are structurally valid for every tenant-scoped model, which is not
+// something the compiler can prove across the whole model/operation union.
+function injectArgs<T>(operation: string, args: T, contextId: string): T {
   const a = (args ?? {}) as Record<string, unknown>;
   if (operation === 'create')
-    return { ...a, data: { contextId, ...(a.data as object) } };
+    return { ...a, data: { contextId, ...(a.data as object) } } as T;
   if (operation === 'createMany') {
     const data = a.data;
     const rows = Array.isArray(data) ? data : [data];
     return {
       ...a,
       data: rows.map((row) => ({ contextId, ...(row as object) })),
-    };
+    } as T;
   }
   if (WHERE_OPERATIONS.has(operation)) {
-    const where = { ...((a.where as object) ?? {}), contextId };
+    const where = { ...(a.where as object), contextId };
     const patched: Record<string, unknown> = { ...a, where };
     if (operation === 'upsert')
-      patched.create = { contextId, ...((a.create as object) ?? {}) };
-    return patched;
+      patched.create = { contextId, ...(a.create as object) };
+    return patched as T;
   }
-  return a;
+  return a as T;
 }
 
 /**
@@ -121,6 +133,35 @@ function injectArgs(operation: string, args: unknown, contextId: string): unknow
  * `items`/`incidencias` nested payloads).
  */
 export function tenantIsolationExtension(baseClient: PrismaClient) {
+  // The real, un-overridden `$transaction` (see the override below).
+  const rawTransaction = Reflect.get(baseClient, '$transaction') as (
+    this: unknown,
+    ...args: unknown[]
+  ) => unknown;
+  // Opens a real interactive transaction on `receiver` (the extended
+  // client, so `tx` keeps the tenant query extension), sets the RLS
+  // session variable as its first statement when a tenant is active, and
+  // flags the callback's async chain as managed. Shared by the public
+  // `$transaction` override and the standalone-call promotion below; the
+  // latter deliberately does NOT go back through the public
+  // `$transaction` property, so it stays an internal detail (and cannot
+  // be intercepted by anything wrapping that public method).
+  const runManagedTransaction = (
+    receiver: unknown,
+    fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+    options?: TransactionOptions,
+  ) =>
+    rawTransaction.call(
+      receiver,
+      async (tx: Prisma.TransactionClient) => {
+        const contextId = getActiveContextIdOrUndefined();
+        if (contextId) {
+          await tx.$executeRaw`SELECT set_config('app.context_id', ${contextId}, true)`;
+        }
+        return withManagedTransactionFlag(() => fn(tx));
+      },
+      options,
+    );
   let self: unknown;
   const extended = baseClient.$extends({
     name: 'tenant-isolation',
@@ -131,18 +172,28 @@ export function tenantIsolationExtension(baseClient: PrismaClient) {
       // this codebase and is intentionally left unmodified/passed
       // through — it never opens an interactive transaction callback, so
       // there is no single point within it to run `set_config` first.
+      //
+      // Root cause of the infinite recursion this used to have: the
+      // override called `Prisma.getExtensionContext(this).$transaction`,
+      // but the extension context IS the extended client, so that call
+      // resolved to this very override again. The original
+      // (un-overridden) implementation is therefore taken from the
+      // unextended `baseClient`, and invoked with the extended client as
+      // `this`: Prisma builds the interactive transaction client from the
+      // receiver's extensions, so `tx` keeps going through the tenant
+      // query extension below (calling it as `baseClient.$transaction(...)`
+      // would yield a `tx` with no extension at all, i.e. no app-layer
+      // filter on any nested call).
       $transaction(...args: unknown[]) {
-        const ctx = Prisma.getExtensionContext(this) as unknown as PrismaClient;
-        if (typeof args[0] !== 'function') return (ctx.$transaction as (...a: unknown[]) => unknown)(...args);
-        const fn = args[0] as (tx: unknown) => unknown;
-        const options = args[1];
-        return ctx.$transaction(async (tx) => {
-          const contextId = getActiveContextIdOrUndefined();
-          if (contextId) {
-            await tx.$executeRaw`SELECT set_config('app.context_id', ${contextId}, true)`;
-          }
-          return withManagedTransactionFlag(() => fn(tx));
-        }, options as Prisma.TransactionOptions<unknown>);
+        const receiver = Prisma.getExtensionContext(this);
+        if (typeof args[0] !== 'function')
+          return rawTransaction.apply(receiver, args);
+        const fn = args[0] as (tx: Prisma.TransactionClient) => Promise<unknown>;
+        return runManagedTransaction(
+          receiver,
+          fn,
+          args[1] as TransactionOptions | undefined,
+        );
       },
     },
     query: {
@@ -162,7 +213,7 @@ export function tenantIsolationExtension(baseClient: PrismaClient) {
           // args — the recursive $allOperations invocation this triggers
           // will see `insideManagedTransaction === true` and inject
           // exactly once.
-          return (self as PrismaClient).$transaction(async (tx) => {
+          return runManagedTransaction(self, async (tx) => {
             const delegate = (tx as unknown as Record<string, Record<string, (a: unknown) => unknown>>)[
               modelPropertyName(model)
             ];

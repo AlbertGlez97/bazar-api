@@ -28,21 +28,27 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  */
 interface TenantStore {
   contextId?: string;
-  // True only for the duration of a $transaction callback body opened by
-  // PrismaService's tenant-aware $transaction override (or the
-  // extension's own single-operation wrapper for a standalone call) —
-  // lets the extension tell "already inside a transaction that already
-  // set the RLS session variable" apart from "top-level call that still
-  // needs one opened for it", without inspecting Prisma's internal
-  // client/transaction objects at all.
-  insideManagedTransaction: boolean;
 }
 
 const als = new AsyncLocalStorage<TenantStore>();
 
+// True only for the async chain of a $transaction callback body opened by
+// the tenant-aware $transaction override (or the extension's own
+// single-operation wrapper for a standalone call) — lets the extension
+// tell "already inside a transaction that already set the RLS session
+// variable" apart from "top-level call that still needs one opened for
+// it", without inspecting Prisma's internal client/transaction objects at
+// all. It lives in its own AsyncLocalStorage (scoped with `run`) instead
+// of a mutable field on TenantStore: a field flipped around a synchronous
+// `fn()` call is already restored by the time the transaction's own
+// awaited queries run (the callback returns a promise), which made every
+// nested call look "standalone" and re-open a transaction; it would also
+// leak into concurrent, non-transactional calls of the same request.
+const managedTransaction = new AsyncLocalStorage<true>();
+
 /** Establishes a fresh, empty per-request store; see {@link TenantContextMiddleware}. */
 export function runInFreshTenantScope<T>(fn: () => T): T {
-  return als.run({ contextId: undefined, insideManagedTransaction: false }, fn);
+  return als.run({ contextId: undefined }, fn);
 }
 
 /**
@@ -77,34 +83,24 @@ export function hasRequestScope(): boolean {
 }
 
 export function isInsideManagedTransaction(): boolean {
-  return als.getStore()?.insideManagedTransaction ?? false;
+  return managedTransaction.getStore() ?? false;
 }
 
 /**
- * Flags the current async chain as "already inside a managed
- * transaction" for the duration of `fn`, so nested tenant-scoped Prisma
- * calls made from within it are not each wrapped in their own extra
- * transaction. Restores the previous value afterwards (rather than
- * unconditionally clearing it) so this composes correctly if a managed
- * transaction is ever opened from inside another one.
+ * Flags the async chain started by `fn` (including everything it awaits)
+ * as "already inside a managed transaction", so nested tenant-scoped
+ * Prisma calls made from within it are not each wrapped in their own
+ * extra transaction. The flag ends when `fn` settles and is invisible to
+ * concurrent calls; a nested flag simply leaves the outer one in place.
  *
- * Falls back to just running `fn` unmodified when there is no request
- * scope at all (e.g. the seed script, or a test calling `$transaction`
- * directly on the injected client outside any HTTP request) — there is
- * nothing to flag, and nothing downstream depends on the flag in that
- * case either, since {@link resolveTenantAccess} already treats a missing
- * store as unrestricted access.
+ * Works with or without a request scope (e.g. the seed script, or a test
+ * calling `$transaction` directly on the injected client outside any
+ * HTTP request) — nothing downstream depends on the flag in that case,
+ * since {@link resolveTenantAccess} already treats a missing store as
+ * unrestricted access.
  */
 export function withManagedTransactionFlag<T>(fn: () => T): T {
-  const store = als.getStore();
-  if (!store) return fn();
-  const previous = store.insideManagedTransaction;
-  store.insideManagedTransaction = true;
-  try {
-    return fn();
-  } finally {
-    store.insideManagedTransaction = previous;
-  }
+  return managedTransaction.run(true, fn);
 }
 
 /**
