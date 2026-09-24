@@ -58,6 +58,14 @@ model Member {
   role          MemberRole     @default(colaborador)
   contextId     String         @default("legacy-unassigned")
   createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  // Soft delete (BE-10): a deactivated colaborador cannot be selected as
+  // the acting member (ContextGuard) and disappears from the default
+  // GET /members listing, but every historical row still referencing this
+  // Member (Sale, ProductAudit, Incidencia, Deuda, Abono, Commission
+  // calculation) remains fully intact and queryable. A socio can never be
+  // deactivated through this mechanism (enforced in MembersService, not
+  // here) — socios are owners, not removable staff.
+  active        Boolean        @default(true)
   sales         Sale[]
   productAudits ProductAudit[]
   // Only ever populated for a Member whose role is "socio" (enforced in
@@ -104,6 +112,13 @@ model Product {
   supplier          String?
   notes             String?
   createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+  // Soft delete (BE-10): a deactivated product disappears from the
+  // default catalog listing and cannot be sold or fiado/apartado'd even
+  // if it still has stock > 0, but the row itself (and every historical
+  // reference to it — SaleItem, ProductAudit, Deuda) is preserved rather
+  // than deleted, so past sales/audits/deudas keep working exactly as
+  // before deactivation.
+  active            Boolean        @default(true)
   saleItems         SaleItem[]
   audits            ProductAudit[]
   deudas            Deuda[]
