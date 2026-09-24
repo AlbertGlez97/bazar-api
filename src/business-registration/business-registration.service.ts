@@ -48,7 +48,12 @@ function baseUrl(): string {
  * tenant-isolation extension treats as the source of truth when no
  * request-scoped contextId is active — this is the documented
  * "bootstrapping a brand-new tenant from a public endpoint" escape
- * hatch.
+ * hatch for the application layer. The database layer needs the same
+ * thing: Postgres RLS denies every write to a tenant table unless the
+ * session variable `app.context_id` matches the row, so `approve` sets
+ * it (transaction-local) to the brand-new contextId before creating the
+ * Member. Without that, the INSERT is rejected with SQLSTATE 42501 —
+ * invisible while the app connected as a superuser, which bypasses RLS.
  */
 @Injectable()
 export class BusinessRegistrationService {
@@ -104,6 +109,7 @@ export class BusinessRegistrationService {
   async approve(token: string): Promise<HtmlPageResult> {
     return this.resolve(token, async (tx, request) => {
       const contextId = createServerId();
+      await tx.$executeRaw`SELECT set_config('app.context_id', ${contextId}, true)`;
       await tx.member.create({
         data: {
           id: createServerId(),
