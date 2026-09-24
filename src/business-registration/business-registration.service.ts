@@ -164,7 +164,7 @@ export class BusinessRegistrationService {
         nombreSocio: string;
         contactoSocio: string;
       },
-    ) => Promise<HtmlPageResult>,
+    ) => Promise<string>,
   ): Promise<HtmlPageResult> {
     const approvalTokenHash = hashToken(token);
     const request = await this.prisma.businessRegistrationRequest.findFirst({
