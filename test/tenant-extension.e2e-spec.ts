@@ -18,11 +18,15 @@ describe('tenant isolation extension ($transaction)', () => {
   const b = `tx-ext-b-${randomUUID()}`;
   beforeAll(async () => {
     await base.$connect();
+    // Strict RLS applies to the runtime role: fixtures need a tenant scope.
     for (const c of [a, b])
-      await prisma.member.create({ data: { name: `m-${c}`, role: 'socio', contextId: c } });
+      await withTestTenant(c, () =>
+        prisma.member.create({ data: { name: `m-${c}`, role: 'socio', contextId: c } }),
+      );
   });
   afterAll(async () => {
-    await base.member.deleteMany({ where: { contextId: { in: [a, b] } } });
+    for (const c of [a, b])
+      await withTestTenant(c, () => prisma.member.deleteMany({ where: { contextId: c } }));
     await base.$disconnect();
   });
   it('scopes a standalone call to the active context', async () => {
@@ -47,6 +51,6 @@ describe('tenant isolation extension ($transaction)', () => {
   it('injects contextId into a standalone create', async () => {
     const m = await withTestTenant(b, () => prisma.member.create({ data: { name: 'x', role: 'socio' } as never }));
     expect(m.contextId).toBe(b);
-    await base.member.delete({ where: { id: m.id } });
+    await withTestTenant(b, () => prisma.member.delete({ where: { id: m.id } }));
   });
 });
