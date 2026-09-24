@@ -41,7 +41,7 @@ export function configureApiDocs(app: NestExpressApplication): void {
   }
 
   app.use(
-    '/docs',
+    ['/docs', '/docs-json', '/docs-yaml'],
     basicAuth({
       users: { [user]: password },
       challenge: true,
