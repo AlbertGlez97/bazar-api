@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
@@ -21,6 +22,12 @@ describe('business registration (BE-11)', () => {
   let prisma: PrismaService;
   let sendApprovalEmail: ReturnType<typeof vi.fn>;
 
+  // Business names are unique per run: the test database persists between
+  // runs and these specs look requests up by name, so a fixed name would
+  // also match rows left behind by an earlier (or crashed) run.
+  const run = randomUUID();
+  const name = (label: string) => `${label} ${run}`;
+
   const extractToken = (url: string) => new URL(url).searchParams.get('token')!;
 
   beforeAll(async () => {
@@ -37,6 +44,18 @@ describe('business registration (BE-11)', () => {
   });
 
   afterAll(async () => {
+    const requests = await prisma.businessRegistrationRequest.findMany({
+      where: { nombreNegocio: { endsWith: run } },
+    });
+    for (const { createdContextId } of requests) {
+      if (createdContextId)
+        await withTestTenant(createdContextId, () =>
+          prisma.member.deleteMany({ where: { contextId: createdContextId } }),
+        );
+    }
+    await prisma.businessRegistrationRequest.deleteMany({
+      where: { nombreNegocio: { endsWith: run } },
+    });
     await app.close();
   });
 
@@ -48,7 +67,7 @@ describe('business registration (BE-11)', () => {
     const res = await request(app.getHttpServer())
       .post('/business-registration')
       .send({
-        nombreNegocio: 'Bonsáis del Alberto',
+        nombreNegocio: name('Bonsáis del Alberto'),
         nombreSocio: 'Alberto',
         contactoSocio: 'alberto@example.com',
       })
@@ -57,7 +76,7 @@ describe('business registration (BE-11)', () => {
     expect(res.body.status).toBe('pendiente');
     expect(sendApprovalEmail).toHaveBeenCalledTimes(1);
     const call = sendApprovalEmail.mock.calls[0][0];
-    expect(call.nombreNegocio).toBe('Bonsáis del Alberto');
+    expect(call.nombreNegocio).toBe(name('Bonsáis del Alberto'));
     expect(typeof call.approveUrl).toBe('string');
     expect(typeof call.rejectUrl).toBe('string');
   });
@@ -66,7 +85,7 @@ describe('business registration (BE-11)', () => {
     await request(app.getHttpServer())
       .post('/business-registration')
       .send({
-        nombreNegocio: 'Bolsas de Adid',
+        nombreNegocio: name('Bolsas de Adid'),
         nombreSocio: 'Adid',
         contactoSocio: 'adid@example.com',
       })
@@ -82,7 +101,7 @@ describe('business registration (BE-11)', () => {
     expect(res.text).toMatch(/aprobado/i);
 
     const stored = await prisma.businessRegistrationRequest.findFirst({
-      where: { nombreNegocio: 'Bolsas de Adid' },
+      where: { nombreNegocio: name('Bolsas de Adid') },
     });
     expect(stored?.status).toBe('aprobado');
     expect(stored?.createdContextId).toBeTruthy();
@@ -100,7 +119,7 @@ describe('business registration (BE-11)', () => {
     await request(app.getHttpServer())
       .post('/business-registration')
       .send({
-        nombreNegocio: 'Lucha Libre Negocio',
+        nombreNegocio: name('Lucha Libre Negocio'),
         nombreSocio: 'Rudo Anonimo',
         contactoSocio: '555-0000',
       })
@@ -115,7 +134,7 @@ describe('business registration (BE-11)', () => {
     expect(res.text).toMatch(/rechazad/i);
 
     const stored = await prisma.businessRegistrationRequest.findFirst({
-      where: { nombreNegocio: 'Lucha Libre Negocio' },
+      where: { nombreNegocio: name('Lucha Libre Negocio') },
     });
     expect(stored?.status).toBe('rechazado');
     expect(stored?.createdContextId).toBeNull();
@@ -125,7 +144,7 @@ describe('business registration (BE-11)', () => {
     await request(app.getHttpServer())
       .post('/business-registration')
       .send({
-        nombreNegocio: 'Artículos Varios',
+        nombreNegocio: name('Artículos Varios'),
         nombreSocio: 'Socia Fundadora',
         contactoSocio: 'socia@example.com',
       })
@@ -144,7 +163,7 @@ describe('business registration (BE-11)', () => {
     expect(second.text).toMatch(/ya fue procesado/i);
 
     const stored = await prisma.businessRegistrationRequest.findFirst({
-      where: { nombreNegocio: 'Artículos Varios' },
+      where: { nombreNegocio: name('Artículos Varios') },
     });
     const founders = await withTestTenant(stored!.createdContextId!, () =>
       prisma.member.findMany({
@@ -158,7 +177,7 @@ describe('business registration (BE-11)', () => {
     await request(app.getHttpServer())
       .post('/business-registration')
       .send({
-        nombreNegocio: 'Negocio Expirado',
+        nombreNegocio: name('Negocio Expirado'),
         nombreSocio: 'Fundador Tardío',
         contactoSocio: 'tarde@example.com',
       })
@@ -167,7 +186,7 @@ describe('business registration (BE-11)', () => {
     const token = extractToken(approveUrl);
 
     await prisma.businessRegistrationRequest.updateMany({
-      where: { nombreNegocio: 'Negocio Expirado' },
+      where: { nombreNegocio: name('Negocio Expirado') },
       data: { tokenExpiresAt: new Date(Date.now() - 1000) },
     });
 
@@ -178,7 +197,7 @@ describe('business registration (BE-11)', () => {
     expect(res.text).toMatch(/expiró/i);
 
     const stored = await prisma.businessRegistrationRequest.findFirst({
-      where: { nombreNegocio: 'Negocio Expirado' },
+      where: { nombreNegocio: name('Negocio Expirado') },
     });
     expect(stored?.status).toBe('pendiente');
     expect(stored?.createdContextId).toBeNull();

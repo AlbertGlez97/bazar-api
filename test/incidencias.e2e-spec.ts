@@ -81,7 +81,10 @@ describe('incidencias (BE-07 part 2)', () => {
           cashReceivedMinor: 100,
           changeMinor: 0,
           items: {
+            // Nested relation writes are not seen by the tenant extension (BE-11),
+            // so the item's contextId is set by hand.
             create: {
+              contextId,
               productId: product.id,
               quantity: 1,
               unitPriceMinor: 100,

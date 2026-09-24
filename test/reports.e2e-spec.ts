@@ -73,7 +73,10 @@ describe('reports (BE-08)', () => {
             data.status === 'rechazada_por_conflicto'
               ? undefined
               : {
+                  // Nested relation writes are not seen by the tenant extension (BE-11),
+                  // so the item's contextId is set by hand.
                   create: {
+                    contextId,
                     productId: product.id,
                     quantity: 1,
                     unitPriceMinor: data.totalMinor,

@@ -127,7 +127,7 @@ describe('soft delete (BE-10)', () => {
         });
         await prisma.deudor.deleteMany({ where: { contextId } });
         await prisma.saleItem.deleteMany({
-          where: { sale: { deviceId, product: { contextId } } },
+          where: { sale: { deviceId } },
         });
         await prisma.sale.deleteMany({ where: { deviceId } });
         await prisma.productAudit.deleteMany({
@@ -211,7 +211,7 @@ describe('soft delete (BE-10)', () => {
       ).expect(200);
 
       const history = await request(app.getHttpServer())
-        .get(`/sales/${saleRes.body.sale.id}`)
+        .get(`/sales/${saleRes.body.id}`)
         .auth(socioToken, { type: 'bearer' })
         .set('x-member-id', socioMemberId)
         .set('x-device-id', deviceId)
