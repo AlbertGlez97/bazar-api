@@ -8,6 +8,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { PrismaService } from '../database/prisma.service.js';
+import { setActiveContextId } from '../database/tenant-context.js';
 import { isUUID } from 'class-validator';
 
 export interface AuthenticatedRequest extends Request {
@@ -29,6 +30,17 @@ export interface AuthenticatedRequest extends Request {
  * The account is re-read from the database on every request instead of
  * trusting the JWT payload, so revoking or deactivating an account takes
  * effect immediately, even for a still-unexpired token.
+ *
+ * Also establishes this request's active tenant (BE-11) by recording
+ * `account.contextId` into the AsyncLocalStorage-based store that
+ * {@link TenantContextMiddleware} already opened for this request, before
+ * this guard even ran — every downstream guard/controller/service call
+ * that touches a tenant-scoped model (via the Prisma tenant-isolation
+ * extension) relies on this having happened. Deliberately done here
+ * rather than in the more narrowly-scoped {@link ContextGuard}: several
+ * endpoints that only require this guard (`GET /products`, `GET
+ * /members`, `POST /devices/identify`) still read/write tenant-scoped
+ * models, and would otherwise never have a contextId established.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -60,6 +72,7 @@ export class AuthGuard implements CanActivate {
     });
     if (!account) throw new UnauthorizedException();
     request.account = account;
+    setActiveContextId(account.contextId);
     return true;
   }
 }

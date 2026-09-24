@@ -1,7 +1,8 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { DatabaseModule } from './database/database.module.js';
+import { TenantContextMiddleware } from './database/tenant-context.middleware.js';
 import { AuthModule } from './auth/auth.module.js';
 import { MembersModule } from './members/members.module.js';
 import { DevicesController } from './devices/devices.controller.js';
@@ -11,6 +12,7 @@ import { IncidenciasModule } from './incidencias/incidencias.module.js';
 import { CommissionsModule } from './commissions/commissions.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { DeudasModule } from './deudas/deudas.module.js';
+import { BusinessRegistrationModule } from './business-registration/business-registration.module.js';
 
 @Module({
   imports: [
@@ -23,8 +25,16 @@ import { DeudasModule } from './deudas/deudas.module.js';
     CommissionsModule,
     ReportsModule,
     DeudasModule,
+    BusinessRegistrationModule,
   ],
   controllers: [AppController, DevicesController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // BE-11: establishes the per-request tenant scope before any guard
+    // runs; see TenantContextMiddleware's own doc comment.
+    consumer.apply(TenantContextMiddleware).forRoutes('*');
+  }
+}
+
