@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { configureTestDatabase } from './test-environment.ts';
+import { configureTestMigration } from './test-environment.ts';
 
-configureTestDatabase();
+// Migrations run as the owner (DATABASE_URL_TEST_MIGRATE, falling back to
+// DATABASE_URL_TEST); the tests themselves connect as the runtime role. Run
+// `npm run db:provision:test` afterwards (db:migrate:test chains it).
+configureTestMigration();
 const result = spawnSync(
   process.execPath,
   ['node_modules/prisma/build/index.js', 'migrate', 'deploy'],

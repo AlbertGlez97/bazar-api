@@ -20,7 +20,9 @@
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
-    "db:migrate:test": "node scripts/migrate-test.mjs",
+    "db:provision": "node scripts/provision-app-role.mjs dev",
+    "db:provision:test": "node scripts/provision-app-role.mjs test",
+    "db:migrate:test": "node scripts/migrate-test.mjs && node scripts/provision-app-role.mjs test",
     "prisma:generate": "prisma generate"
   },
   "dependencies": {

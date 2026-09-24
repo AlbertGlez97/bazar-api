@@ -7,5 +7,10 @@ export default defineConfig({
     path: 'prisma/migrations',
     seed: 'node --import tsx prisma/seed.ts',
   },
-  datasource: { url: env('DATABASE_URL') },
+  // The CLI (migrate, db pull...) connects as the owner/migrator role. The app
+  // and `prisma db seed` read DATABASE_URL directly and connect as the
+  // least-privileged runtime role. See doc/runtime-database-role.md.
+  datasource: {
+    url: process.env.DATABASE_URL_MIGRATE || env('DATABASE_URL'),
+  },
 });
