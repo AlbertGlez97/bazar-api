@@ -104,7 +104,7 @@ export function ApiExample(name: OperationName) {
         status: response.status,
         description: response.description,
         content: {
-          [name === 'root' ? 'text/html' : 'application/json']: {
+          [operation.contentType ?? 'application/json']: {
             schema: exampleSchema(response.value),
             example: response.value,
           },

@@ -1,7 +1,15 @@
-﻿# Bazar API — BE-02 through BE-09
+﻿# Bazar API — BE-02 through BE-11
 
-NestJS 12 / PostgreSQL 16 backend for a shared-device bazaar: products, cash
-sales, incident review, commission calculations, reports, and single-product debts.
+NestJS 12 / PostgreSQL 16 backend for shared-device bazaar-style point-of-sale
+businesses: products, cash sales, incident review, commission calculations,
+reports, and single-product debts. Since BE-11 the system is **multi-tenant**:
+it hosts any number of independent businesses (each identified by a
+`contextId`) on one shared database, with total data isolation between them —
+a new business is onboarded via a public registration form that requires
+manual email approval (see [doc/reglas-de-negocio.md](doc/reglas-de-negocio.md)
+for the isolation mechanism and registration flow). Everything below this
+paragraph (money, sales, commissions, etc.) describes behavior *within* a
+single business/`contextId`.
 Money is integer **MXN cents** (`12550` means `$125.50`), calculated with Dinero.js 2.
 
 ## Run locally

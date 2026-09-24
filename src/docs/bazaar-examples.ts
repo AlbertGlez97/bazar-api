@@ -83,6 +83,10 @@ export const sale = {
   id: ids.sale,
   memberId: ids.carlos,
   deviceId: ids.device,
+  // BE-11: every Sale (and, not shown per item below to keep this example
+  // readable, every SaleItem) also carries the same contextId as every
+  // other tenant-scoped row — see the top-of-file note.
+  contextId,
   occurredAt: createdAt,
   receivedAt: '2026-09-23T12:00:01.000Z',
   currency: 'MXN',
@@ -125,6 +129,7 @@ export const rejectedSale = {
 export const incident = {
   id: ids.incident,
   saleId: ids.rejectedSale,
+  contextId,
   type: 'conflicto_stock',
   reason: rejectedSale.conflictReason,
   detectedAt: '2026-09-23T12:00:02.000Z',
@@ -154,6 +159,7 @@ export const debt = {
   type: 'apartado',
   deudorId: ids.debtor,
   productId: ids.granTurismo,
+  contextId,
   cantidad: 1,
   totalMinor: 65000,
   status: 'pendiente',
@@ -168,6 +174,7 @@ export const paymentInput = {
 export const payment = {
   id: ids.payment,
   deudaId: ids.debt,
+  contextId,
   ...paymentInput,
   receivedByMemberId: ids.javier,
   receivedAt: '2026-09-23T13:00:00.000Z',
@@ -214,4 +221,21 @@ export const audit = {
   newUnitPriceMinor: 120000,
   before: { ...snapshot, imagePath: null },
   after: { ...snapshot, imagePath: null, unitPriceMinor: 120000 },
+};
+// BE-11: fictional new-business registration form input/response. Any
+// number of independent businesses can register this way; each approval
+// creates its own isolated contextId, entirely separate from the
+// ps5-bazaar example context used throughout the rest of this file.
+export const businessRegistrationInput = {
+  nombreNegocio: 'Bonsáis de Alberto',
+  nombreSocio: 'Alberto',
+  contactoSocio: 'alberto@example.com',
+};
+export const businessRegistration = {
+  id: 'a0000000-0000-4000-8000-000000000001',
+  ...businessRegistrationInput,
+  status: 'pendiente',
+  createdAt,
+  resolvedAt: null,
+  createdContextId: null,
 };

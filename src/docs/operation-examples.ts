@@ -13,6 +13,12 @@ type Operation = {
   multipart?: boolean;
   responses: { status: number; description: string; value: unknown }[];
   errors?: [number, string][];
+  // Defaults to 'application/json'. Set 'text/html' for endpoints that
+  // render a page instead of returning JSON (see 'root' and the
+  // business-registration approve/reject status pages, BE-11) — the
+  // response `value` is then rendered as a raw string example instead of
+  // an object schema.
+  contentType?: 'application/json' | 'text/html';
 };
 const string = (example: string, description?: string): SchemaObject => ({
   type: 'string',
@@ -164,6 +170,7 @@ export const operations: Record<string, Operation> = {
     summary: 'Read the original application greeting',
     description: 'Public greeting, not a database readiness probe.',
     access: 'public',
+    contentType: 'text/html',
     responses: ok('Hello World!'),
   },
   login: {
@@ -538,6 +545,116 @@ export const operations: Record<string, Operation> = {
     ),
     responses: ok({ ...e.debt, deudor: e.debtor, abonos: [e.payment] }, 201),
     errors: [invalid, forbidden, missing],
+  },
+  // BE-11: public business-registration form + email-approval flow. See
+  // doc/reglas-de-negocio.md's "Registro de negocio (BE-11)" section for
+  // the full rationale (hashed single-use token, 30-day expiry, no
+  // operational contextId/Member until approved).
+  businessRegistrationCreate: {
+    summary: 'Register a brand-new business for approval',
+    description:
+      'Public, no auth. Creates a SolicitudNegocio in "pendiente" status and emails the fixed approval recipient (APPROVAL_NOTIFICATION_EMAIL) with one-time approve/reject links (30-day expiry, tokens stored hashed). No contextId or Member exists yet; those are only created if/when the approve link is followed.',
+    access: 'public',
+    body: body(
+      {
+        nombreNegocio: string(e.businessRegistrationInput.nombreNegocio),
+        nombreSocio: string(e.businessRegistrationInput.nombreSocio),
+        contactoSocio: string(
+          e.businessRegistrationInput.contactoSocio,
+          'Email or phone; either is accepted, only non-empty is required.',
+        ),
+      },
+      ['nombreNegocio', 'nombreSocio', 'contactoSocio'],
+      e.businessRegistrationInput,
+    ),
+    responses: ok(e.businessRegistration, 201),
+    errors: [invalid],
+  },
+  businessRegistrationApprove: {
+    summary: 'Approve a pending business registration (link from the email)',
+    description:
+      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving creates the real contextId and the founding socio Member (active immediately, ready to log in).',
+    access: 'public',
+    contentType: 'text/html',
+    queries: [
+      {
+        name: 'token',
+        required: true,
+        type: String,
+        example: 'example-raw-token-from-the-emailed-link',
+        description:
+          'Raw, single-use token from the email link; only its hash is ever stored.',
+      },
+    ],
+    responses: [
+      {
+        status: 200,
+        description: 'Valid, unused, unexpired token: business approved.',
+        value:
+          '<html>...<h1>Negocio aprobado</h1><p>"Bonsáis de Alberto" ya está activo y listo para iniciar sesión.</p>...</html>',
+      },
+      {
+        status: 200,
+        description: 'Token already used previously; nothing is duplicated.',
+        value:
+          '<html>...<h1>Ya fue procesado</h1><p>Esta solicitud ya fue resuelta anteriormente; este enlace ya no tiene efecto.</p>...</html>',
+      },
+      {
+        status: 200,
+        description: 'Token expired (30 days since the request was created).',
+        value:
+          '<html>...<h1>El enlace expiró</h1><p>Este enlace de aprobación/rechazo ya expiró (30 días).</p>...</html>',
+      },
+      {
+        status: 404,
+        description: 'Missing or unrecognized token.',
+        value:
+          '<html>...<h1>Enlace inválido</h1><p>Este enlace no corresponde a ninguna solicitud.</p>...</html>',
+      },
+    ],
+  },
+  businessRegistrationReject: {
+    summary: 'Reject a pending business registration (link from the email)',
+    description:
+      'Public, no auth; same token validation and HTML-status-page behavior as the approve endpoint. Rejecting only marks the request "rechazado" — no contextId or Member is ever created.',
+    access: 'public',
+    contentType: 'text/html',
+    queries: [
+      {
+        name: 'token',
+        required: true,
+        type: String,
+        example: 'example-raw-token-from-the-emailed-link',
+        description:
+          'Raw, single-use token from the email link; only its hash is ever stored.',
+      },
+    ],
+    responses: [
+      {
+        status: 200,
+        description: 'Valid, unused, unexpired token: request rejected.',
+        value:
+          '<html>...<h1>Solicitud rechazada</h1><p>La solicitud de "Bonsáis de Alberto" fue rechazada. No se creó nada.</p>...</html>',
+      },
+      {
+        status: 200,
+        description: 'Token already used previously; nothing is duplicated.',
+        value:
+          '<html>...<h1>Ya fue procesado</h1><p>Esta solicitud ya fue resuelta anteriormente; este enlace ya no tiene efecto.</p>...</html>',
+      },
+      {
+        status: 200,
+        description: 'Token expired (30 days since the request was created).',
+        value:
+          '<html>...<h1>El enlace expiró</h1><p>Este enlace de aprobación/rechazo ya expiró (30 días).</p>...</html>',
+      },
+      {
+        status: 404,
+        description: 'Missing or unrecognized token.',
+        value:
+          '<html>...<h1>Enlace inválido</h1><p>Este enlace no corresponde a ninguna solicitud.</p>...</html>',
+      },
+    ],
   },
 };
 export type OperationName = keyof typeof operations;

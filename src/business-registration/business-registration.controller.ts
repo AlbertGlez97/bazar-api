@@ -13,6 +13,7 @@ import type { Response } from 'express';
 import { BusinessRegistrationService } from './business-registration.service.js';
 import { CreateBusinessRegistrationDto } from './dto/create-business-registration.dto.js';
 import { renderStatusPage } from './status-page.html.js';
+import { ApiExample } from '../docs/api-example.decorator.js';
 
 const MISSING_TOKEN_PAGE = renderStatusPage(
   'Enlace inválido',
@@ -36,6 +37,7 @@ export class BusinessRegistrationController {
   ) {}
 
   @Post()
+  @ApiExample('businessRegistrationCreate')
   create(
     @Body(
       new ValidationPipe({
@@ -53,6 +55,7 @@ export class BusinessRegistrationController {
   // GET, not POST: this is a link meant to be clicked directly from an
   // email client, which can only ever issue a GET.
   @Get('approve')
+  @ApiExample('businessRegistrationApprove')
   async approve(@Query('token') token: string | undefined, @Res() res: Response) {
     if (!token) {
       res.status(404).type('html').send(MISSING_TOKEN_PAGE);
@@ -63,6 +66,7 @@ export class BusinessRegistrationController {
   }
 
   @Get('reject')
+  @ApiExample('businessRegistrationReject')
   async reject(@Query('token') token: string | undefined, @Res() res: Response) {
     if (!token) {
       res.status(404).type('html').send(MISSING_TOKEN_PAGE);

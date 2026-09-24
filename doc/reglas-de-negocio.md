@@ -1,4 +1,16 @@
-# Reglas de negocio consolidadas (hasta BE-10)
+# Reglas de negocio consolidadas (hasta BE-11)
+
+> A partir de BE-11 el sistema es multi-tenant: opera múltiples negocios
+> independientes (cada uno, un `contextId`) sobre la misma base de datos,
+> con aislamiento total entre ellos (ver la sección "Multi-tenancy
+> (BE-11)" para el mecanismo). Salvo que se indique lo contrario, TODA
+> regla de las secciones siguientes (Productos, Ventas, Socios y
+> colaboradores, Comisiones, Reportes, Fiado y apartados, etc.) describe
+> el comportamiento **dentro de un mismo contexto/negocio** — "el
+> catálogo", "los socios", "las ventas" siempre se refieren al catálogo/
+> socios/ventas de un negocio en particular, nunca a un catálogo o roster
+> global compartido entre negocios distintos. Ningún dato de un contexto
+> es visible, editable ni contable desde otro.
 
 ## Productos
 - Un producto es "unica" o "cantidad". Única inicia con existencia 1; al venderse pasa a 0 (nunca se marca "vendida", el estado vendido se infiere de existencia=0). El frontend muestra en gris y deshabilita productos con existencia 0.
@@ -29,9 +41,10 @@
 - El ContextGuard exige que cuenta, miembro y dispositivo pertenezcan al mismo contexto autorizado.
 
 ## Socios y colaboradores
-- Member tiene role: "socio" | "colaborador". Los socios (Alberto y Adid) tienen privilegios administrativos completos (incluye alta de productos). Los colaboradores (futuro: familiares que ayuden a vender) solo pueden registrar ventas y consultar catálogo.
+- Member tiene role: "socio" | "colaborador", y pertenece a un `contextId` específico (no es global/único en el sistema — desde BE-11 cada negocio tiene su propio conjunto independiente de socios y colaboradores). Los socios de un contexto tienen privilegios administrativos completos sobre ese contexto (incluye alta de productos). Los colaboradores (futuro: familiares que ayuden a vender) solo pueden registrar ventas y consultar catálogo, también dentro de su propio contexto.
 - Cualquier socio o colaborador autenticado puede registrar una venta.
 - Descuentos y cancelaciones están bloqueados hasta que se defina una política aparte (no implementados en E0).
+- Alberto y Adid, mencionados en el resto de este documento como ejemplo recurrente de "los socios", son únicamente los dos socios fundadores del contexto fijo que crea `prisma/seed.ts` (`SEED_CONTEXT_ID`) para desarrollo/pruebas — un ejemplo concreto de un contexto entre potencialmente muchos, no una limitación de que el sistema solo admita dos socios o un solo negocio. Cada negocio nuevo registrado vía BE-11 tiene su propio socio fundador con su propio nombre (ver "Registro de negocio (BE-11)").
 
 ## Ventas (BE-05)
 - Venta presencial al contado en el bazar, no e-commerce.
@@ -98,7 +111,7 @@
 - Ni productos ni colaboradores se borran físicamente de la base de datos. Se desactivan mediante un campo active, preservando todo el historial relacionado (ventas, auditoría, comisiones, incidencias, deudas).
 - Un producto desactivado no aparece en el catálogo de venta ni puede venderse, pero su historial permanece intacto y consultable.
 - Un colaborador desactivado no puede iniciar sesión ni ser seleccionado como vendedor, pero su historial de ventas y comisiones pasadas permanece intacto.
-- Los socios (Alberto y Adid) no pueden desactivarse mediante este mecanismo.
+- Los socios (ver nota sobre Alberto/Adid en "Socios y colaboradores": aquí "los socios" son los del contexto de cada Member evaluado, no una lista fija) no pueden desactivarse mediante este mecanismo.
 - Ambas entidades pueden reactivarse.
 - Detalle de implementación: este sistema no tiene login por Member (solo por Account, compartido entre socio y colaboradores del mismo dispositivo); "un colaborador desactivado no puede iniciar sesión" se aplica en la práctica como "no puede ser seleccionado como el actor de la sesión" en ContextGuard, que es el único punto donde un Member se resuelve por request — un Member con active=false deja de resolver ahí, bloqueando cualquier venta, deuda o mutación de catálogo atribuida a esa persona.
 - DELETE /products/:id y DELETE /members/:id son idempotentes: desactivar un registro ya inactivo devuelve 200 con el estado actual, no un error 409 — no hay una preocupación de proveniencia de datos como en resolver una incidencia dos veces, así que tratarlo como error solo complicaría la lógica de reintento del frontend sin ganar seguridad.
@@ -119,6 +132,7 @@ Este documento se actualiza conforme se cierran nuevas decisiones de negocio en 
 - Detalle de implementación — escrituras anidadas fuera del alcance de la extensión: Prisma Client Extensions solo interceptan la operación de nivel superior; los `create` anidados de un modelo distinto dentro de ella (SaleItem/Incidencia dentro de `Sale.create`) no son vistos por la extensión, así que su contextId se fija a mano en `sales.service.ts`. `ProductAudit` (en `products.service.ts`), `Deuda` y `Abono` (en `deudas.service.ts`) ya se crean con `create` de nivel superior (cubiertos automáticamente por la extensión una vez cableada), pero también llevan contextId explícito por consistencia con el estilo ya establecido en el proyecto.
 - Detalle de implementación — el `$queryRaw` con lock `FOR UPDATE` sobre `Deuda`: en `deudas.service.ts` (dentro de `registerAbono`) ahora filtra explícitamente por `contextId` además de `id` (`AND "contextId" = ${actor.account.contextId}`), ya que $queryRaw es el único punto del código que la Prisma Client Extension no puede ver ni interceptar (no hay gancho de extensión para consultas crudas). Se mantiene como raw en vez de reescribirse con el Prisma Client normal porque Prisma no expone una API de query builder para `SELECT ... FOR UPDATE` (bloqueo de fila); un `findFirst` normal no serializaría dos abonos concurrentes contra la misma Deuda.
 - Detalle de implementación — bootstrap de negocio nuevo: el endpoint público de aprobación de registro (`GET /business-registration/approve`) corre bajo el middleware (hay scope) pero ningún guard puebla un contextId (es una ruta pública, sin Account todavía) — se le permite crear el Member fundador y demás filas iniciales pasando el contextId recién generado explícitamente en el propio `create`, que la extensión acepta como fuente de verdad cuando no hay un contextId ya activo en el AsyncLocalStorage.
+- Detalle de implementación — `contextId` nunca es un campo de entrada: ningún DTO de creación/edición (`CreateProductDto`, `CreateSaleDto`, `CreateDeudaDto`, `PatchMemberDto`, etc.) acepta `contextId` en el body — siempre se infiere del contexto autenticado (`AuthGuard`/`ContextGuard` + la extensión), nunca del cliente; un cliente que lo incluyera en el body sería ignorado (la extensión sobreescribe/rellena ese campo con el valor autoritativo). Sí aparece, en cambio, en las respuestas JSON de los modelos que lo tienen (Product, Member, Sale, Incidencia, Deuda, Abono, etc.), porque estos endpoints devuelven el registro de Prisma tal cual, sin una capa de DTO de respuesta que filtre campos — igual que ya pasaba con cualquier otro campo interno antes de BE-11. No se consideró necesario ocultarlo: no es secreto (es solo el identificador del propio negocio del cliente autenticado, nunca el de otro), y el frontend de un solo negocio simplemente lo ignora.
 
 ## Registro de negocio (BE-11)
 - Formulario público POST /business-registration: nombre del negocio, nombre y contacto del socio fundador. Crea una SolicitudNegocio en estado "pendiente" — no se crea ningún contextId ni Member todavía.
