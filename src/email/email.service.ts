@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 
 export interface BusinessRegistrationApprovalEmailInput {
@@ -27,6 +27,7 @@ export interface BusinessRegistrationApprovalEmailInput {
  */
 @Injectable()
 export class EmailService {
+  private readonly logger = new Logger(EmailService.name);
   private client?: Resend;
 
   private getClient(): Resend {
@@ -52,12 +53,23 @@ export class EmailService {
       throw new Error(
         'APPROVAL_NOTIFICATION_EMAIL is required to send the approval email',
       );
-    await this.getClient().emails.send({
+    // The Resend SDK does not throw on API errors (invalid key, unverified
+    // domain, testing-recipient restriction, rate limit...): it resolves to
+    // `{ data, error }`. Ignoring that result made a rejected email look
+    // like a successful one (the endpoint answered 201, nothing was sent
+    // and nothing was logged), so the error is surfaced here. The message
+    // carries only Resend's error name/message, never the API key.
+    const { data, error } = await this.getClient().emails.send({
       from: 'onboarding@resend.dev',
       to,
       subject: `Nueva solicitud de negocio: ${input.nombreNegocio}`,
       html: renderApprovalEmailHtml(input),
     });
+    if (error)
+      throw new Error(
+        `Resend rejected the approval email: ${error.name}: ${error.message}`,
+      );
+    this.logger.log(`Approval email accepted by Resend (id ${data?.id})`);
   }
 }
 
