@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Controller,
   Get,
@@ -36,6 +37,7 @@ export class CommissionsController {
   ) {}
 
   @Get()
+  @ApiExample('commissions')
   calculate(
     @Req() req: AuthenticatedRequest,
     @Query(validate(CommissionsQueryDto)) query: CommissionsQueryDto,

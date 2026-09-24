@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -45,6 +46,7 @@ export class MembersController {
   ) {}
 
   @Get()
+  @ApiExample('members')
   @UseGuards(AuthGuard)
   list(@Req() request: AuthenticatedRequest) {
     return this.prisma.member.findMany({
@@ -55,6 +57,7 @@ export class MembersController {
   }
 
   @Patch(':id/commission-rate')
+  @ApiExample('memberRate')
   @UseGuards(SocioGuard)
   setCommissionRate(
     @Req() request: AuthenticatedRequest,

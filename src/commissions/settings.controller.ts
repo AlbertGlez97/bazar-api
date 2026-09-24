@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -41,6 +42,7 @@ export class SettingsController {
   ) {}
 
   @Patch('commission-rate')
+  @ApiExample('settings')
   setGlobalRate(
     @Req() req: AuthenticatedRequest,
     @Body(validate(SetGlobalCommissionRateDto)) dto: SetGlobalCommissionRateDto,

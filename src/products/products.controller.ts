@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -48,6 +49,7 @@ export class ProductsController {
     @Inject(ProductsService) private readonly products: ProductsService,
   ) {}
   @Post()
+  @ApiExample('productCreate')
   @UseGuards(SocioGuard)
   create(
     @Req() req: AuthenticatedRequest,
@@ -56,6 +58,7 @@ export class ProductsController {
     return this.products.create(req, dto);
   }
   @Patch(':id')
+  @ApiExample('productPatch')
   @UseGuards(SocioGuard)
   patch(
     @Req() req: AuthenticatedRequest,
@@ -65,6 +68,7 @@ export class ProductsController {
     return this.products.patch(req, id, dto);
   }
   @Get()
+  @ApiExample('products')
   @UseGuards(AuthGuard)
   list(
     @Req() req: AuthenticatedRequest,
@@ -73,6 +77,7 @@ export class ProductsController {
     return this.products.list(req.account.contextId, query);
   }
   @Get(':id/audit')
+  @ApiExample('productAudit')
   @UseGuards(AuthGuard)
   audit(
     @Req() req: AuthenticatedRequest,
@@ -82,6 +87,7 @@ export class ProductsController {
     return this.products.audits(req.account.contextId, id, query);
   }
   @Post(':id/image')
+  @ApiExample('productImage')
   @UseGuards(SocioGuard)
   @UseInterceptors(
     FileInterceptor('image', {

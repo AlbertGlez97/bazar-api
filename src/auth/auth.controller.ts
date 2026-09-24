@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -20,6 +21,7 @@ export class LoginDto {
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
   @Post('login')
+  @ApiExample('login')
   @HttpCode(200)
   login(
     @Body(

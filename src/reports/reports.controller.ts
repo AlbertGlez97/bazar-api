@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Controller,
   Get,
@@ -36,6 +37,7 @@ export class ReportsController {
   ) {}
 
   @Get('sales-by-period')
+  @ApiExample('reportPeriod')
   salesByPeriod(
     @Req() req: AuthenticatedRequest,
     @Query(validate(DateRangeQueryDto)) query: DateRangeQueryDto,
@@ -44,6 +46,7 @@ export class ReportsController {
   }
 
   @Get('sales-by-member')
+  @ApiExample('reportMember')
   salesByMember(
     @Req() req: AuthenticatedRequest,
     @Query(validate(DateRangeQueryDto)) query: DateRangeQueryDto,

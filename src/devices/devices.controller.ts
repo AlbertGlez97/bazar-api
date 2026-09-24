@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -42,6 +43,7 @@ export class IdentifyDeviceDto {
 export class DevicesController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
   @Post('identify')
+  @ApiExample('device')
   @HttpCode(200)
   async identify(
     @Req() request: AuthenticatedRequest,

@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -43,6 +44,7 @@ export class DeudasController {
   constructor(@Inject(DeudasService) private readonly deudas: DeudasService) {}
 
   @Post()
+  @ApiExample('debtCreate')
   @UseGuards(SocioGuard)
   create(
     @Req() req: AuthenticatedRequest,
@@ -52,6 +54,7 @@ export class DeudasController {
   }
 
   @Get()
+  @ApiExample('debts')
   @UseGuards(SocioGuard)
   list(
     @Req() req: AuthenticatedRequest,
@@ -61,6 +64,7 @@ export class DeudasController {
   }
 
   @Get(':id')
+  @ApiExample('debtDetail')
   @UseGuards(SocioGuard)
   findOne(
     @Req() req: AuthenticatedRequest,
@@ -70,6 +74,7 @@ export class DeudasController {
   }
 
   @Post(':id/abonos')
+  @ApiExample('debtPayment')
   @UseGuards(ContextGuard)
   addAbono(
     @Req() req: AuthenticatedRequest,

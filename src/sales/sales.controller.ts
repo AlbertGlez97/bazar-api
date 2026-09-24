@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -47,6 +48,7 @@ export class SalesController {
   constructor(@Inject(SalesService) private readonly sales: SalesService) {}
 
   @Post()
+  @ApiExample('saleCreate')
   @UseGuards(ContextGuard)
   async create(
     @Req() req: AuthenticatedRequest,
@@ -63,6 +65,7 @@ export class SalesController {
   }
 
   @Get()
+  @ApiExample('sales')
   @UseGuards(SocioGuard)
   list(
     @Req() req: AuthenticatedRequest,
@@ -72,6 +75,7 @@ export class SalesController {
   }
 
   @Get(':id')
+  @ApiExample('saleDetail')
   @UseGuards(AuthGuard)
   findOne(
     @Req() req: AuthenticatedRequest,

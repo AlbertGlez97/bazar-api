@@ -1,3 +1,4 @@
+import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
@@ -45,6 +46,7 @@ export class IncidenciasController {
   ) {}
 
   @Get()
+  @ApiExample('incidents')
   list(
     @Req() req: AuthenticatedRequest,
     @Query(validate(IncidenciaListDto)) query: IncidenciaListDto,
@@ -53,6 +55,7 @@ export class IncidenciasController {
   }
 
   @Get(':id')
+  @ApiExample('incidentDetail')
   findOne(
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -61,6 +64,7 @@ export class IncidenciasController {
   }
 
   @Patch(':id/resolver')
+  @ApiExample('incidentResolve')
   resolve(
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
