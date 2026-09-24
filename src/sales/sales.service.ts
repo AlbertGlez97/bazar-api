@@ -18,6 +18,7 @@ import type {
   CreateSaleItemDto,
 } from './dto/create-sale.dto.js';
 import type { SaleListDto } from './dto/sale-list.dto.js';
+import { createServerId } from '../common/server-id.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 type SaleWithItems = Sale & { items: SaleItem[] };
@@ -390,6 +391,7 @@ export class SalesService {
             changeMinor,
             items: {
               create: lines.map((line) => ({
+                id: createServerId(),
                 productId: line.productId,
                 quantity: line.quantity,
                 unitPriceMinor: line.unitPriceMinor,
@@ -400,6 +402,7 @@ export class SalesService {
               ? {
                   incidencias: {
                     create: {
+                      id: createServerId(),
                       type: 'incidencia_fecha',
                       reason: dateIssue,
                     },
@@ -456,6 +459,7 @@ export class SalesService {
             conflictDetectedAt: new Date(),
             incidencias: {
               create: {
+                id: createServerId(),
                 type: 'conflicto_stock',
                 reason: err.message,
               },

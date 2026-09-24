@@ -13,6 +13,12 @@
 - Las operaciones aritméticas sobre dinero usan la librería dinero.js, nunca Number ni Decimal directamente.
 - Los DTO que reciben montos validan que sean enteros (@IsInt()) para rechazar decimales mal formados en la entrada.
 
+## Identificadores
+- Todo identificador creado por los servicios del backend usa UUIDv7 mediante la librería oficial `uuid`. El orden temporal incorporado en UUIDv7 reduce la dispersión de inserciones en índices de tablas que crecen continuamente, como `SaleItem` e `Incidencia`, sin renunciar a identificadores globalmente únicos.
+- Los identificadores fijos y legibles del seed son una excepción intencional para datos de arranque reconocibles y reejecutables; no representan el mecanismo de generación usado en producción y no deben reemplazarse por valores aleatorios.
+- `Sale.id` pertenece al cliente porque la tablet debe generarlo aun sin conexión y reutilizarlo como clave de idempotencia. El backend no lo reemplaza; se recomienda que el frontend genere UUIDv7 para conservar la misma localidad temporal en el índice.
+- Los `@default(uuid())` existentes en Prisma se conservan como respaldo para fixtures y operaciones administrativas directas. Los flujos HTTP de producción asignan explícitamente UUIDv7 antes de cada creación para mantener la política visible en los servicios y evitar una función específica de PostgreSQL.
+
 ## Preparación offline
 - Antes de operar sin conexión, cada dispositivo debe haber iniciado sesión al menos una vez con internet, tener el catálogo descargado (nombre, precio, existencia) y su propio nombre de dispositivo registrado.
 - Las ventas hechas offline se guardan localmente y se sincronizan al reconectar.

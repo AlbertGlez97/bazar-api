@@ -40,7 +40,8 @@
     "pg": "8.23.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "sharp": "0.35.4"
+    "sharp": "0.35.4",
+    "uuid": "14.0.2"
   },
   "devDependencies": {
     "@nestjs/cli": "^12.0.0",

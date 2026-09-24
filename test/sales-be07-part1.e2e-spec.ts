@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { expectUuidV7 } from './uuid-v7.js';
 
 /**
  * BE-07 Part 1 fixes: the P2002 same-brand-new-id race, and occurredAt
@@ -193,6 +194,7 @@ describe('sale creation fixes (BE-07 part 1)', () => {
       where: { saleId: id },
     });
     expect(incidencias).toHaveLength(1);
+    expectUuidV7(incidencias[0].id);
     expect(incidencias[0].type).toBe('incidencia_fecha');
     expect(incidencias[0].resolutionStatus).toBe('pendiente');
   });
@@ -279,6 +281,7 @@ describe('sale creation fixes (BE-07 part 1)', () => {
       where: { saleId: rejectedId },
     });
     expect(incidencias).toHaveLength(1);
+    expectUuidV7(incidencias[0].id);
     expect(incidencias[0].type).toBe('conflicto_stock');
     expect(incidencias[0].reason).toMatch(/stock insuficiente al sincronizar/);
     const rejected =

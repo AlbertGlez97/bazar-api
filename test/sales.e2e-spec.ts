@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { expectUuidV7 } from './uuid-v7.js';
 import { SalesService } from '../src/sales/sales.service.js';
 
 describe('multi-item cash sales', () => {
@@ -183,6 +184,7 @@ describe('multi-item cash sales', () => {
       (item: { unitPriceMinor: number }) => item.unitPriceMinor,
     );
     expect(priced).toEqual(expect.arrayContaining([15000, 5000]));
+    res.body.items.forEach((item: { id: string }) => expectUuidV7(item.id));
     const getRes = await write(
       request(app.getHttpServer()).get(`/sales/${res.body.id}`),
     ).expect(200);
@@ -379,9 +381,7 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(201);
-    await request(app.getHttpServer())
-      .get(`/sales/${res.body.id}`)
-      .expect(401);
+    await request(app.getHttpServer()).get(`/sales/${res.body.id}`).expect(401);
     await request(app.getHttpServer())
       .get(`/sales/${randomUUID()}`)
       .auth(token, { type: 'bearer' })

@@ -13,6 +13,7 @@ import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import type { CreateDeudaDto } from './dto/create-deuda.dto.js';
 import type { DeudaListDto } from './dto/deuda-list.dto.js';
 import type { CreateAbonoDto } from './dto/create-abono.dto.js';
+import { createServerId } from '../common/server-id.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 type DeudaWithAbonos = Deuda & { abonos: Abono[] };
@@ -124,6 +125,7 @@ export class DeudasService {
       if (!deudorId) {
         const deudor = await tx.deudor.create({
           data: {
+            id: createServerId(),
             nombre: dto.deudor!.nombre,
             telefono: dto.deudor!.telefono,
             notas: dto.deudor!.notas,
@@ -169,6 +171,7 @@ export class DeudasService {
 
       return tx.deuda.create({
         data: {
+          id: createServerId(),
           type: dto.type,
           deudorId,
           productId: product.id,
@@ -295,6 +298,7 @@ export class DeudasService {
 
       await tx.abono.create({
         data: {
+          id: createServerId(),
           deudaId,
           montoMinor: dto.montoMinor,
           receivedByMemberId: memberId,

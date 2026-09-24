@@ -43,6 +43,8 @@ export class CreateSaleDto extends SalePaymentDto {
   // resends (see SalesService.create): a resend with the same id and an
   // identical payload replays the stored result instead of reprocessing;
   // a resend with the same id and a different payload is a 409 Conflict.
+  // The frontend should preferably generate UUIDv7 values so client-owned
+  // Sale ids share the backend's time-ordered index characteristics.
   @ApiProperty({
     description:
       'Client-generated sale id (offline-first). Also the idempotency key: resending the same id with an identical payload replays the stored result; a different payload is rejected with 409.',

@@ -15,6 +15,7 @@ import type {
   ProductListDto,
 } from './dto/product.dto.js';
 import { StorageService } from '../storage/storage.service.js';
+import { createServerId } from '../common/server-id.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 /**
@@ -112,6 +113,7 @@ export class ProductsService {
   ) {
     await tx.productAudit.create({
       data: {
+        id: createServerId(),
         productId: product.id,
         memberId,
         // Capture time after acquiring the row lock, not transaction start time.
@@ -142,6 +144,7 @@ export class ProductsService {
       const memberId = await this.authorize(tx, actor);
       const product = await tx.product.create({
         data: {
+          id: createServerId(),
           name: dto.name,
           tipo: dto.tipo,
           unitPriceMinor: dto.unitPriceMinor,

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { expectUuidV7 } from './uuid-v7.js';
 
 /**
  * BE-09: fiado/apartado unified under "Deuda" — immediate stock decrement
@@ -133,6 +134,8 @@ describe('deudas (BE-09)', () => {
       .expect(201);
     expect(res.body.totalMinor).toBe(50_00);
     expect(res.body.status).toBe('pendiente');
+    expectUuidV7(res.body.id);
+    expectUuidV7(res.body.deudorId);
 
     const updated = await prisma.product.findUniqueOrThrow({
       where: { id: product.id },
@@ -239,6 +242,7 @@ describe('deudas (BE-09)', () => {
       .expect(201);
     expect(res.body.status).toBe('saldada');
     expect(res.body.abonos).toHaveLength(2);
+    res.body.abonos.forEach((abono: { id: string }) => expectUuidV7(abono.id));
   });
 
   it('an abono exceeding the remaining balance is rejected with 400 and not applied', async () => {

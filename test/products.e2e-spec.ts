@@ -11,6 +11,7 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { ProductsService } from '../src/products/products.service.js';
 import { configureStaticStorage } from '../src/storage/static-storage.js';
+import { expectUuidV7 } from './uuid-v7.js';
 
 describe('context-scoped products', () => {
   let app: NestExpressApplication;
@@ -137,10 +138,12 @@ describe('context-scoped products', () => {
     } as ReturnType<typeof body>);
     expect(product.initialStock).toBe(1);
     expect(product.stock).toBe(1);
+    expectUuidV7(product.id);
     const audit = await prisma.productAudit.findFirstOrThrow({
       where: { productId: product.id },
     });
     expect(audit.memberId).toBe(socio);
+    expectUuidV7(audit.id);
     expect(audit.oldUnitPriceMinor).toBeNull();
     expect(audit.newUnitPriceMinor).toBe(100);
   });
