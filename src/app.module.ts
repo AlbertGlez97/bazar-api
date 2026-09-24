@@ -34,7 +34,11 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // BE-11: establishes the per-request tenant scope before any guard
     // runs; see TenantContextMiddleware's own doc comment.
-    consumer.apply(TenantContextMiddleware).forRoutes('*');
+    // Explicit optional wildcard: it matches every path (and the bare root)
+    // with or without the global prefix. A plain '*' becomes '/api/v1/*'
+    // behind the prefix, which path-to-regexp v8 rejects and Nest only
+    // auto-converts after logging a LegacyRouteConverter warning.
+    consumer.apply(TenantContextMiddleware).forRoutes('{*path}');
   }
 }
 

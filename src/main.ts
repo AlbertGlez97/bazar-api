@@ -6,6 +6,11 @@ import { configureApiDocs } from './docs/swagger.js';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // All controllers live under /api/v1. The explicit /docs* and
+  // /uploads/products mounts intentionally stay at the origin. This must
+  // run before the static/docs configuration so OpenAPI paths carry the
+  // prefix.
+  app.setGlobalPrefix('api/v1');
   configureStaticStorage(app);
   // No-op unless ENABLE_API_DOCS=true; see configureApiDocs for the
   // 404-vs-401 and credential-isolation rationale.

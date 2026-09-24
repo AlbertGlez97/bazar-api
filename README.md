@@ -61,9 +61,23 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
    provisioning API. Colaborador creation has no public endpoint yet.
 
 For compiled execution: `npm run build`, then `npm run start:prod`.
-The default address is `http://localhost:3000`. `GET /` is the original
+The API base URL is `http://localhost:3000/api/v1`. All controller paths below
+are relative to `/api/v1` (for example, login is `POST /api/v1/auth/login`).
+There are no legacy unprefixed controller aliases. `GET /api/v1` is the original
 Hello World route, not a readiness probe. Prisma connects during startup and
 disconnects when Nest closes; shutdown hooks are enabled.
+
+Explicit mounts remain at the server origin: `/docs`, `/docs-json`, `/docs-yaml`
+and `/uploads/products/` are **not** under `/api/v1`. Enabled OpenAPI documents
+include the prefix in their controller paths.
+
+Business approval/rejection emails also target `/api/v1/business-registration/`.
+Set `APP_BASE_URL` to the public server **origin only**, for example
+`https://api.example.com` (an optional trailing slash is accepted, and a trailing `/api/v1` is stripped), not an API
+path. Blank/unset uses `http://localhost:$PORT` (3000 by default). Previously
+sent unprefixed links now return 404; there is deliberately no legacy alias.
+For a still-valid existing token, the operator must use the same link with
+`/api/v1` inserted before `/business-registration`, without changing its token.
 
 ## Environment reference
 

@@ -26,10 +26,20 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+/**
+ * Server origin used to build the email links. The `/api/v1` global prefix
+ * is appended by the caller, so an `APP_BASE_URL` that already ends in it
+ * (with or without trailing slashes) is normalized to avoid
+ * `/api/v1/api/v1/...`.
+ */
 function baseUrl(): string {
   return (
-    process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`
-  );
+    process.env.APP_BASE_URL?.trim() ||
+    `http://localhost:${process.env.PORT ?? 3000}`
+  )
+    .replace(/\/+$/, '')
+    .replace(/\/api\/v1$/, '')
+    .replace(/\/+$/, '');
 }
 
 /**
@@ -83,8 +93,8 @@ export class BusinessRegistrationService {
       },
     });
 
-    const approveUrl = `${baseUrl()}/business-registration/approve?token=${token}`;
-    const rejectUrl = `${baseUrl()}/business-registration/reject?token=${token}`;
+    const approveUrl = `${baseUrl()}/api/v1/business-registration/approve?token=${token}`;
+    const rejectUrl = `${baseUrl()}/api/v1/business-registration/reject?token=${token}`;
     await this.email.sendBusinessRegistrationApprovalEmail({
       nombreNegocio: dto.nombreNegocio,
       nombreSocio: dto.nombreSocio,
