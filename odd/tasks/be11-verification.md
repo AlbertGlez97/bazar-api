@@ -18,9 +18,9 @@ Execute for the first time everything BE-11 introduced (new `resend` dependency,
 - [x] **T02 — Migration and RLS (priority).** Decide recreate vs migrate-in-place; apply migrations; run seed; test `isRowLevelSecurityViolation` against the real Postgres/Prisma error; verify with direct SQL that RLS is enabled, FORCED and deny-by-default on every tenant table.
 - [x] **T03 — Code checks.** Build, lint, unit and e2e (watch `test/rls-strict.e2e-spec.ts` and the multitenancy isolation specs).
 - [x] **T04 — Corrections.** Fix real failures (RLS/seed first), document each blind assumption that was wrong, repeat T02 and T03 until clean.
-- [ ] **T05 — Business registration end to end.** Real Resend email, approve link, founder Member, isolation from the original context, reject link, reused token. Blocked until the user supplies the key.
-- [~] **T06 — Documentation.** RLS/role/seed/approve statements in `README.md` and `doc/reglas-de-negocio.md` reconciled with the verified behavior and `doc/runtime-database-role.md` added; the business-registration email statements stay unverified until T05, and the `/api/v1` wording belongs to the separate global-prefix task.
-- [ ] **T07 — Final summary.** Leave the result committed on the branch; no push.
+- [x] **T05 — Business registration end to end.** Verified with real Resend on 2026-09-24 (see the T05 evidence).
+- [x] **T06 — Documentation.** `README.md`, `doc/reglas-de-negocio.md`, `.env.example` and the new `doc/runtime-database-role.md` match the verified behavior (RLS role, seed error shapes, `approve`, email errors). The `/api/v1` wording belongs to the separate global-prefix task.
+- [x] **T07 — Final summary.** Result committed on the branch; the user authorized the push after reviewing the summary.
 
 ## Acceptance and checks
 
@@ -76,12 +76,22 @@ Execute for the first time everything BE-11 introduced (new `resend` dependency,
 - Interference from the other session (details in Engram topic `be11/foreign-uncommitted-api-prefix`): uncommitted work in `src/main.ts` (`setGlobalPrefix('api/v1')` already applied), the registration service (links now under `/api/v1`), its e2e spec, a new service spec, `README.md`, `doc/reglas-de-negocio.md`, `.env.example` and a stale `odd/tasks/global-api-prefix.md`; an orphan `nest start --watch` plus `dist/main` on port 3000 running as the owner role. Handling: only explicit-path staging; the shared files (`.env.example`, the registration service, `README.md`, `doc/reglas-de-negocio.md`) were staged from a HEAD-based blob containing only my hunks so the other session's edits stay untouched in the working tree; verification used `tsc --noEmit` instead of `nest build` and a clean worktree; no process was stopped.
 - Native review: every commit assesses `medium`, so it is deferred to slice close (the native counter also counts the generated lockfile).
 
-### Still open (needs the user)
+### T05 evidence (2026-09-24), real Resend
 
-- `.env` (reading and editing it is denied for the agent): add `APP_DB_USER`/`APP_DB_PASSWORD` and the `APP_DB_TEST_*` pair, point `DATABASE_URL` / `DATABASE_URL_TEST` at the runtime role and keep the owner URLs in `DATABASE_URL_MIGRATE` / `DATABASE_URL_TEST_MIGRATE`, then run `npm run db:provision` and `npm run db:provision:test` (this also replaces the throwaway passwords the agent used to create `bazar_app` and `bazar_test_app`). Until then the app refuses to start, by design.
-- T05: a `RESEND_API_KEY`, a click on the emailed link, and port 3000 free (the orphan server from the other session must be stopped by its owner or with the user's approval).
-- The global `/api/v1` prefix is a separate task; the other session's uncommitted work must be reviewed and committed as its own unit after BE-11 is closed.
+- The user updated `.env` (runtime role, owner URLs, `RESEND_API_KEY`, `APPROVAL_NOTIFICATION_EMAIL`); `npm run db:provision` and `npm run db:provision:test` both succeeded (role updated, password rotated, grants, default privileges, no access to `_prisma_migrations`). `npm run start:dev` booted with 0 compile errors, the startup guard did not fire and Postgres showed the app connected as `bazar_app` (`rolsuper = f`, `rolbypassrls = f`). Full e2e with the user's real `.env` (no wrapper): 18 files / 125 tests, 0 failures.
+- **Bug found by the first real attempt:** with a placeholder key the POST answered 201 but no email was sent and nothing was logged. The Resend SDK does not throw on API errors (`emails.send` resolves to `{ data, error }`) and `EmailService` ignored the result. TDD: 3 of 4 new tests failed first (`promise resolved "undefined" instead of rejecting`). Fixed in `9593285`: a rejected send now throws `Resend rejected the approval email: <name>: <message>` (never the key) and an accepted one logs the message id. The failed attempt left one `pendiente` request nobody holds a link for; it expires after 30 days.
+- Second attempt: `POST /api/v1/business-registration` for "Bolsas Mama de Adid segunda prueba"; server log `Approval email accepted by Resend (id 01a0d4fb-…)`; the user received the email and clicked approve and saw the "activo y listo" page. No error in the log afterwards (the `42501` that the `approve` bug used to cause does not recur).
+- Database (owner, ground truth): request `aprobado`, `resolvedAt` set, `createdContextId` 01a0d4fd-5d35-7382-9bc0-c233ae10cf6b; founding Member "Mama de Adid", role `socio`, `active = true`, same `contextId`. Members by context: new business 1, `bazar-local` 2.
+- Isolation as the runtime role (`SET ROLE bazar_app`, one test Product seeded per context, removed afterwards): the new business sees only its own Member and Product and no Device; `bazar-local` sees its 2 Members, 3 Devices and its Product and neither the founder nor the other product; no context sees nothing. Cross-tenant writes from the new business: insert of a `bazar-local` Product `ERROR 42501`; moving an own row into `bazar-local` `ERROR 42501`; update and delete of `bazar-local` rows affect 0. `bazar-local` intact afterwards (2 Members, 3 Devices, 1 Account). HTTP login as the new business was not possible: `approve` creates only the Member, and the seed password lives in the user's `.env`.
+- Not observed by the agent against a real server: the reused-token page and the reject page (covered by e2e with mocked email; the user reported the flow correct).
+- Cleanup: temporary database `rls_probe_db`, role `rls_probe`, `.tmp-rls-probe/` and the throwaway password files were removed; the server was stopped.
+
+### Closing state
+
+- Branch `feat/backend-e0-be11-multitenancy`: all verified fixes and documentation committed; unit 11 files / 80 tests and e2e 18 files / 125 tests pass with the user's real `.env`; `tsc --noEmit` and lint are clean (2 pre-existing BE-09 warnings).
+- Native review: every commit assesses `medium`; run at slice close only when the user grants consent (RDD reported `on (decided by default)`; not changed by the agent).
+- Pending, separate from BE-11: the global `/api/v1` prefix. The other session's uncommitted work (`src/main.ts`, the registration service links, its e2e spec and new service spec, `README.md`, `doc/reglas-de-negocio.md`, `.env.example`, `odd/tasks/global-api-prefix.md`) is untouched and not part of this branch's commits. It also raises `WARN [LegacyRouteConverter] Unsupported route path: "/api/v1/*"` from `consumer.apply(TenantContextMiddleware).forRoutes('*')` in `src/app.module.ts`; use `'*path'` and verify against the real bootstrap, which the e2e suites do not exercise.
 
 ## Next step
 
-Wait for the user (`.env` update, Resend key, decision on the orphan server); then T05, the rest of T06, native review at slice close, cleanup of the temporary probes (`rls_probe_db`, role `rls_probe`, `.tmp-rls-probe/`) and the final summary.
+Push the branch (authorized by the user), then resume the separate global-prefix task.
