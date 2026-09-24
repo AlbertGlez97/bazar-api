@@ -1,3 +1,4 @@
+import { withStockRace } from './stock-race.js';
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import type { INestApplication } from '@nestjs/common';
@@ -91,6 +92,9 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
       await prisma.saleItem.deleteMany({
         where: { sale: { member: { contextId } } },
       });
+      await prisma.incidencia.deleteMany({
+        where: { sale: { member: { contextId } } },
+      });
       await prisma.sale.deleteMany({ where: { member: { contextId } } });
       await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
@@ -125,9 +129,7 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
       (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
         .stock,
     ).toBe(0);
-    expect(
-      await prisma.saleItem.count({ where: { saleId: body.id } }),
-    ).toBe(1);
+    expect(await prisma.saleItem.count({ where: { saleId: body.id } })).toBe(1);
   });
 
   it('rejects a resend of the same id with a different payload with 409', async () => {
@@ -174,29 +176,34 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     // Both requests are individually valid (quantity 1 against stock 1);
     // only their real arrival/processing order at the server, serialized by
     // the FOR UPDATE row lock, decides the winner.
-    const [resA, resB] = await Promise.all([
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idA,
-          cashReceivedMinor: 12000,
-          items: [{ productId: product.id, quantity: 1 }],
-        }),
-      ),
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idB,
-          cashReceivedMinor: 12000,
-          items: [{ productId: product.id, quantity: 1 }],
-        }),
-      ),
-    ]);
+    const [resA, resB] = await withStockRace(prisma, () =>
+      Promise.all([
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idA,
+            cashReceivedMinor: 12000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        ),
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idB,
+            cashReceivedMinor: 12000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        ),
+      ]),
+    );
     expect(resA.status).toBe(201);
     expect(resB.status).toBe(201);
     const statuses = [resA.body.status, resB.body.status].sort();
     expect(statuses).toEqual(['completada', 'rechazada_por_conflicto']);
-    const rejected = resA.body.status === 'rechazada_por_conflicto' ? resA.body : resB.body;
+    const rejected =
+      resA.body.status === 'rechazada_por_conflicto' ? resA.body : resB.body;
     expect(rejected.conflictReason).toContain(product.id);
-    expect(rejected.conflictReason).toMatch(/stock insuficiente al sincronizar/);
+    expect(rejected.conflictReason).toMatch(
+      /stock insuficiente al sincronizar/,
+    );
     expect(rejected.conflictDetectedAt).toBeTruthy();
     expect(rejected.totalMinor).toBeNull();
     expect(
@@ -245,22 +252,24 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     });
     const idA = randomUUID();
     const idB = randomUUID();
-    const [resA, resB] = await Promise.all([
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idA,
-          cashReceivedMinor: 9000,
-          items: [{ productId: racingProduct.id, quantity: 1 }],
-        }),
-      ),
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idB,
-          cashReceivedMinor: 9000,
-          items: [{ productId: racingProduct.id, quantity: 1 }],
-        }),
-      ),
-    ]);
+    const [resA, resB] = await withStockRace(prisma, () =>
+      Promise.all([
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idA,
+            cashReceivedMinor: 9000,
+            items: [{ productId: racingProduct.id, quantity: 1 }],
+          }),
+        ),
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idB,
+            cashReceivedMinor: 9000,
+            items: [{ productId: racingProduct.id, quantity: 1 }],
+          }),
+        ),
+      ]),
+    );
     const rejectedId =
       resA.body.status === 'rechazada_por_conflicto' ? idA : idB;
 
@@ -268,9 +277,9 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
       request(app.getHttpServer()).get('/sales?status=rechazada_por_conflicto'),
     ).expect(200);
     const bodies = res.body.items as { id: string; status: string }[];
-    expect(bodies.every((sale) => sale.status === 'rechazada_por_conflicto')).toBe(
-      true,
-    );
+    expect(
+      bodies.every((sale) => sale.status === 'rechazada_por_conflicto'),
+    ).toBe(true);
     expect(bodies.some((sale) => sale.id === rejectedId)).toBe(true);
     expect(bodies.some((sale) => sale.id === oversell)).toBe(false);
   });
