@@ -143,6 +143,8 @@ model Sale {
   // these are never a stand-in for zero.
   totalMinor        Int?
   cashReceivedMinor Int
+  // Normalized request identity, including attempted items for rejected sales.
+  requestFingerprint String?
   changeMinor       Int?
   // Populated only when status = rechazada_por_conflicto; explains which
   // product lost the race and when the conflict was detected, for manual

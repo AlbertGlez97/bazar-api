@@ -1,3 +1,4 @@
+import { withStockRace } from './stock-race.js';
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import type { INestApplication } from '@nestjs/common';
@@ -142,6 +143,32 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     ).toBe(8); // decremented once, not twice.
   });
 
+  it('replays simultaneous identical sales after the winner consumes all stock', async () => {
+    const product = await createProduct({
+      name: 'Exact stock retry',
+      tipo: 'unica',
+      unitPriceMinor: 1000,
+      stock: 1,
+    });
+    const body = saleBody({
+      cashReceivedMinor: 1000,
+      items: [{ productId: product.id, quantity: 1 }],
+    });
+    const results = await withStockRace(prisma, () =>
+      Promise.all([
+        write(request(app.getHttpServer()).post('/sales')).send(body),
+        write(request(app.getHttpServer()).post('/sales')).send(body),
+      ]),
+    );
+    expect(
+      results.map((result) => result.status).sort((a, b) => a - b),
+    ).toEqual([200, 201]);
+    expect(await prisma.sale.count({ where: { id: body.id } })).toBe(1);
+    expect(await prisma.incidencia.count({ where: { saleId: body.id } })).toBe(
+      0,
+    );
+  });
+
   it('creates an incidencia_fecha Incidencia (and keeps the sale completada) when occurredAt is in the future', async () => {
     const product = await createProduct({
       name: 'Future occurredAt fixture',
@@ -219,7 +246,7 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     expect(await prisma.incidencia.count({ where: { saleId: id } })).toBe(0);
   });
 
-  it('creates a conflicto_stock Incidencia (in addition to Sale.status) for a losing sale in a real stock race', async () => {
+  it('records a real stock conflict and rejects a replay with changed items', async () => {
     const product = await createProduct({
       name: 'Conflict Incidencia fixture',
       tipo: 'unica',
@@ -228,22 +255,24 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     });
     const idA = randomUUID();
     const idB = randomUUID();
-    const [resA, resB] = await Promise.all([
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idA,
-          cashReceivedMinor: 15000,
-          items: [{ productId: product.id, quantity: 1 }],
-        }),
-      ),
-      write(request(app.getHttpServer()).post('/sales')).send(
-        saleBody({
-          id: idB,
-          cashReceivedMinor: 15000,
-          items: [{ productId: product.id, quantity: 1 }],
-        }),
-      ),
-    ]);
+    const [resA, resB] = await withStockRace(prisma, () =>
+      Promise.all([
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idA,
+            cashReceivedMinor: 15000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        ),
+        write(request(app.getHttpServer()).post('/sales')).send(
+          saleBody({
+            id: idB,
+            cashReceivedMinor: 15000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        ),
+      ]),
+    );
     const rejectedId =
       resA.body.status === 'rechazada_por_conflicto' ? idA : idB;
     const incidencias = await prisma.incidencia.findMany({
@@ -252,5 +281,37 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     expect(incidencias).toHaveLength(1);
     expect(incidencias[0].type).toBe('conflicto_stock');
     expect(incidencias[0].reason).toMatch(/stock insuficiente al sincronizar/);
+    const rejected =
+      resA.body.status === 'rechazada_por_conflicto' ? resA.body : resB.body;
+    const replay = saleBody({
+      id: rejectedId,
+      occurredAt: rejected.occurredAt,
+      cashReceivedMinor: 15000,
+      items: [{ productId: product.id, quantity: 1 }],
+    });
+    await write(request(app.getHttpServer()).post('/sales'))
+      .send(replay)
+      .expect(200);
+    await write(request(app.getHttpServer()).post('/sales'))
+      .send({
+        ...replay,
+        items: [{ productId: product.id, quantity: 2 }],
+      })
+      .expect(409);
+    expect(
+      await prisma.incidencia.count({ where: { saleId: rejectedId } }),
+    ).toBe(1);
+    expect(
+      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+        .stock,
+    ).toBe(0);
+    // Historical rejected rows cannot be reconstructed from missing items.
+    await prisma.sale.update({
+      where: { id: rejectedId },
+      data: { requestFingerprint: null },
+    });
+    await write(request(app.getHttpServer()).post('/sales'))
+      .send(replay)
+      .expect(409);
   });
 });

@@ -7,12 +7,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { add, multiply, subtract } from 'dinero.js';
+import { createHash } from 'node:crypto';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
-import {
-  Prisma,
-  PrismaClientKnownRequestError,
-} from '../generated/prisma/client.js';
+import { Prisma } from '../generated/prisma/client.js';
 import type { Sale, SaleItem } from '../generated/prisma/client.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import type {
@@ -43,9 +41,19 @@ class SaleStockConflictError extends Error {}
 // other constraint on the same table in the future. Matching on target
 // keeps this handler from silently swallowing an unrelated uniqueness
 // violation as if it were the sale-id race.
-function isSaleIdConflict(err: unknown): err is PrismaClientKnownRequestError {
-  if (!(err instanceof PrismaClientKnownRequestError)) return false;
+function isSaleIdConflict(
+  err: unknown,
+): err is Prisma.PrismaClientKnownRequestError {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (err.code !== 'P2002') return false;
+  const adapter = err.meta?.driverAdapterError as
+    { cause?: { table?: string; constraint?: { index?: string } } } | undefined;
+  if (
+    err.meta?.modelName === 'Sale' &&
+    adapter?.cause?.table === 'Sale' &&
+    adapter.cause.constraint?.index === 'Sale_pkey'
+  )
+    return true;
   const target = err.meta?.target;
   const targets = Array.isArray(target) ? target : [target];
   return targets.some(
@@ -119,14 +127,31 @@ function sameItems(
  * response, etc.) rather than an id collision or a buggy re-send with
  * different data.
  *
- * Header fields (memberId, deviceId, currency, cashReceivedMinor,
- * occurredAt) are always compared. Items are additionally compared for a
- * "completada" sale, but intentionally skipped for a
- * "rechazada_por_conflicto" sale: a conflict-rejected sale never persists
- * its attempted items (see {@link SalesService.create}), so there is
- * nothing stored left to compare them against — a resend that agrees on
- * every header field is treated as the same replay.
+ * Canonicalize attempted items as well as headers. Client prices are not
+ * authoritative and remain excluded. Store only the fingerprint, not
+ * an additional copy of the customer's request.
  */
+function requestFingerprint(dto: CreateSaleDto): string {
+  const items = dto.items
+    .map(({ productId, quantity }) => ({ productId, quantity }))
+    .sort(
+      (a, b) =>
+        a.productId.localeCompare(b.productId) || a.quantity - b.quantity,
+    );
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        memberId: dto.memberId,
+        deviceId: dto.deviceId,
+        currency: dto.currency,
+        cashReceivedMinor: dto.cashReceivedMinor,
+        occurredAt: new Date(dto.occurredAt).toISOString(),
+        items,
+      }),
+    )
+    .digest('hex');
+}
+
 function isIdempotentReplay(
   existing: SaleWithItems,
   dto: CreateSaleDto,
@@ -138,7 +163,11 @@ function isIdempotentReplay(
     existing.cashReceivedMinor === dto.cashReceivedMinor &&
     existing.occurredAt.getTime() === new Date(dto.occurredAt).getTime();
   if (!sameHeader) return false;
-  if (existing.status === 'rechazada_por_conflicto') return true;
+  if (existing.requestFingerprint)
+    return existing.requestFingerprint === requestFingerprint(dto);
+  // Historical rejected rows have no attempted items: fail closed, never
+  // fabricate a fingerprint or accept a changed request as an exact replay.
+  if (existing.status === 'rechazada_por_conflicto') return false;
   return sameItems(existing.items, dto.items);
 }
 
@@ -349,6 +378,7 @@ export class SalesService {
         const created = await tx.sale.create({
           data: {
             id: dto.id,
+            requestFingerprint: requestFingerprint(dto),
             memberId,
             deviceId,
             occurredAt,
@@ -383,7 +413,11 @@ export class SalesService {
       });
       return { sale: response(sale), created: true };
     } catch (err) {
-      if (isSaleIdConflict(err)) {
+      if (
+        isSaleIdConflict(err) ||
+        err instanceof SaleStockConflictError ||
+        err instanceof BadRequestException
+      ) {
         // Two requests carrying the same brand-new id raced each other:
         // both passed the pre-check above as "does not exist yet", but
         // only one `tx.sale.create` could win the id's primary key. The
@@ -397,36 +431,52 @@ export class SalesService {
         });
         if (persisted && isIdempotentReplay(persisted, dto))
           return { sale: response(persisted), created: false };
-        throw new ConflictException(
-          `Sale ${dto.id} already exists with different data`,
-        );
+        if (persisted || isSaleIdConflict(err))
+          throw new ConflictException(
+            `Sale ${dto.id} already exists with different data`,
+          );
       }
       if (!(err instanceof SaleStockConflictError)) throw err;
       // The failed attempt above was fully rolled back (no stock touched,
       // no Sale/SaleItem rows from it survive); this is a fresh, separate
       // write recording the rejection itself, together with the
       // Incidencia a socio will use to review/resolve it manually.
-      const rejected = await this.prisma.sale.create({
-        data: {
-          id: dto.id,
-          memberId: dto.memberId,
-          deviceId: dto.deviceId,
-          occurredAt: new Date(dto.occurredAt),
-          currency: dto.currency,
-          status: 'rechazada_por_conflicto',
-          cashReceivedMinor: dto.cashReceivedMinor,
-          conflictReason: err.message,
-          conflictDetectedAt: new Date(),
-          incidencias: {
-            create: {
-              type: 'conflicto_stock',
-              reason: err.message,
+      const rejected = await this.prisma.sale
+        .create({
+          data: {
+            id: dto.id,
+            requestFingerprint: requestFingerprint(dto),
+            memberId: dto.memberId,
+            deviceId: dto.deviceId,
+            occurredAt: new Date(dto.occurredAt),
+            currency: dto.currency,
+            status: 'rechazada_por_conflicto',
+            cashReceivedMinor: dto.cashReceivedMinor,
+            conflictReason: err.message,
+            conflictDetectedAt: new Date(),
+            incidencias: {
+              create: {
+                type: 'conflicto_stock',
+                reason: err.message,
+              },
             },
           },
-        },
-        include: { items: true },
-      });
-      return { sale: response(rejected), created: true };
+          include: { items: true },
+        })
+        .then((sale) => ({ sale: response(sale), created: true }))
+        .catch(async (error: unknown) => {
+          if (!isSaleIdConflict(error)) throw error;
+          const persisted = await this.prisma.sale.findUnique({
+            where: { id: dto.id },
+            include: { items: true },
+          });
+          if (persisted && isIdempotentReplay(persisted, dto))
+            return { sale: response(persisted), created: false };
+          throw new ConflictException(
+            `Sale ${dto.id} already exists with different data`,
+          );
+        });
+      return rejected;
     }
   }
 
