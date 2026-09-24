@@ -2,6 +2,7 @@ import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   Param,
@@ -16,7 +17,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
 import { ProductsService } from './products.service.js';
 import { SocioGuard } from '../auth/socio.guard.js';
@@ -36,10 +37,11 @@ const validate = (expectedType: new () => object) =>
     expectedType,
   });
 /**
- * Writes (`create`, `patch`, `image`) require {@link SocioGuard}
- * (socio-only); reads (`list`, `audit`) only require {@link AuthGuard},
- * since colaboradores must be able to browse the catalog and price history
- * to sell, even though they cannot change it.
+ * Writes (`create`, `patch`, `image`, `deactivate`, `reactivate`) require
+ * {@link SocioGuard} (socio-only); reads (`list`, `findOne`, `audit`) only
+ * require {@link AuthGuard}, since colaboradores must be able to browse
+ * the catalog and price history to sell, even though they cannot change
+ * it.
  */
 @ApiTags('products')
 @ApiBearerAuth()
@@ -76,6 +78,21 @@ export class ProductsController {
   ) {
     return this.products.list(req.account.contextId, query);
   }
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Get a single product',
+    description:
+      'Returns the product regardless of active status (a deactivated ' +
+      "product is still individually fetchable; only the default list " +
+      'hides it). 404 if it does not exist in this context.',
+  })
+  @UseGuards(AuthGuard)
+  findOne(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.products.findOne(req.account.contextId, id);
+  }
   @Get(':id/audit')
   @ApiExample('productAudit')
   @UseGuards(AuthGuard)
@@ -103,5 +120,34 @@ export class ProductsController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     return this.products.image(req, id, file);
+  }
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Deactivate a product (soft delete)',
+    description:
+      'Sets active=false; the row and its full history (audits, sale ' +
+      'items, deudas) are preserved. Idempotent: deactivating an already ' +
+      'inactive product just returns its current state, not an error.',
+  })
+  @UseGuards(SocioGuard)
+  deactivate(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.products.deactivate(req, id);
+  }
+  @Patch(':id/reactivate')
+  @ApiOperation({
+    summary: 'Reactivate a deactivated product',
+    description:
+      'Sets active=true again. Idempotent: reactivating an already ' +
+      'active product just returns its current state.',
+  })
+  @UseGuards(SocioGuard)
+  reactivate(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.products.reactivate(req, id);
   }
 }

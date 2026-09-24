@@ -37,6 +37,7 @@ export class SocioGuard implements CanActivate {
         id: request.selection!.memberId,
         contextId: request.account.contextId,
         role: 'socio',
+        active: true,
       },
     });
     if (!member)

@@ -67,6 +67,7 @@ export class DeudasService {
       where: {
         id: actor.selection.memberId,
         contextId: actor.account.contextId,
+        active: true,
         ...(requireSocio ? { role: 'socio' as const } : {}),
       },
     });
@@ -154,6 +155,13 @@ export class DeudasService {
       if (!product)
         throw new BadRequestException(
           `Product ${dto.productId} does not exist in this context`,
+        );
+      // Deactivated products cannot be fiado'd/apartado'd either, same
+      // rule as SalesService (BE-10): deactivation removes a product from
+      // sale entirely, not just from the catalog.
+      if (!product.active)
+        throw new BadRequestException(
+          `Product ${dto.productId} is deactivated and cannot be used for a new deuda`,
         );
       if (dto.cantidad > product.stock)
         throw new BadRequestException(

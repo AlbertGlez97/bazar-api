@@ -180,12 +180,12 @@ export class SalesService {
    * Re-validates the actor inside the transaction rather than trusting
    * {@link ContextGuard}'s pre-transaction read (mirrors
    * ProductsService.authorize), so a device deauthorized or a member
-   * removed between the guard running and the transaction committing is
-   * still honored.
+   * removed/deactivated between the guard running and the transaction
+   * committing is still honored.
    *
    * @throws ForbiddenException when there is no selection, or the account,
-   * member or device do not resolve within the actor's `contextId` (the
-   * device must additionally be `authorized`).
+   * member (must be `active`) or device do not resolve within the actor's
+   * `contextId` (the device must additionally be `authorized`).
    */
   private async authorize(tx: Prisma.TransactionClient, actor: Actor) {
     if (!actor.selection) throw new ForbiddenException();
@@ -200,6 +200,7 @@ export class SalesService {
       where: {
         id: actor.selection.memberId,
         contextId: actor.account.contextId,
+        active: true,
       },
     });
     const device = await tx.device.findFirst({
@@ -324,6 +325,13 @@ export class SalesService {
             throw new BadRequestException(
               `Product ${item.productId} does not exist in this context`,
             );
+          // Deactivated products can never be sold, regardless of stock
+          // (BE-10): a soft-deleted product is meant to disappear from
+          // sale entirely, not just from the catalog listing.
+          if (!before.active)
+            throw new BadRequestException(
+              `Product ${item.productId} is deactivated and cannot be sold`,
+            );
           if (item.quantity > before.stock)
             throw new BadRequestException(
               `Insufficient stock for product ${item.productId}`,
@@ -336,6 +344,10 @@ export class SalesService {
           if (!product)
             throw new BadRequestException(
               `Product ${item.productId} does not exist in this context`,
+            );
+          if (!product.active)
+            throw new BadRequestException(
+              `Product ${item.productId} is deactivated and cannot be sold`,
             );
           if (item.quantity > product.stock)
             // Sufficient a moment ago, insufficient now that we hold the

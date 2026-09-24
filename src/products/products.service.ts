@@ -62,9 +62,9 @@ export class ProductsService {
    * that the account is active and that the selected member/device both
    * belong to it and that the member has the `socio` role. This does not
    * merely repeat {@link SocioGuard}: the guard runs before the
-   * transaction starts, so without this re-check a revoked device or a
-   * role change made concurrently would not be honored for a request
-   * already past the guard but not yet committed.
+   * transaction starts, so without this re-check a revoked device, a
+   * role change or a member deactivated concurrently would not be
+   * honored for a request already past the guard but not yet committed.
    *
    * @throws ForbiddenException when there is no selection, or the account,
    * member (with role `socio`) or device do not resolve within the actor's
@@ -84,6 +84,7 @@ export class ProductsService {
         id: actor.selection?.memberId ?? '',
         contextId: actor.account.contextId,
         role: 'socio',
+        active: true,
       },
     });
     const device = await tx.device.findFirst({
@@ -220,10 +221,20 @@ export class ProductsService {
    * `total` describe one consistent snapshot even if products are being
    * created/edited concurrently — otherwise a page boundary could shift
    * mid-scroll and duplicate or skip an item.
+   *
+   * Deactivated products are excluded by default (BE-10): the everyday
+   * sale/catalog screen must never surface something that can no longer
+   * be sold. `includeInactive: true` is honored for any authenticated
+   * account rather than gated to socios specifically, since this
+   * read-only listing endpoint (unlike writes) currently has no
+   * member/device selection to check a role against, and showing a
+   * deactivated product's name in a management view carries no
+   * meaningful risk.
    */
   async list(contextId: string, query: ProductListDto) {
     const where = {
       contextId,
+      ...(query.includeInactive ? {} : { active: true }),
       ...(query.search
         ? { name: { contains: query.search, mode: 'insensitive' as const } }
         : {}),
@@ -246,6 +257,95 @@ export class ProductsService {
       page: query.page,
       limit: query.limit,
     };
+  }
+  /**
+   * Retrieves a single product's detail (any authenticated account may
+   * read it, matching {@link list}). Deliberately does *not* filter by
+   * `active`: a deactivated product must still be individually fetchable
+   * (e.g. from a historical sale's line item, or a catalog-management
+   * screen showing "why is this hidden"), only the default *listing* hides
+   * it.
+   *
+   * @throws NotFoundException when the product does not exist in this
+   * context (including a product belonging to another context, which
+   * must be indistinguishable from nonexistent).
+   */
+  async findOne(contextId: string, id: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id, contextId },
+    });
+    if (!product) throw new NotFoundException();
+    return this.response(product);
+  }
+  /**
+   * Soft-deletes (`active: false`) a product. Never a physical delete:
+   * every historical reference (SaleItem, ProductAudit, Deuda) must keep
+   * resolving exactly as before, and a socio may want to re-list the same
+   * product later without losing its price/audit history.
+   *
+   * Idempotent: deactivating an already-inactive product is a no-op that
+   * still returns 200 with the current state, rather than a 409 — there
+   * is no data-provenance concern here (unlike, e.g., resolving an
+   * Incidencia twice), so treating a repeat request as an error would
+   * only make the frontend's retry/refresh logic more complicated for no
+   * safety benefit.
+   *
+   * Selling a now-inactive product is separately rejected in
+   * {@link SalesService}/{@link DeudasService}, even though its `stock`
+   * field is left untouched here — deactivation is about visibility/
+   * sellability, not an inventory adjustment. Deliberately does not write
+   * a {@link ProductAudit} row: that trail exists for price/metadata
+   * changes a socio needs to reconstruct ("who changed the price and
+   * when"), not for the active flag, which is already fully described by
+   * the current row state.
+   *
+   * @throws NotFoundException when the product does not exist in this
+   * context.
+   */
+  async deactivate(actor: Actor, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${id}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
+      await this.authorize(tx, actor);
+      const product = await tx.product.findFirst({
+        where: { id, contextId: actor.account.contextId },
+      });
+      if (!product) throw new NotFoundException();
+      if (!product.active) return this.response(product);
+      const updated = await tx.product.update({
+        where: { id },
+        data: { active: false },
+      });
+      return this.response(updated);
+    });
+  }
+  /**
+   * Reverses {@link deactivate}. A dedicated endpoint (rather than
+   * folding `active` into {@link patch}'s general DTO) so reactivation
+   * stays a one-field, no-body operation and never gets tangled with
+   * `PatchProductDto`'s "at least one field required" rule for metadata
+   * edits.
+   *
+   * Idempotent for the same reason as {@link deactivate}: reactivating an
+   * already-active product is a harmless no-op, not an error.
+   *
+   * @throws NotFoundException when the product does not exist in this
+   * context.
+   */
+  async reactivate(actor: Actor, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${id}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
+      await this.authorize(tx, actor);
+      const product = await tx.product.findFirst({
+        where: { id, contextId: actor.account.contextId },
+      });
+      if (!product) throw new NotFoundException();
+      if (product.active) return this.response(product);
+      const updated = await tx.product.update({
+        where: { id },
+        data: { active: true },
+      });
+      return this.response(updated);
+    });
   }
   /**
    * Lists a product's paginated audit trail (any authenticated account may

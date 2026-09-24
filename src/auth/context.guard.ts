@@ -30,6 +30,12 @@ import { AuthGuard, type AuthenticatedRequest } from './auth.guard.js';
  * (e.g. product audits, sales attribution) treat as the source of truth for
  * "who/what performed this action" — not any member/device id a client may
  * additionally send in a request body.
+ *
+ * The Member lookup also requires `active: true` (BE-10): a deactivated
+ * colaborador/socio can no longer be selected as the acting person at the
+ * counter — this is the actual enforcement point for "an inactive Member
+ * cannot authenticate," since this app has no per-Member login, only this
+ * per-request shared-tablet selection on top of the per-Account JWT.
  */
 @Injectable()
 export class ContextGuard implements CanActivate {
@@ -55,7 +61,9 @@ export class ContextGuard implements CanActivate {
     }
     const contextId = request.account.contextId;
     const [member, device] = await Promise.all([
-      this.prisma.member.findFirst({ where: { id: memberId, contextId } }),
+      this.prisma.member.findFirst({
+        where: { id: memberId, contextId, active: true },
+      }),
       this.prisma.device.findFirst({
         where: { id: deviceId, contextId, authorized: true },
       }),

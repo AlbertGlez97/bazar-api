@@ -9,7 +9,7 @@ import {
   IsOptional,
   Matches,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_MINOR_UNITS } from '../../common/money.js';
 import { ProductPriceDto } from './product-price.dto.js';
@@ -69,6 +69,17 @@ export class PatchProductDto extends ProductMetadataDto {
 
 export class ProductListDto {
   @IsOptional() @IsString() @Length(0, 200) search?: string;
+  // Defaults to hiding deactivated products, since the everyday catalog
+  // (sale screen) should never surface something that can no longer be
+  // sold; a socio managing the catalog opts in explicitly to see them.
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  // Query strings arrive as text ("true"/"false"), never real booleans;
+  // a plain `@Type(() => Boolean)` would coerce the non-empty string
+  // "false" to `true`, so the value is parsed explicitly instead.
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsIn([true, false])
+  includeInactive = false;
   @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000) page = 1;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
 }
