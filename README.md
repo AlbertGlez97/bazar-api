@@ -1,317 +1,196 @@
-# Bazar backend: audited product catalog (BE-04)
+﻿# Bazar API — BE-02 through BE-09
 
-Products are scoped to the authenticated account context. `unitPriceMinor` replaces
-`salePriceMinor` with a data-preserving database rename; all amounts remain integer
-MXN cents. Existing products stay in `legacy-unassigned`, not in a new account's catalog.
+NestJS 12 / PostgreSQL 16 backend for a shared-device bazaar: products, cash
+sales, incident review, commission calculations, reports, and single-product debts.
+Money is integer **MXN cents** (`12550` means `$125.50`), calculated with Dinero.js 2.
 
-| Endpoint | Contract |
-| --- | --- |
-| `GET /products?search=...&page=1&limit=20` | JWT required; case-insensitive name search, items/total/page/limit. Limit 1-100; deterministic createdAt/id order. |
-| `POST /products` | JWT, x-member-id and x-device-id; selected socio only. Required name, tipo, unitPriceMinor. cantidad requires initialStock; unica always uses 1, ignoring any supplied valid initialStock. |
-| `PATCH /products/:id` | Selected socio only. Editable name, unitPriceMinor, category, purchaseCostMinor, supplier, notes. Optional metadata may be cleared with null. |
-| `GET /products/:id/audit?page=1&limit=20` | Context-scoped audit snapshots with memberId, changedAt, old/new prices; JWT required. |
-| `POST /products/:id/image` | Selected socio only; multipart field `image`, one file, maximum 5 MiB. Returns updated product with image URL. |
+## Run locally
 
-Optional product fields: category, purchaseCostMinor, supplier, notes; image is
-set only through the upload endpoint, not by accepting arbitrary URLs. `tipo`,
-`initialStock` and `stock` cannot be patched. No stock adjustment, sale, commission
-or payment policy is implemented. Unknown request properties are rejected.
+Prerequisites: Node.js 24, npm, and a running Docker Desktop Linux engine.
+PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shims.
 
-Create/edit/image audit and product updates commit together. Row locks serialize
-edits so each audit captures the actual predecessor price. The selected actor's
-current database role is checked, never trusted from request input. This remains
-the approved shared-tablet selection model: a logged-in account can select a
-same-context socio; it does not authenticate that person individually.
+1. Copy `.env.example` to `.env`; replace the development/test passwords in
+   both PostgreSQL variables and their matching URLs. Set an independent random
+   `JWT_SECRET` (at least 32 characters). Never commit `.env`.
+2. Start infrastructure, install, and create the database schema:
 
-Pagination is offset-based, without a fixed global result truncation. Each response
-has a consistent count/page; separate requests are **not** a catalog snapshot.
-Inserts or edits during offline traversal may require a fresh download.
+   ```sh
+   docker compose up -d
+   docker compose ps
+   npm install
+   npx prisma generate
+   npx prisma migrate dev
+   ```
 
-## Local product images
+   The committed migrations cover BE-02–BE-09. Do not reset a database to resolve
+   drift; inspect the migration history and back up its data first.
 
-`StorageService.save(file)` returns `{ path, url }`; `getUrl(path)` derives the public URL and `remove(path)` handles cleanup. Product.imagePath stores only the key; product responses expose the computed `image` URL. By default normalized
-files live in `uploads/products` (ignored by Git); `PRODUCT_UPLOAD_DIR` can point
-to another dedicated directory. Static `/uploads/products/<random-uuid>.png`
-URLs are **public without JWT**, not private image storage. Back up the image
-directory separately from PostgreSQL.
+3. Set `SEED_CONTEXT_ID`, `SEED_USERNAME`, and a `SEED_PASSWORD` of at least
+   12 characters, then provision the installation:
 
-Only content-detected PNG/JPEG/WebP with matching MIME, one frame and at most
-16 million pixels are accepted. Sharp fully decodes and re-encodes to PNG,
-stripping uploaded metadata/content; input and normalized output are capped at
-5 MiB. Original filenames are ignored. SVG/HTML, corrupt data, MIME spoofing and
-oversized files are rejected. Responses set nosniff and restrictive CSP headers.
+   ```sh
+   npx prisma db seed
+   npm run start:dev
+   ```
 
-Failed database/audit writes remove the newly saved file; cleanup failures are
-logged for operator attention. Replaced old images are retained to avoid breaking
-in-flight readers. There is no automatic orphan retention job or distributed
-filesystem/database transaction; process crashes can leave orphan files.
+   Seed creates Alberto and Adid as socios, one account, and authorized devices
+   `shared-tablet`, `alberto-backup-phone`, `adid-backup-phone`. It uses stable
+   identities: repeating it does not duplicate rows, reset passwords, or
+   reauthorize revoked devices. It fails closed on missing credentials or
+   conflicting context ownership. This is one installation, not a tenant
+   provisioning API. Colaborador creation has no public endpoint yet.
 
-Tests use an isolated temporary image directory and the guarded test database.
-Use the existing migration and test commands below. See
-[`odd/tasks/backend-e0-be04.md`](odd/tasks/backend-e0-be04.md) for verified evidence.
+For compiled execution: `npm run build`, then `npm run start:prod`.
+The default address is `http://localhost:3000`. `GET /` is the original
+Hello World route, not a readiness probe. Prisma connects during startup and
+disconnects when Nest closes; shutdown hooks are enabled.
 
-# Authentication and device context (BE-03)
+## Environment reference
 
-BE-03 adds `POST /auth/login`, `GET /members` and `POST /devices/identify`.
-No sale, commission or payment logic is implemented.
+| Variable                                            | Meaning                                                                                                          |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                              | HTTP port, default 3000.                                                                                         |
+| `DATABASE_URL`                                      | Development/runtime PostgreSQL URL; required.                                                                    |
+| `DATABASE_URL_TEST`                                 | Separate local URL ending in `/bazar_test`; required by test tooling, never falls back to development.           |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Development container initialization; defaults for user/db are bazar_dev; password required.                     |
+| `POSTGRES_PORT`                                     | Local development port, default 5432.                                                                            |
+| `POSTGRES_TEST_USER`, `POSTGRES_TEST_PASSWORD`      | Test container initialization; default user bazar_test; password required. Database name is fixed bazar_test.    |
+| `POSTGRES_TEST_PORT`                                | Local test port, default 5433.                                                                                   |
+| `JWT_SECRET`                                        | Required independent signing secret, minimum 32 characters. Tokens expire after 12 hours; no refresh-token flow. |
+| `SEED_CONTEXT_ID`, `SEED_USERNAME`, `SEED_PASSWORD` | Required only for seed; never hardcode real credentials.                                                         |
+| `ENABLE_API_DOCS`                                   | Only exact `true` registers API documentation; otherwise absent/404.                                             |
+| `DOCS_USER`, `DOCS_PASSWORD`                        | Independent Basic credentials, required when documentation is enabled.                                           |
+| `PRODUCT_UPLOAD_DIR`                                | Local images directory; absent or blank uses `uploads/products`.                                                 |
+| `NODE_ENV`                                          | Test tooling sets this internally to test; no application behavior currently branches on it.                     |
 
-## Provision local access
+Docker exposes both databases on loopback only. Named volumes `postgres_dev`
+and `postgres_test` are independent. Changing container initialization variables
+does not change credentials already stored in an existing volume. Do not run
+`docker compose down -v` unless you intend to destroy the stored data.
 
-Set `JWT_SECRET` to an independently generated random secret (at least 32 characters).
-Set `SEED_CONTEXT_ID`, `SEED_USERNAME` and `SEED_PASSWORD` (at least 12 characters)
-in your ignored `.env`; there are no default account credentials. Then run:
-
-```sh
-npx prisma generate
-npx prisma migrate deploy
-npx prisma db seed
-```
-
-The seed creates Alberto and Adid as `socio`, a shared tablet and two backup phones.
-Stable member IDs and unique device identifiers make reruns idempotent. Reruns do
-not reset passwords, move contexts or reauthorize revoked devices. The provisioning
-context must not be `legacy-unassigned`; pre-existing BE-02 rows remain quarantined
-there, and existing devices remain unauthorized until deliberately provisioned.
-This seed provisions one installation, not a general multi-tenant onboarding API.
-
-| Endpoint | Input | Access/result |
-| --- | --- | --- |
-| `POST /auth/login` | `{ "username": "...", "password": "..." }` | Argon2id verification; `{ accessToken, tokenType, expiresIn: 43200 }`, or 401 |
-| `GET /members` | `Authorization: Bearer <token>` | Current account context only; `id`, `name`, `role` (`socio` or `colaborador`) |
-| `POST /devices/identify` | Bearer token plus `{ "identifier": "shared-tablet", "name": "Shared tablet" }` | `{ deviceId }`; unknown, mismatched or revoked devices return 403 |
-
-JWTs use HS256, issuer/audience checks and a 12-hour expiration (covers a full
-bazaar-day session for an already-seed-authorized device without a refresh
-token; see `src/auth/jwt.constants.ts`). Every request
-reloads the active account, so deactivation and context changes apply immediately.
-`ContextGuard` authenticates and checks `x-member-id` and `x-device-id` against the
-account context and current device authorization. It is exported for future
-business routes; selection/bootstrap routes intentionally require JWT only. Its
-acceptance probe exists only in tests, not in the shipped API. Device identifiers
-are not hardware attestation; these checks bind stored records, not physical devices.
-
-Use HTTPS and request-rate limiting before public deployment. Refresh tokens,
-password recovery, public signup and device enrollment are outside BE-03.
-
-Tests use random fixture credentials in the isolated test database and remove only
-their own rows. Run `npm run db:migrate:test`, `npm test`, `npm run test:e2e`,
-`npm run build` and `npm run lint`. See the [BE-03 tracker](odd/tasks/backend-e0-be03.md)
-for actual evidence and remaining prerequisites.
-
-# Local persistence foundation (BE-02)
-
-Requires Node 24 and Docker Compose. This slice adds persistence and money input
-contracts; the existing `GET /` smoke route is unchanged. BE-03 authentication
-is described above. Product operations and sale endpoints are not implemented.
-
-## Start development
-
-Copy `.env.example` to `.env`, replace the two example passwords and their matching
-URL components, then run:
-
-```sh
-npm ci
-docker compose up -d
-docker compose ps
-npx prisma validate
-npx prisma migrate dev --name init
-npx prisma generate
-npm run build
-npm start
-```
-
-The checked-in initial migration creates `Member`, `Device`, `Product`, `Sale`
-and `SaleItem`. `Sale.id` is the client-generated UUID primary key: PostgreSQL
-enforces uniqueness. `PrismaService` connects on initialization and disconnects
-on application close; shutdown hooks are enabled.
-
-## Run isolated tests
+## Verify against the isolated test database
 
 ```sh
 npm run db:migrate:test
+npm run build
+npm run lint
 npm test
 npm run test:e2e
-npm run lint
 ```
 
-Development uses `bazar_dev` on localhost:5432 with the `postgres_dev` volume.
-Tests use a separate PostgreSQL service, `bazar_test` on localhost:5433, with its
-own user/password and `postgres_test` volume. Ports may be configured in `.env`;
-keep URLs synchronized. Both Vitest configurations and the test migration command
-require `DATABASE_URL_TEST`, reject development database names and nonlocal URLs,
-and never fall back to `DATABASE_URL`. Test URLs cannot contain query overrides.
-The integration smoke test inserts and removes only its own test member.
+The migration runner and both Vitest configurations require a local
+`DATABASE_URL_TEST` with database name `bazar_test`, no URL query/hash, and
+a different database name from development. E2E fixtures use unique contexts;
+product-image tests use temporary storage. Migrations are explicit, not
+automatically run by every test invocation. Never point tests at shared data.
 
-Stop containers with `docker compose down`; named volumes survive. Do not use
-`down -v` unless intentionally deleting local data. Changing initialization
-credentials does not change credentials in an existing volume.
+TDD policy: disabled for scaffolding/auth/catalog (BE-02–04); enabled for business
+rules from BE-05 onward. Verification evidence and known gaps are recorded in
+[the verification report](odd/tasks/backend-e0-be09-verification.md).
 
-On Windows PowerShell, use `npm.cmd` and `npx.cmd` if script policy blocks the
-PowerShell shims. If Docker is not on PATH, invoke its installed `docker.exe`
-with the same Compose arguments; no global PATH or execution-policy change is needed.
+## Authentication and request context
 
-## Money contract
+`POST /auth/login` accepts `username` and `password`, verifies Argon2id hashes,
+and returns a JWT. Protected routes require `Authorization: Bearer <token>`.
+`GET /members` lists same-context socios and colaboradores.
+`POST /devices/identify` accepts a known device identifier/name and rejects
+unknown, unauthorized, or cross-context devices.
 
-All persisted amounts are Prisma `Int` cents with a `Minor` suffix. Money helpers
-use Dinero.js 2.0.2 and MXN: `toDinero`, `toMinorUnits`, `formatCurrency`.
-`formatCurrency(12550)` returns exactly `$125.50`. Arithmetic uses Dinero operations,
-not floating-point peso arithmetic. Conversion rejects noninteger/out-of-Int-range
-amounts and incompatible currency/scale rather than rounding. DTOs require integer,
-nonnegative product prices and cash received; signed intermediate money is allowed
-without deciding future insufficient-cash policy.
+Context-protected operations additionally require `x-member-id` and
+`x-device-id` UUID headers. The account, selected member, and authorized device
+must belong to the same context. Socio-only operations check the stored role.
+**This is shared-tablet selection, not personal authentication**: a logged-in
+account can select a same-context socio without a PIN. Do not present this as
+proof of the individual operator's identity.
 
-Verification and remaining limitations are recorded in
-[`odd/tasks/backend-e0-be02.md`](odd/tasks/backend-e0-be02.md).
+## Modules and routes
 
-## API documentation (Swagger)
+| Module      | Routes and permissions                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Products    | JWT: `GET /products`, `GET /products/:id/audit`. Selected socio: `POST /products`, `PATCH /products/:id`, `POST /products/:id/image`. |
+| Sales       | Selected member/device: `POST /sales`. JWT: `GET /sales/:id`. Selected socio: `GET /sales`.                                           |
+| Incidents   | Selected socio: `GET /incidencias`, `GET /incidencias/:id`, `PATCH /incidencias/:id/resolver`.                                        |
+| Commissions | Selected socio: `GET /commissions`, `PATCH /settings/commission-rate`, `PATCH /members/:id/commission-rate`.                          |
+| Reports     | Selected socio: `GET /reports/sales-by-period`, `GET /reports/sales-by-member`.                                                       |
+| Debts       | Selected socio: `POST /deudas`, `GET /deudas`, `GET /deudas/:id`. Any selected member/device: `POST /deudas/:id/abonos`.              |
 
-`GET /docs` serves OpenAPI documentation generated from the existing controllers
-and DTOs (`@nestjs/swagger`), but only when explicitly enabled — set
-`ENABLE_API_DOCS=true` in `.env`. Otherwise the route does not exist at all
-(plain 404, not a 401), so it never reveals that documentation exists in a
-production deployment.
+### Products and images
 
-When enabled, `/docs` is additionally protected by its own HTTP Basic Auth
-layer (`express-basic-auth`), configured with `DOCS_USER` and `DOCS_PASSWORD`
-in `.env`. These credentials are **independent** from the JWT-based
-socio/colaborador authentication used by the business API — they exist only
-to gate documentation access and must not be reused as, or derived from,
-business account credentials.
+Create requires `name`, `tipo` (`unica` or `cantidad`), `unitPriceMinor`.
+Cantidad requires `initialStock`; unica forces it to 1 even when another valid
+integer is supplied. Optional metadata: category, purchaseCostMinor, supplier,
+notes. PATCH edits metadata/prices, not tipo/stock/initialStock.
+Creation and edits have transactional actor/snapshot audit; row locks serialize
+predecessor prices. Catalog search is case-insensitive, with page/limit
+pagination (limit at most 100), deterministic createdAt/id ordering, and no
+cross-request snapshot promise.
 
-```
-ENABLE_API_DOCS=true
-DOCS_USER=some-docs-username
-DOCS_PASSWORD=a-strong-unique-password
-```
+Images use multipart field `image`, one file, maximum 5 MiB. Actual PNG/JPEG/WebP
+content must match the declared MIME. Sharp decodes and re-encodes a single-frame
+image as PNG, with a 16-million-pixel limit. Filenames are generated, not trusted.
+Storage persists a path/key and exposes an image URL through `StorageService`.
+The static `/uploads/products/` URLs are **public without JWT**: images are not
+private data. Failed database updates remove newly saved files; replaced files
+are retained for existing readers, and crash-orphan cleanup remains operational work.
 
-Requires `npm install` to pull in `@nestjs/swagger` and `express-basic-auth`
-(added to `package.json`, not yet installed as of this commit).
+### Cash sales and incidents
 
+The client supplies a stable sale UUID, memberId/deviceId matching the selected
+headers, occurredAt, currency MXN, cashReceivedMinor, and items
+(productId/quantity). Prices are read from PostgreSQL, not trusted from the client.
+Stock, totals, change, items, and sale commit atomically. Insufficient cash or
+stock already absent on the initial read rejects the complete request.
 
----
+Identical normalized resends return 200; new rows return 201; changed identity
+payloads return 409. Client prices are excluded from identity because they are
+not authoritative. A SHA-256 normalized request fingerprint preserves attempted
+items even for newly rejected conflicts. Historical rejected rows lack that
+evidence and fail closed with 409 on resend; no history is invented or deleted.
 
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+A genuine concurrent stock loser is persisted as `rechazada_por_conflicto`
+with an Incidencia, without inventory changes. A sequential request arriving
+after stock is already zero still returns 400, not a saved offline conflict.
+Future occurredAt or more than two days old adds a date incident without
+blocking an otherwise valid sale. Socios resolve incidents with notes; resolution
+does not refund, restock, or alter sales automatically.
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+### Commissions and reports
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Commission rates are basis points (1000 = 10%). Colaborador-specific nullable
+overrides take precedence over the per-context global rate; missing global rate
+means 0. Only completed sales count, even with pending incidents. Dinero scaled
+multiplication rounds half-up to cents. This calculates commission, not payment.
 
-## Description
+Commission queries accept both from/to or neither (current Sunday–Saturday week);
+reports require a date range. receivedAt is the time reference. Date-only values
+cover the whole business day at the implementation's fixed UTC-06:00 offset;
+full ISO instants retain their meaning. Historical timezone changes are not modeled.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+### Debts and payments
 
-## Project setup
+Fiado and apartado both reserve stock immediately for one product/quantity.
+Creation accepts exactly one existing deudorId or inline deudor
+(nombre, optional telefono/notas). Server prices determine totalMinor.
+Positive integer montoMinor payments cannot exceed the remaining balance;
+serialized payments derive saldada when fully covered. Debt payments are not
+Sale rows and do not enter sales reports/commissions. No debt cancellation,
+multi-item debt, or offline debt reconciliation is implemented.
 
-```bash
-$ npm install
-```
+## API documentation
 
-## Compile and run the project
+With `ENABLE_API_DOCS` absent/false, `/docs`, `/docs-json`, and `/docs-yaml`
+return 404. When enabled, all three require independent HTTP Basic credentials:
+missing/wrong credentials return 401; valid credentials return 200. Missing
+configured credentials fail startup. Use HTTPS outside localhost; Basic auth
+does not encrypt credentials. Business API JWT authorization remains separate.
+Swagger reflects current annotations; not every DTO property has a complete
+OpenAPI annotation, so source DTO validation remains authoritative.
 
-```bash
-# development
-$ npm run start
+## Scope and limitations
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
-
-```bash
-$ npm install @nestjs/observe
-```
-
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil MyÅ›liwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
-# bazar-api
+Offline queueing/catalog download belongs to a future client, not this backend.
+No automatic conflict resolution, discounts, cancellations, commission payouts,
+object storage, or personal member PINs are implemented.
+The current business reference is [doc/reglas-de-negocio.md](doc/reglas-de-negocio.md);
+older planning documents are historical context. See the verification report
+for observed tests, dependency advisories, and unresolved edge cases.

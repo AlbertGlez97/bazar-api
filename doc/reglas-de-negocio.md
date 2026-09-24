@@ -91,3 +91,9 @@
 ---
 
 Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-09.
+
+## Notas de verificación de la implementación
+- Las ventas nuevas conservan una huella del request normalizado, incluidos los productos y cantidades intentados en una venta rechazada por conflicto. Cambiar esos datos al reenviar el mismo identificador devuelve 409; el precio enviado por el cliente no forma parte de la identidad porque no es autoritativo.
+- Las ventas históricas rechazadas sin huella ni partidas no permiten reconstruir el request original. Sus reenvíos devuelven 409 de forma conservadora; no se inventa ni elimina historial.
+- La detección de conflicto de stock actual cubre la carrera entre transacciones. Una solicitud secuencial que llega cuando ya no hay stock devuelve 400, sin crear una incidencia; no equivale a una reconciliación completa de todas las colas offline.
+- La documentación JSON/YAML también requiere las credenciales independientes de documentación cuando está habilitada, no solo la interfaz `/docs`.
