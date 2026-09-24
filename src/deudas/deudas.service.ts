@@ -290,11 +290,28 @@ export class DeudasService {
       });
       if (!existing) throw new NotFoundException();
 
-      // Deliberately locks by id only (not also contextId): `existing`
-      // above already confirmed this Deuda belongs to the actor's
-      // context, so this row is known-good — the RLS policies (BE-11)
-      // are the actual last line of defense here, not this filter.
-      await tx.$queryRaw`SELECT id FROM "Deuda" WHERE id = ${deudaId}::uuid FOR UPDATE`;
+      // Locks by id AND contextId explicitly (BE-11 follow-up): raw
+      // queries are the one code path the Prisma tenant-isolation
+      // extension cannot see or inject into (see
+      // src/database/tenant.extension.ts's own doc comment), so this
+      // filter has to be written by hand — `actor.account.contextId` is
+      // the same authoritative value AuthGuard already established for
+      // this request (see src/database/tenant-context.ts), matching the
+      // convention every other manual contextId assignment in this
+      // entrega already follows. `existing` above already confirmed this
+      // Deuda belongs to the actor's context, so this is defense in
+      // depth, not the first line of defense; RLS (also strict as of
+      // this follow-up) is the true backstop if this filter were ever
+      // dropped by mistake.
+      //
+      // Kept as $queryRaw rather than rewritten with the Prisma Client:
+      // Prisma has no query-builder API for `SELECT ... FOR UPDATE` (a
+      // row lock hint) as of this project's Prisma version — a plain
+      // `tx.deuda.findFirst(...)` here would not actually serialize two
+      // concurrent abonos against the same Deuda, defeating the reason
+      // this lock exists in the first place (see this method's own doc
+      // comment on the FOR UPDATE lock above).
+      await tx.$queryRaw`SELECT id FROM "Deuda" WHERE id = ${deudaId}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
 
       const paidSoFar = await tx.abono.aggregate({
         where: { deudaId },
