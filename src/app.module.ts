@@ -3,7 +3,7 @@ import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { DatabaseModule } from './database/database.module.js';
 import { AuthModule } from './auth/auth.module.js';
-import { MembersController } from './members/members.controller.js';
+import { MembersModule } from './members/members.module.js';
 import { DevicesController } from './devices/devices.controller.js';
 import { ProductsModule } from './products/products.module.js';
 import { SalesModule } from './sales/sales.module.js';
@@ -16,6 +16,7 @@ import { DeudasModule } from './deudas/deudas.module.js';
   imports: [
     DatabaseModule,
     AuthModule,
+    MembersModule,
     ProductsModule,
     SalesModule,
     IncidenciasModule,
@@ -23,7 +24,7 @@ import { DeudasModule } from './deudas/deudas.module.js';
     ReportsModule,
     DeudasModule,
   ],
-  controllers: [AppController, MembersController, DevicesController],
+  controllers: [AppController, DevicesController],
   providers: [AppService],
 })
 export class AppModule {}
