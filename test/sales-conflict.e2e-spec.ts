@@ -6,6 +6,11 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { withTestTenant } from './tenant-scope.js';
+
+// BE-11 follow-up: direct Prisma setup/assertion calls against tenant-
+// scoped tables now need an explicit tenant scope so strict RLS sets
+// `app.context_id` before they reach Postgres.
 
 describe('sale idempotency and offline conflict handling (BE-06)', () => {
   let app: INestApplication;
@@ -28,16 +33,18 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   const saleBody = (
     overrides: Partial<{
@@ -70,36 +77,40 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
       },
     });
     token = await app.get(JwtService).signAsync({ sub: account.id });
-    memberId = (
-      await prisma.member.create({
-        data: { name: 'Socio', role: 'socio', contextId },
-      })
-    ).id;
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE06 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      memberId = (
+        await prisma.member.create({
+          data: { name: 'Socio', role: 'socio', contextId },
+        })
+      ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE06 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.incidencia.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.incidencia.deleteMany({
-        where: { sale: { member: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -125,11 +136,15 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
       .expect(200);
     expect(second.body).toEqual(first.body);
     expect(second.body.status).toBe('completada');
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(0);
-    expect(await prisma.saleItem.count({ where: { saleId: body.id } })).toBe(1);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(0);
+      expect(await prisma.saleItem.count({ where: { saleId: body.id } })).toBe(
+        1,
+      );
+    });
   });
 
   it('rejects a resend of the same id with a different payload with 409', async () => {
@@ -158,10 +173,12 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
         }),
       )
       .expect(409);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(8);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(8);
+    });
   });
 
   it('lets exactly one of two racing sales for a single unica product win, persisting the other as rechazada_por_conflicto', async () => {
@@ -206,15 +223,17 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     );
     expect(rejected.conflictDetectedAt).toBeTruthy();
     expect(rejected.totalMinor).toBeNull();
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(0);
-    expect(
-      await prisma.saleItem.count({
-        where: { saleId: { in: [idA, idB] } },
-      }),
-    ).toBe(1);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(0);
+      expect(
+        await prisma.saleItem.count({
+          where: { saleId: { in: [idA, idB] } },
+        }),
+      ).toBe(1);
+    });
   });
 
   it('lists only rejected sales when filtered by status', async () => {

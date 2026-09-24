@@ -7,109 +7,100 @@
 -- another's response — enforced by Postgres itself, not by any code path
 -- that can be skipped by mistake.
 --
--- Every policy is written as:
---   current_setting('app.context_id', true) IS NULL
---   OR "contextId" = current_setting('app.context_id', true)
--- rather than a strict `"contextId" = current_setting(...)`, because this
--- single Postgres role is used by three different kinds of connections
--- that this migration cannot tell apart at the database level:
---   1. The running API, serving real HTTP traffic — this is the case that
---      matters for isolation, and it *always* sets `app.context_id` before
---      touching a scoped table (see PrismaService's `$transaction`
---      override and the extension's standalone-call wrapper), so the
---      strict branch of the OR is what actually applies to it.
---   2. `prisma/seed.ts` and the e2e/integration test suite, which both
---      connect directly (bypassing the Nest app and its middleware
---      entirely) and have always been written to pass an explicit
---      `contextId` themselves rather than relying on a session variable.
---      Blocking these outright would not add security (they already
---      supply the correct value by hand) — it would only break every
---      existing fixture and the seed script for no isolation benefit,
---      since nothing there ever mixes contexts by accident.
--- A connection that never sets `app.context_id` therefore is not
--- filtered by this policy — it is exactly as unrestricted as every
--- connection was before BE-11. This is a deliberate, documented scope
--- reduction: RLS here protects the *serving application's* connection
--- pool from an application-layer bug, not an arbitrary raw psql session.
--- Restricting that further would require a dedicated, lower-privileged
--- database role for the app (so a session that never identifies a tenant
--- has no access at all) — left as a follow-up once the test suite's
--- fixture strategy is ready to set the session variable itself instead of
--- relying on trusted direct access.
+-- Every policy is written strictly:
+--   "contextId" = current_setting('app.context_id', true)
+-- with NO "OR current_setting(...) IS NULL" escape hatch. A connection
+-- that never sets `app.context_id` sees/writes NOTHING on any of these
+-- tables — `current_setting(..., true)` returns NULL when unset, and
+-- `"contextId" = NULL` evaluates to NULL (not true) for every row, so the
+-- policy denies by default rather than falling back to "allow everything"
+-- the moment a connection forgets to identify its tenant. A prior version
+-- of this migration used an "IS NULL OR ..." permissive fallback to keep
+-- prisma/seed.ts and every existing e2e fixture (both of which connect
+-- directly, bypassing the Nest app and its middleware) working without
+-- changes; that fallback defeated the entire purpose of a second,
+-- independent isolation layer (a real isolation bug in the application
+-- layer would have silently degraded RLS to a no-op instead of being
+-- caught by it), so it was removed. `prisma/seed.ts` and the e2e suite
+-- were updated instead (see their own files) to explicitly set
+-- `app.context_id` themselves before touching any scoped table, exactly
+-- as a real authenticated request does via the Prisma extension's
+-- `$transaction` override — there is no code path in this project, seed
+-- or test included, that is allowed to touch a tenant-scoped row without
+-- first identifying which tenant it is acting as.
 --
--- FORCE ROW LEVEL SECURITY still matters even with the permissive-when-
--- unset clause: without FORCE, Postgres exempts a table's *owning* role
--- from RLS entirely, even for a strict, session-var-set policy. Since the
--- app connects as the same role that owns these tables in this project's
--- single-database-user setup, FORCE is what makes the policy actually
--- apply to the app's own connection once it *has* set a context — without
--- it, the policy would silently never do anything for the one connection
--- it exists to constrain.
+-- FORCE ROW LEVEL SECURITY still matters here: without FORCE, Postgres
+-- exempts a table's *owning* role from RLS entirely, even for a strict
+-- policy. Since the app connects as the same role that owns these tables
+-- in this project's single-database-user setup, FORCE is what makes the
+-- policy actually apply to the app's own connection — without it, the
+-- policy would silently never do anything for the one connection it
+-- exists to constrain.
 ALTER TABLE "Product" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Product" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Product"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "ProductAudit" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "ProductAudit" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "ProductAudit"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Sale" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Sale" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Sale"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "SaleItem" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "SaleItem" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "SaleItem"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Incidencia" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Incidencia" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Incidencia"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Deudor" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Deudor" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Deudor"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Deuda" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Deuda" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Deuda"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Abono" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Abono" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Abono"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "AppSettings" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "AppSettings" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "AppSettings"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Member" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Member" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Member"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 ALTER TABLE "Device" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Device" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON "Device"
-  USING (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true))
-  WITH CHECK (current_setting('app.context_id', true) IS NULL OR "contextId" = current_setting('app.context_id', true));
+  USING ("contextId" = current_setting('app.context_id', true))
+  WITH CHECK ("contextId" = current_setting('app.context_id', true));
 
 -- "Account" is deliberately NOT included here (and not in the Prisma
 -- extension's scoped-model list either): resolving *which* contextId

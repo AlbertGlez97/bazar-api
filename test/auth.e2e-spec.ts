@@ -10,6 +10,7 @@ import { AuthModule } from '../src/auth/auth.module.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { seedContext } from '../prisma/seed-data.js';
+import { withTestTenant } from './tenant-scope.js';
 
 // This endpoint exists only in the test application, not in the shipped API.
 @Controller('test-context')
@@ -45,34 +46,38 @@ describe('authenticated context', () => {
     prisma = app.get(PrismaService);
     jwt = app.get(JwtService);
     await seedContext(prisma, { contextId, username, password });
-    memberId = (
-      await prisma.member.findFirstOrThrow({
-        where: { contextId, name: 'Alberto' },
-      })
-    ).id;
-    deviceId = (
-      await prisma.device.findUniqueOrThrow({
-        where: { identifier: 'shared-tablet' },
-      })
-    ).id;
-    await prisma.member.create({
-      data: { name: 'Test collaborator', role: 'colaborador', contextId },
-    });
-    otherMemberId = (
+    await withTestTenant(contextId, async () => {
+      memberId = (
+        await prisma.member.findFirstOrThrow({
+          where: { contextId, name: 'Alberto' },
+        })
+      ).id;
+      deviceId = (
+        await prisma.device.findUniqueOrThrow({
+          where: { identifier: 'shared-tablet' },
+        })
+      ).id;
       await prisma.member.create({
-        data: { name: 'Other context', contextId: otherContext },
-      })
-    ).id;
-    otherDeviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'Other device',
-          identifier: randomUUID(),
-          contextId: otherContext,
-          authorized: true,
-        },
-      })
-    ).id;
+        data: { name: 'Test collaborator', role: 'colaborador', contextId },
+      });
+    });
+    await withTestTenant(otherContext, async () => {
+      otherMemberId = (
+        await prisma.member.create({
+          data: { name: 'Other context', contextId: otherContext },
+        })
+      ).id;
+      otherDeviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'Other device',
+            identifier: randomUUID(),
+            contextId: otherContext,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
     const response = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ username, password })
@@ -82,10 +87,25 @@ describe('authenticated context', () => {
 
   afterAll(async () => {
     if (prisma) {
-      const where = { contextId: { in: [contextId, otherContext] } };
-      await prisma.account.deleteMany({ where });
-      await prisma.device.deleteMany({ where });
-      await prisma.member.deleteMany({ where });
+      await prisma.account.deleteMany({
+        where: { contextId: { in: [contextId, otherContext] } },
+      });
+      // Device/Member are tenant-scoped under strict RLS: a single
+      // `contextId: { in: [...] }` filter can't match both contexts in
+      // one query (the RLS session variable holds exactly one value at a
+      // time), so each context's cleanup runs in its own scope.
+      await withTestTenant(contextId, () =>
+        prisma.device.deleteMany({ where: { contextId } }),
+      );
+      await withTestTenant(otherContext, () =>
+        prisma.device.deleteMany({ where: { contextId: otherContext } }),
+      );
+      await withTestTenant(contextId, () =>
+        prisma.member.deleteMany({ where: { contextId } }),
+      );
+      await withTestTenant(otherContext, () =>
+        prisma.member.deleteMany({ where: { contextId: otherContext } }),
+      );
     }
     await app?.close();
   });
@@ -102,10 +122,12 @@ describe('authenticated context', () => {
       password: 'different-password-ignored',
     });
     expect(await prisma.account.count({ where: { username } })).toBe(1);
-    expect(
-      await prisma.member.count({ where: { contextId, role: 'socio' } }),
-    ).toBe(2);
-    expect(await prisma.device.count({ where: { contextId } })).toBe(3);
+    await withTestTenant(contextId, async () => {
+      expect(
+        await prisma.member.count({ where: { contextId, role: 'socio' } }),
+      ).toBe(2);
+      expect(await prisma.device.count({ where: { contextId } })).toBe(3);
+    });
     expect(
       (await prisma.account.findUniqueOrThrow({ where: { username } }))
         .passwordHash,
@@ -216,9 +238,11 @@ describe('authenticated context', () => {
       .auth(token, { type: 'bearer' })
       .send({ identifier: 'unknown', name: 'Unknown' })
       .expect(403);
-    const foreign = await prisma.device.findUniqueOrThrow({
-      where: { id: otherDeviceId },
-    });
+    const foreign = await withTestTenant(otherContext, () =>
+      prisma.device.findUniqueOrThrow({
+        where: { id: otherDeviceId },
+      }),
+    );
     await request(app.getHttpServer())
       .post('/devices/identify')
       .auth(token, { type: 'bearer' })
@@ -245,10 +269,12 @@ describe('authenticated context', () => {
     await probe().expect(403);
   });
   it('respects device revocation, including after seed rerun', async () => {
-    await prisma.device.update({
-      where: { id: deviceId },
-      data: { authorized: false },
-    });
+    await withTestTenant(contextId, () =>
+      prisma.device.update({
+        where: { id: deviceId },
+        data: { authorized: false },
+      }),
+    );
     try {
       await seedContext(prisma, { contextId, username, password });
       await request(app.getHttpServer())
@@ -263,10 +289,12 @@ describe('authenticated context', () => {
         .set('x-device-id', deviceId)
         .expect(403);
     } finally {
-      await prisma.device.update({
-        where: { id: deviceId },
-        data: { authorized: true },
-      });
+      await withTestTenant(contextId, () =>
+        prisma.device.update({
+          where: { id: deviceId },
+          data: { authorized: true },
+        }),
+      );
     }
   });
   it('rejects disabled accounts even with an already issued token', async () => {

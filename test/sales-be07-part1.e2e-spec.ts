@@ -7,10 +7,15 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { expectUuidV7 } from './uuid-v7.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-07 Part 1 fixes: the P2002 same-brand-new-id race, and occurredAt
  * range validation producing an Incidencia instead of blocking the sale.
+ *
+ * BE-11 follow-up: direct Prisma setup/assertion calls against tenant-
+ * scoped tables now need `withTestTenant(contextId, ...)` so strict RLS
+ * sets `app.context_id` before they reach Postgres.
  */
 describe('sale creation fixes (BE-07 part 1)', () => {
   let app: INestApplication;
@@ -32,16 +37,18 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   const saleBody = (
     overrides: Partial<{
@@ -75,36 +82,40 @@ describe('sale creation fixes (BE-07 part 1)', () => {
       },
     });
     token = await app.get(JwtService).signAsync({ sub: account.id });
-    memberId = (
-      await prisma.member.create({
-        data: { name: 'Socio BE07', role: 'socio', contextId },
-      })
-    ).id;
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE07 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      memberId = (
+        await prisma.member.create({
+          data: { name: 'Socio BE07', role: 'socio', contextId },
+        })
+      ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE07 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.incidencia.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.incidencia.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -136,12 +147,14 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     expect(resA.body.id).toBe(id);
     expect(resB.body.id).toBe(id);
     expect(resA.body).toEqual(resB.body);
-    expect(await prisma.sale.count({ where: { id } })).toBe(1);
-    expect(await prisma.saleItem.count({ where: { saleId: id } })).toBe(1);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(8); // decremented once, not twice.
+    await withTestTenant(contextId, async () => {
+      expect(await prisma.sale.count({ where: { id } })).toBe(1);
+      expect(await prisma.saleItem.count({ where: { saleId: id } })).toBe(1);
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(8); // decremented once, not twice.
+    });
   });
 
   it('replays simultaneous identical sales after the winner consumes all stock', async () => {
@@ -164,10 +177,12 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     expect(
       results.map((result) => result.status).sort((a, b) => a - b),
     ).toEqual([200, 201]);
-    expect(await prisma.sale.count({ where: { id: body.id } })).toBe(1);
-    expect(await prisma.incidencia.count({ where: { saleId: body.id } })).toBe(
-      0,
-    );
+    await withTestTenant(contextId, async () => {
+      expect(await prisma.sale.count({ where: { id: body.id } })).toBe(1);
+      expect(await prisma.incidencia.count({ where: { saleId: body.id } })).toBe(
+        0,
+      );
+    });
   });
 
   it('creates an incidencia_fecha Incidencia (and keeps the sale completada) when occurredAt is in the future', async () => {
@@ -190,9 +205,11 @@ describe('sale creation fixes (BE-07 part 1)', () => {
       )
       .expect(201);
     expect(res.body.status).toBe('completada');
-    const incidencias = await prisma.incidencia.findMany({
-      where: { saleId: id },
-    });
+    const incidencias = await withTestTenant(contextId, () =>
+      prisma.incidencia.findMany({
+        where: { saleId: id },
+      }),
+    );
     expect(incidencias).toHaveLength(1);
     expectUuidV7(incidencias[0].id);
     expect(incidencias[0].type).toBe('incidencia_fecha');
@@ -219,9 +236,11 @@ describe('sale creation fixes (BE-07 part 1)', () => {
       )
       .expect(201);
     expect(res.body.status).toBe('completada');
-    const incidencias = await prisma.incidencia.findMany({
-      where: { saleId: id },
-    });
+    const incidencias = await withTestTenant(contextId, () =>
+      prisma.incidencia.findMany({
+        where: { saleId: id },
+      }),
+    );
     expect(incidencias).toHaveLength(1);
     expect(incidencias[0].type).toBe('incidencia_fecha');
   });
@@ -245,7 +264,9 @@ describe('sale creation fixes (BE-07 part 1)', () => {
         }),
       )
       .expect(201);
-    expect(await prisma.incidencia.count({ where: { saleId: id } })).toBe(0);
+    await withTestTenant(contextId, async () => {
+      expect(await prisma.incidencia.count({ where: { saleId: id } })).toBe(0);
+    });
   });
 
   it('records a real stock conflict and rejects a replay with changed items', async () => {
@@ -277,9 +298,11 @@ describe('sale creation fixes (BE-07 part 1)', () => {
     );
     const rejectedId =
       resA.body.status === 'rechazada_por_conflicto' ? idA : idB;
-    const incidencias = await prisma.incidencia.findMany({
-      where: { saleId: rejectedId },
-    });
+    const incidencias = await withTestTenant(contextId, () =>
+      prisma.incidencia.findMany({
+        where: { saleId: rejectedId },
+      }),
+    );
     expect(incidencias).toHaveLength(1);
     expectUuidV7(incidencias[0].id);
     expect(incidencias[0].type).toBe('conflicto_stock');
@@ -301,17 +324,19 @@ describe('sale creation fixes (BE-07 part 1)', () => {
         items: [{ productId: product.id, quantity: 2 }],
       })
       .expect(409);
-    expect(
-      await prisma.incidencia.count({ where: { saleId: rejectedId } }),
-    ).toBe(1);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(0);
-    // Historical rejected rows cannot be reconstructed from missing items.
-    await prisma.sale.update({
-      where: { id: rejectedId },
-      data: { requestFingerprint: null },
+    await withTestTenant(contextId, async () => {
+      expect(
+        await prisma.incidencia.count({ where: { saleId: rejectedId } }),
+      ).toBe(1);
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(0);
+      // Historical rejected rows cannot be reconstructed from missing items.
+      await prisma.sale.update({
+        where: { id: rejectedId },
+        data: { requestFingerprint: null },
+      });
     });
     await write(request(app.getHttpServer()).post('/sales'))
       .send(replay)

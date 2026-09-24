@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-07 Part 2: the Incidencia entity's own endpoints (list/detail/resolve),
@@ -32,22 +33,26 @@ describe('incidencias (BE-07 part 2)', () => {
       .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
+  // BE-11: strict deny-by-default RLS now requires an explicit tenant
+  // scope for direct Prisma fixture setup/assertion calls.
   const createProduct = (data: {
     name: string;
     tipo: 'unica' | 'cantidad';
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   // Fixture Incidencia rows are created directly against Prisma (not by
   // driving SalesService through a real stock race), since this suite is
@@ -63,24 +68,31 @@ describe('incidencias (BE-07 part 2)', () => {
       unitPriceMinor: 100,
       stock: 5,
     });
-    const sale = await prisma.sale.create({
-      data: {
-        id: randomUUID(),
-        memberId: sellingMemberId,
-        deviceId,
-        occurredAt: new Date(),
-        currency: 'MXN',
-        status: 'completada',
-        totalMinor: 100,
-        cashReceivedMinor: 100,
-        changeMinor: 0,
-        items: {
-          create: { productId: product.id, quantity: 1, unitPriceMinor: 100, subtotalMinor: 100 },
+    return withTestTenant(contextId, async () => {
+      const sale = await prisma.sale.create({
+        data: {
+          id: randomUUID(),
+          memberId: sellingMemberId,
+          deviceId,
+          occurredAt: new Date(),
+          currency: 'MXN',
+          status: 'completada',
+          totalMinor: 100,
+          cashReceivedMinor: 100,
+          changeMinor: 0,
+          items: {
+            create: {
+              productId: product.id,
+              quantity: 1,
+              unitPriceMinor: 100,
+              subtotalMinor: 100,
+            },
+          },
         },
-      },
-    });
-    return prisma.incidencia.create({
-      data: { saleId: sale.id, type, reason: 'fixture reason' },
+      });
+      return prisma.incidencia.create({
+        data: { saleId: sale.id, type, reason: 'fixture reason' },
+      });
     });
   };
 
@@ -101,11 +113,13 @@ describe('incidencias (BE-07 part 2)', () => {
       },
     });
     socioToken = await jwt.signAsync({ sub: socioAccount.id });
-    socioMemberId = (
-      await prisma.member.create({
-        data: { name: 'Alberto Socio', role: 'socio', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socioMemberId = (
+        await prisma.member.create({
+          data: { name: 'Alberto Socio', role: 'socio', contextId },
+        })
+      ).id;
+    });
 
     const colaboradorAccount = await prisma.account.create({
       data: {
@@ -115,37 +129,45 @@ describe('incidencias (BE-07 part 2)', () => {
       },
     });
     colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    colaboradorMemberId = (
-      await prisma.member.create({
-        data: { name: 'Ayudante Colaborador', role: 'colaborador', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      colaboradorMemberId = (
+        await prisma.member.create({
+          data: {
+            name: 'Ayudante Colaborador',
+            role: 'colaborador',
+            contextId,
+          },
+        })
+      ).id;
 
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE07 part2 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE07 part2 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.incidencia.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.incidencia.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -179,9 +201,15 @@ describe('incidencias (BE-07 part 2)', () => {
 
   it('lists incidencias with pagination, search by selling member name, and date ordering', async () => {
     const searchableMember = (
-      await prisma.member.create({
-        data: { name: 'Buscable Vendedor Unico', role: 'colaborador', contextId },
-      })
+      await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: {
+            name: 'Buscable Vendedor Unico',
+            role: 'colaborador',
+            contextId,
+          },
+        }),
+      )
     ).id;
     const first = await createIncidencia('conflicto_stock', searchableMember);
     await new Promise((r) => setTimeout(r, 5));

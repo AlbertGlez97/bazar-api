@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-08: the two read-only sales reports (by period, by member).
@@ -31,17 +32,21 @@ describe('reports (BE-08)', () => {
       .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
+  // BE-11: strict deny-by-default RLS now requires an explicit tenant
+  // scope for direct Prisma fixture setup/assertion calls.
   const createProduct = () =>
-    prisma.product.create({
-      data: {
-        name: `Producto ${randomUUID()}`,
-        tipo: 'cantidad',
-        unitPriceMinor: 100,
-        initialStock: 1000,
-        stock: 1000,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: `Producto ${randomUUID()}`,
+          tipo: 'cantidad',
+          unitPriceMinor: 100,
+          initialStock: 1000,
+          stock: 1000,
+          contextId,
+        },
+      }),
+    );
 
   const createSale = async (data: {
     memberId: string;
@@ -50,32 +55,34 @@ describe('reports (BE-08)', () => {
     receivedAt: Date;
   }) => {
     const product = await createProduct();
-    return prisma.sale.create({
-      data: {
-        id: randomUUID(),
-        memberId: data.memberId,
-        deviceId,
-        occurredAt: data.receivedAt,
-        receivedAt: data.receivedAt,
-        currency: 'MXN',
-        status: data.status ?? 'completada',
-        totalMinor:
-          data.status === 'rechazada_por_conflicto' ? null : data.totalMinor,
-        cashReceivedMinor: data.totalMinor,
-        changeMinor: data.status === 'rechazada_por_conflicto' ? null : 0,
-        items:
-          data.status === 'rechazada_por_conflicto'
-            ? undefined
-            : {
-                create: {
-                  productId: product.id,
-                  quantity: 1,
-                  unitPriceMinor: data.totalMinor,
-                  subtotalMinor: data.totalMinor,
+    return withTestTenant(contextId, () =>
+      prisma.sale.create({
+        data: {
+          id: randomUUID(),
+          memberId: data.memberId,
+          deviceId,
+          occurredAt: data.receivedAt,
+          receivedAt: data.receivedAt,
+          currency: 'MXN',
+          status: data.status ?? 'completada',
+          totalMinor:
+            data.status === 'rechazada_por_conflicto' ? null : data.totalMinor,
+          cashReceivedMinor: data.totalMinor,
+          changeMinor: data.status === 'rechazada_por_conflicto' ? null : 0,
+          items:
+            data.status === 'rechazada_por_conflicto'
+              ? undefined
+              : {
+                  create: {
+                    productId: product.id,
+                    quantity: 1,
+                    unitPriceMinor: data.totalMinor,
+                    subtotalMinor: data.totalMinor,
+                  },
                 },
-              },
-      },
-    });
+        },
+      }),
+    );
   };
 
   beforeAll(async () => {
@@ -95,11 +102,13 @@ describe('reports (BE-08)', () => {
       },
     });
     socioToken = await jwt.signAsync({ sub: socioAccount.id });
-    socioMemberId = (
-      await prisma.member.create({
-        data: { name: 'Alberto Socio', role: 'socio', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socioMemberId = (
+        await prisma.member.create({
+          data: { name: 'Alberto Socio', role: 'socio', contextId },
+        })
+      ).id;
+    });
 
     const colaboradorAccount = await prisma.account.create({
       data: {
@@ -109,37 +118,45 @@ describe('reports (BE-08)', () => {
       },
     });
     colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    colaboradorMemberId = (
-      await prisma.member.create({
-        data: { name: 'Ayudante Colaborador', role: 'colaborador', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      colaboradorMemberId = (
+        await prisma.member.create({
+          data: {
+            name: 'Ayudante Colaborador',
+            role: 'colaborador',
+            contextId,
+          },
+        })
+      ).id;
 
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE08 reports tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE08 reports tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.incidencia.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.incidencia.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });

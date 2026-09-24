@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-11: two independent businesses (contextId A and B) must never see
@@ -13,13 +14,17 @@ import { PrismaService } from '../src/database/prisma.service.js';
  * works, not that every layer above it — controllers, guards — actually
  * uses it correctly end to end).
  *
- * Fixtures are still created via `prisma.model.create(...)` directly
- * (matching every other e2e spec's established pattern, e.g.
- * soft-delete.e2e-spec.ts), which runs with no AsyncLocalStorage scope
- * open at all and is therefore treated as trusted/administrative
- * passthrough by `resolveTenantAccess` (see
- * src/database/tenant-context.ts) — contextId must be passed explicitly
- * on every fixture `create`, exactly as before this entrega.
+ * Fixtures are created via `prisma.model.create(...)` directly, but now
+ * (BE-11 follow-up: RLS is strict/deny-by-default, no more "unset
+ * session var means allow everything") each context's fixtures must run
+ * inside their own `withTestTenant(contextId, ...)` scope — see
+ * test/tenant-scope.ts — so Postgres actually sets `app.context_id`
+ * before those inserts happen. Context A's and B's fixtures are
+ * deliberately two *separate* `withTestTenant` calls, not one shared
+ * call wrapping both: the active contextId always wins over whatever a
+ * call site passes explicitly (see `resolveTenantAccess`), so sharing one
+ * scope across both blocks would silently force both A's and B's rows
+ * onto the same tenant.
  */
 describe('multi-tenancy isolation (BE-11)', () => {
   let app: INestApplication;
@@ -56,6 +61,8 @@ describe('multi-tenancy isolation (BE-11)', () => {
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
 
+    // Account is not tenant-scoped (see tenant.extension.ts), so it does
+    // not need a tenant scope open — only Member/Device do.
     const accountA = await prisma.account.create({
       data: {
         username: randomUUID(),
@@ -64,16 +71,18 @@ describe('multi-tenancy isolation (BE-11)', () => {
       },
     });
     tokenA = await jwt.signAsync({ sub: accountA.id });
-    memberIdA = (
-      await prisma.member.create({
-        data: { name: 'Socio A', role: 'socio', contextId: contextIdA },
-      })
-    ).id;
-    deviceIdA = (
-      await prisma.device.create({
-        data: { name: 'Tablet A', contextId: contextIdA, authorized: true },
-      })
-    ).id;
+    await withTestTenant(contextIdA, async () => {
+      memberIdA = (
+        await prisma.member.create({
+          data: { name: 'Socio A', role: 'socio', contextId: contextIdA },
+        })
+      ).id;
+      deviceIdA = (
+        await prisma.device.create({
+          data: { name: 'Tablet A', contextId: contextIdA, authorized: true },
+        })
+      ).id;
+    });
 
     const accountB = await prisma.account.create({
       data: {
@@ -83,21 +92,24 @@ describe('multi-tenancy isolation (BE-11)', () => {
       },
     });
     tokenB = await jwt.signAsync({ sub: accountB.id });
-    memberIdB = (
-      await prisma.member.create({
-        data: { name: 'Socio B', role: 'socio', contextId: contextIdB },
-      })
-    ).id;
-    deviceIdB = (
-      await prisma.device.create({
-        data: { name: 'Tablet B', contextId: contextIdB, authorized: true },
-      })
-    ).id;
+    await withTestTenant(contextIdB, async () => {
+      memberIdB = (
+        await prisma.member.create({
+          data: { name: 'Socio B', role: 'socio', contextId: contextIdB },
+        })
+      ).id;
+      deviceIdB = (
+        await prisma.device.create({
+          data: { name: 'Tablet B', contextId: contextIdB, authorized: true },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     await app.close();
   });
+
 
   it('does not leak a Product created in context A into context B listings or lookups', async () => {
     const created = await asA(request(app.getHttpServer()).post('/products'))

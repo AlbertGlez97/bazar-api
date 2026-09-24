@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { currentWeekRange } from '../src/common/business-time.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-08: global/individual commission rate configuration and the
@@ -32,22 +33,28 @@ describe('commissions (BE-08)', () => {
       .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
+  // BE-11: strict deny-by-default RLS now requires an explicit tenant
+  // scope for direct Prisma fixture setup/assertion calls.
   const createColaborador = (name: string, commissionRateBps?: number) =>
-    prisma.member.create({
-      data: { name, role: 'colaborador', contextId, commissionRateBps },
-    });
+    withTestTenant(contextId, () =>
+      prisma.member.create({
+        data: { name, role: 'colaborador', contextId, commissionRateBps },
+      }),
+    );
 
   const createProduct = (unitPriceMinor: number) =>
-    prisma.product.create({
-      data: {
-        name: `Producto ${randomUUID()}`,
-        tipo: 'cantidad',
-        unitPriceMinor,
-        initialStock: 1000,
-        stock: 1000,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: `Producto ${randomUUID()}`,
+          tipo: 'cantidad',
+          unitPriceMinor,
+          initialStock: 1000,
+          stock: 1000,
+          contextId,
+        },
+      }),
+    );
 
   // Inserted directly against Prisma (not through POST /sales) so
   // `receivedAt` and `status` can be pinned exactly, independent of the
@@ -60,32 +67,34 @@ describe('commissions (BE-08)', () => {
     receivedAt: Date;
   }) => {
     const product = await createProduct(data.totalMinor || 1);
-    return prisma.sale.create({
-      data: {
-        id: randomUUID(),
-        memberId: data.memberId,
-        deviceId,
-        occurredAt: data.receivedAt,
-        receivedAt: data.receivedAt,
-        currency: 'MXN',
-        status: data.status ?? 'completada',
-        totalMinor:
-          data.status === 'rechazada_por_conflicto' ? null : data.totalMinor,
-        cashReceivedMinor: data.totalMinor,
-        changeMinor: data.status === 'rechazada_por_conflicto' ? null : 0,
-        items:
-          data.status === 'rechazada_por_conflicto'
-            ? undefined
-            : {
-                create: {
-                  productId: product.id,
-                  quantity: 1,
-                  unitPriceMinor: data.totalMinor,
-                  subtotalMinor: data.totalMinor,
+    return withTestTenant(contextId, () =>
+      prisma.sale.create({
+        data: {
+          id: randomUUID(),
+          memberId: data.memberId,
+          deviceId,
+          occurredAt: data.receivedAt,
+          receivedAt: data.receivedAt,
+          currency: 'MXN',
+          status: data.status ?? 'completada',
+          totalMinor:
+            data.status === 'rechazada_por_conflicto' ? null : data.totalMinor,
+          cashReceivedMinor: data.totalMinor,
+          changeMinor: data.status === 'rechazada_por_conflicto' ? null : 0,
+          items:
+            data.status === 'rechazada_por_conflicto'
+              ? undefined
+              : {
+                  create: {
+                    productId: product.id,
+                    quantity: 1,
+                    unitPriceMinor: data.totalMinor,
+                    subtotalMinor: data.totalMinor,
+                  },
                 },
-              },
-      },
-    });
+        },
+      }),
+    );
   };
 
   beforeAll(async () => {
@@ -105,11 +114,13 @@ describe('commissions (BE-08)', () => {
       },
     });
     socioToken = await jwt.signAsync({ sub: socioAccount.id });
-    socioMemberId = (
-      await prisma.member.create({
-        data: { name: 'Alberto Socio', role: 'socio', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socioMemberId = (
+        await prisma.member.create({
+          data: { name: 'Alberto Socio', role: 'socio', contextId },
+        })
+      ).id;
+    });
 
     const colaboradorAccount = await prisma.account.create({
       data: {
@@ -120,32 +131,36 @@ describe('commissions (BE-08)', () => {
     });
     colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
 
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE08 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE08 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.incidencia.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.incidencia.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.appSettings.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({ where: { contextId } });
-      await prisma.appSettings.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -237,9 +252,15 @@ describe('commissions (BE-08)', () => {
       receivedAt: mid,
     });
     // A pending Incidencia on `second` must not exclude it from the sum.
-    await prisma.incidencia.create({
-      data: { saleId: second.id, type: 'incidencia_fecha', reason: 'fixture' },
-    });
+    await withTestTenant(contextId, () =>
+      prisma.incidencia.create({
+        data: {
+          saleId: second.id,
+          type: 'incidencia_fecha',
+          reason: 'fixture',
+        },
+      }),
+    );
     // Not counted: wrong status.
     await createSale({
       memberId: colaborador.id,

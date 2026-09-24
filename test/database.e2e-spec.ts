@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
+import { withTestTenant } from './tenant-scope.js';
+
+const contextId = `be02-smoke-${randomUUID()}`;
 
 describe('PostgreSQL infrastructure', () => {
   it('connects, exposes all five tables, writes only a test marker and disconnects', async () => {
@@ -27,13 +30,24 @@ describe('PostgreSQL infrastructure', () => {
           'SaleItem',
         ]),
       );
-      await prisma.member.create({
-        data: { id, name: 'BE02 isolation smoke' },
+      // BE-11: Member is a tenant-scoped table under strict, deny-by-
+      // default RLS, so even this pre-multi-tenancy smoke test's single
+      // throwaway row needs an explicit tenant scope — see
+      // test/tenant-scope.ts.
+      await withTestTenant(contextId, async () => {
+        await prisma.member.create({
+          data: { id, name: 'BE02 isolation smoke', contextId },
+        });
+        expect(
+          await prisma.member.findUnique({ where: { id } }),
+        ).not.toBeNull();
       });
-      expect(await prisma.member.findUnique({ where: { id } })).not.toBeNull();
     } finally {
-      await prisma.member.deleteMany({ where: { id } });
+      await withTestTenant(contextId, () =>
+        prisma.member.deleteMany({ where: { id } }),
+      );
       await app.close();
     }
   });
 });
+

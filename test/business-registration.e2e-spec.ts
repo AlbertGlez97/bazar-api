@@ -5,6 +5,7 @@ import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-11 Part 2: business registration + email approval flow. Resend is
@@ -86,9 +87,11 @@ describe('business registration (BE-11)', () => {
     expect(stored?.status).toBe('aprobado');
     expect(stored?.createdContextId).toBeTruthy();
 
-    const founder = await prisma.member.findFirst({
-      where: { contextId: stored!.createdContextId!, role: 'socio' },
-    });
+    const founder = await withTestTenant(stored!.createdContextId!, () =>
+      prisma.member.findFirst({
+        where: { contextId: stored!.createdContextId!, role: 'socio' },
+      }),
+    );
     expect(founder?.name).toBe('Adid');
     expect(founder?.active).toBe(true);
   });
@@ -143,9 +146,11 @@ describe('business registration (BE-11)', () => {
     const stored = await prisma.businessRegistrationRequest.findFirst({
       where: { nombreNegocio: 'Artículos Varios' },
     });
-    const founders = await prisma.member.findMany({
-      where: { contextId: stored!.createdContextId!, role: 'socio' },
-    });
+    const founders = await withTestTenant(stored!.createdContextId!, () =>
+      prisma.member.findMany({
+        where: { contextId: stored!.createdContextId!, role: 'socio' },
+      }),
+    );
     expect(founders).toHaveLength(1);
   });
 

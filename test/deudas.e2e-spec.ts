@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { expectUuidV7 } from './uuid-v7.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-09: fiado/apartado unified under "Deuda" — immediate stock decrement
@@ -34,22 +35,26 @@ describe('deudas (BE-09)', () => {
       .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
+  // BE-11: strict deny-by-default RLS now requires an explicit tenant
+  // scope for direct Prisma fixture setup/assertion calls.
   const createProduct = (data: {
     name: string;
     tipo: 'unica' | 'cantidad';
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
@@ -68,11 +73,13 @@ describe('deudas (BE-09)', () => {
       },
     });
     socioToken = await jwt.signAsync({ sub: socioAccount.id });
-    socioMemberId = (
-      await prisma.member.create({
-        data: { name: 'Alberto Socio', role: 'socio', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socioMemberId = (
+        await prisma.member.create({
+          data: { name: 'Alberto Socio', role: 'socio', contextId },
+        })
+      ).id;
+    });
 
     const colaboradorAccount = await prisma.account.create({
       data: {
@@ -82,37 +89,45 @@ describe('deudas (BE-09)', () => {
       },
     });
     colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    colaboradorMemberId = (
-      await prisma.member.create({
-        data: { name: 'Ayudante Colaborador', role: 'colaborador', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      colaboradorMemberId = (
+        await prisma.member.create({
+          data: {
+            name: 'Ayudante Colaborador',
+            role: 'colaborador',
+            contextId,
+          },
+        })
+      ).id;
 
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE09 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE09 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.abono.deleteMany({
-        where: { deuda: { createdByMember: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.abono.deleteMany({
+          where: { deuda: { createdByMember: { contextId } } },
+        });
+        await prisma.deuda.deleteMany({
+          where: { createdByMember: { contextId } },
+        });
+        await prisma.deudor.deleteMany({ where: { contextId } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.deuda.deleteMany({
-        where: { createdByMember: { contextId } },
-      });
-      await prisma.deudor.deleteMany({ where: { contextId } });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -137,9 +152,11 @@ describe('deudas (BE-09)', () => {
     expectUuidV7(res.body.id);
     expectUuidV7(res.body.deudorId);
 
-    const updated = await prisma.product.findUniqueOrThrow({
-      where: { id: product.id },
-    });
+    const updated = await withTestTenant(contextId, () =>
+      prisma.product.findUniqueOrThrow({
+        where: { id: product.id },
+      }),
+    );
     expect(updated.stock).toBe(0);
   });
 
@@ -159,9 +176,11 @@ describe('deudas (BE-09)', () => {
       })
       .expect(201);
 
-    const updated = await prisma.product.findUniqueOrThrow({
-      where: { id: product.id },
-    });
+    const updated = await withTestTenant(contextId, () =>
+      prisma.product.findUniqueOrThrow({
+        where: { id: product.id },
+      }),
+    );
     expect(updated.stock).toBe(7);
   });
 
@@ -181,9 +200,11 @@ describe('deudas (BE-09)', () => {
       })
       .expect(403);
 
-    const updated = await prisma.product.findUniqueOrThrow({
-      where: { id: product.id },
-    });
+    const updated = await withTestTenant(contextId, () =>
+      prisma.product.findUniqueOrThrow({
+        where: { id: product.id },
+      }),
+    );
     expect(updated.stock).toBe(5);
   });
 
@@ -203,13 +224,17 @@ describe('deudas (BE-09)', () => {
       })
       .expect(400);
 
-    const updated = await prisma.product.findUniqueOrThrow({
-      where: { id: product.id },
-    });
+    const updated = await withTestTenant(contextId, () =>
+      prisma.product.findUniqueOrThrow({
+        where: { id: product.id },
+      }),
+    );
     expect(updated.stock).toBe(2);
-    const deudaCount = await prisma.deuda.count({
-      where: { productId: product.id },
-    });
+    const deudaCount = await withTestTenant(contextId, () =>
+      prisma.deuda.count({
+        where: { productId: product.id },
+      }),
+    );
     expect(deudaCount).toBe(0);
   });
 
@@ -267,10 +292,12 @@ describe('deudas (BE-09)', () => {
       .send({ montoMinor: 40_01 })
       .expect(400);
 
-    const deuda = await prisma.deuda.findUniqueOrThrow({
-      where: { id: created.body.id },
-      include: { abonos: true },
-    });
+    const deuda = await withTestTenant(contextId, () =>
+      prisma.deuda.findUniqueOrThrow({
+        where: { id: created.body.id },
+        include: { abonos: true },
+      }),
+    );
     expect(deuda.status).toBe('pendiente');
     expect(deuda.abonos).toHaveLength(0);
   });

@@ -11,8 +11,12 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { ProductsService } from '../src/products/products.service.js';
 import { configureStaticStorage } from '../src/storage/static-storage.js';
+import { withTestTenant } from './tenant-scope.js';
 import { expectUuidV7 } from './uuid-v7.js';
 
+// BE-11: these specs still create fixtures / inspect Product-side tables
+// directly through Prisma and ProductsService, outside the real HTTP
+// request pipeline, so strict RLS now requires an explicit tenant scope.
 describe('context-scoped products', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
@@ -71,38 +75,42 @@ describe('context-scoped products', () => {
     });
     accountId = account.id;
     token = await app.get(JwtService).signAsync({ sub: accountId });
-    socio = (
-      await prisma.member.create({
-        data: { name: 'Socio', role: 'socio', contextId },
-      })
-    ).id;
-    collaborator = (
-      await prisma.member.create({
-        data: { name: 'Collaborator', role: 'colaborador', contextId },
-      })
-    ).id;
-    device = (
-      await prisma.device.create({
-        data: {
-          name: 'BE04 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
-    otherProduct = (
-      await prisma.product.create({
-        data: {
-          name: 'Private catalog',
-          tipo: 'unica',
-          unitPriceMinor: 99,
-          initialStock: 1,
-          stock: 1,
-          contextId: otherContext,
-        },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socio = (
+        await prisma.member.create({
+          data: { name: 'Socio', role: 'socio', contextId },
+        })
+      ).id;
+      collaborator = (
+        await prisma.member.create({
+          data: { name: 'Collaborator', role: 'colaborador', contextId },
+        })
+      ).id;
+      device = (
+        await prisma.device.create({
+          data: {
+            name: 'BE04 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
+    otherProduct = await withTestTenant(otherContext, async () =>
+      (
+        await prisma.product.create({
+          data: {
+            name: 'Private catalog',
+            tipo: 'unica',
+            unitPriceMinor: 99,
+            initialStock: 1,
+            stock: 1,
+            contextId: otherContext,
+          },
+        })
+      ).id,
+    );
     image = await sharp({
       create: { width: 2, height: 2, channels: 3, background: '#338844' },
     })
@@ -111,15 +119,25 @@ describe('context-scoped products', () => {
   });
   afterAll(async () => {
     if (prisma) {
-      await prisma.productAudit.deleteMany({
-        where: { product: { contextId: { in: [contextId, otherContext] } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.productAudit.deleteMany({
+          where: { product: { contextId } },
+        });
+        await prisma.product.deleteMany({
+          where: { contextId },
+        });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.product.deleteMany({
-        where: { contextId: { in: [contextId, otherContext] } },
+      await withTestTenant(otherContext, async () => {
+        await prisma.productAudit.deleteMany({
+          where: { product: { contextId: otherContext } },
+        });
+        await prisma.product.deleteMany({
+          where: { contextId: otherContext },
+        });
       });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
     if (directory) {
@@ -139,13 +157,15 @@ describe('context-scoped products', () => {
     expect(product.initialStock).toBe(1);
     expect(product.stock).toBe(1);
     expectUuidV7(product.id);
-    const audit = await prisma.productAudit.findFirstOrThrow({
-      where: { productId: product.id },
+    await withTestTenant(contextId, async () => {
+      const audit = await prisma.productAudit.findFirstOrThrow({
+        where: { productId: product.id },
+      });
+      expect(audit.memberId).toBe(socio);
+      expectUuidV7(audit.id);
+      expect(audit.oldUnitPriceMinor).toBeNull();
+      expect(audit.newUnitPriceMinor).toBe(100);
     });
-    expect(audit.memberId).toBe(socio);
-    expectUuidV7(audit.id);
-    expect(audit.oldUnitPriceMinor).toBeNull();
-    expect(audit.newUnitPriceMinor).toBe(100);
   });
   it.each([0, 2, 2147483647])(
     'forces unica stock to one despite supplied stock %s',
@@ -196,14 +216,16 @@ describe('context-scoped products', () => {
     await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
       .send({ unitPriceMinor: 10000, notes: 'Edited' })
       .expect(200);
-    const audit = await prisma.productAudit.findFirstOrThrow({
-      where: { productId: product.id, oldUnitPriceMinor: 12550 },
-    });
-    expect(audit.newUnitPriceMinor).toBe(10000);
-    expect(audit.memberId).toBe(socio);
-    expect(audit.after).toMatchObject({
-      notes: 'Edited',
-      unitPriceMinor: 10000,
+    await withTestTenant(contextId, async () => {
+      const audit = await prisma.productAudit.findFirstOrThrow({
+        where: { productId: product.id, oldUnitPriceMinor: 12550 },
+      });
+      expect(audit.newUnitPriceMinor).toBe(10000);
+      expect(audit.memberId).toBe(socio);
+      expect(audit.after).toMatchObject({
+        notes: 'Edited',
+        unitPriceMinor: 10000,
+      });
     });
     for (const change of [
       { tipo: 'unica' },
@@ -226,23 +248,27 @@ describe('context-scoped products', () => {
           .expect(200),
       ),
     );
-    const audits = await prisma.productAudit.findMany({
-      where: { productId: product.id, oldUnitPriceMinor: { not: null } },
+    await withTestTenant(contextId, async () => {
+      const audits = await prisma.productAudit.findMany({
+        where: { productId: product.id, oldUnitPriceMinor: { not: null } },
+      });
+      expect(audits).toHaveLength(2);
+      const first = audits.find((a) => a.oldUnitPriceMinor === 12550)!;
+      const second = audits.find(
+        (a) => a.oldUnitPriceMinor === first.newUnitPriceMinor,
+      )!;
+      expect(second).toBeDefined();
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .unitPriceMinor,
+      ).toBe(second.newUnitPriceMinor);
     });
-    expect(audits).toHaveLength(2);
-    const first = audits.find((a) => a.oldUnitPriceMinor === 12550)!;
-    const second = audits.find(
-      (a) => a.oldUnitPriceMinor === first.newUnitPriceMinor,
-    )!;
-    expect(second).toBeDefined();
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .unitPriceMinor,
-    ).toBe(second.newUnitPriceMinor);
   });
   it('rolls back product creation and edits when audit persistence fails', async () => {
     const product = await create();
-    const before = await prisma.product.count({ where: { contextId } });
+    const before = await withTestTenant(contextId, () =>
+      prisma.product.count({ where: { contextId } }),
+    );
     const transaction = prisma.$transaction.bind(prisma);
     const spy = vi.spyOn(prisma, '$transaction').mockImplementation(((
       callback: unknown,
@@ -258,20 +284,26 @@ describe('context-scoped products', () => {
         return (callback as (value: typeof tx) => Promise<unknown>)(fake);
       })) as typeof prisma.$transaction);
     try {
-      await expect(products.create(actor(), body() as never)).rejects.toThrow(
-        'Injected audit failure',
-      );
       await expect(
-        products.patch(actor(), product.id, { unitPriceMinor: 999 }),
+        withTestTenant(contextId, () =>
+          products.create(actor(), body() as never),
+        ),
+      ).rejects.toThrow('Injected audit failure');
+      await expect(
+        withTestTenant(contextId, () =>
+          products.patch(actor(), product.id, { unitPriceMinor: 999 }),
+        ),
       ).rejects.toThrow('Injected audit failure');
     } finally {
       spy.mockRestore();
     }
-    expect(await prisma.product.count({ where: { contextId } })).toBe(before);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .unitPriceMinor,
-    ).toBe(12550);
+    await withTestTenant(contextId, async () => {
+      expect(await prisma.product.count({ where: { contextId } })).toBe(before);
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .unitPriceMinor,
+      ).toBe(12550);
+    });
   });
   it('searches without case sensitivity and traverses deterministic pages of mixed tipos', async () => {
     const prefix = randomUUID();
@@ -341,10 +373,12 @@ describe('context-scoped products', () => {
     );
     const key = result.body.image.split('/').pop();
     expect(result.body.imagePath).toBeUndefined();
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .imagePath,
-    ).toBe(key);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .imagePath,
+      ).toBe(key);
+    });
     const bytes = await readFile(join(directory, key));
     expect((await sharp(bytes).metadata()).format).toBe('png');
     const served = await request(app.getHttpServer())
@@ -353,9 +387,11 @@ describe('context-scoped products', () => {
       .expect('Content-Type', /image\/png/)
       .expect('X-Content-Type-Options', 'nosniff');
     expect(served.body).toEqual(bytes);
-    expect(
-      await prisma.productAudit.count({ where: { productId: product.id } }),
-    ).toBe(2);
+    await withTestTenant(contextId, async () => {
+      expect(
+        await prisma.productAudit.count({ where: { productId: product.id } }),
+      ).toBe(2);
+    });
     const replacement = await write(
       request(app.getHttpServer()).post(`/products/${product.id}/image`),
     )
@@ -366,9 +402,11 @@ describe('context-scoped products', () => {
       .expect(201);
     expect(replacement.body.image).not.toBe(result.body.image);
     await request(app.getHttpServer()).get(result.body.image).expect(200);
-    expect(
-      await prisma.productAudit.count({ where: { productId: product.id } }),
-    ).toBe(3);
+    await withTestTenant(contextId, async () => {
+      expect(
+        await prisma.productAudit.count({ where: { productId: product.id } }),
+      ).toBe(3);
+    });
   });
   it('rejects spoofed, unsupported, oversized and unauthorized files without orphans', async () => {
     const product = await create();
@@ -415,18 +453,22 @@ describe('context-scoped products', () => {
       .mockRejectedValueOnce(new Error('Injected database failure'));
     try {
       await expect(
-        products.image(actor(), product.id, {
-          buffer: image,
-          mimetype: 'image/png',
-        } as Express.Multer.File),
+        withTestTenant(contextId, () =>
+          products.image(actor(), product.id, {
+            buffer: image,
+            mimetype: 'image/png',
+          } as Express.Multer.File),
+        ),
       ).rejects.toThrow('Injected database failure');
     } finally {
       spy.mockRestore();
     }
     expect(await readdir(directory)).toEqual(before);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .imagePath,
-    ).toBeNull();
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .imagePath,
+      ).toBeNull();
+    });
   });
 });

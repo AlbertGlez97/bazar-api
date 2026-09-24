@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { createServerId } from '../src/common/server-id.js';
+import { withTestTenant } from './tenant-scope.js';
 
 /**
  * BE-10: soft delete for Product and Member (colaborador). Nothing is
@@ -14,6 +15,10 @@ import { createServerId } from '../src/common/server-id.js';
  * (SaleItem, ProductAudit, Sale.memberId, Deuda, Abono, Commission)
  * keeps resolving exactly as before deactivation. Socios can never be
  * deactivated through this mechanism.
+ *
+ * BE-11 follow-up: this spec still seeds fixtures / verifies persistence
+ * directly through Prisma, outside the real HTTP request pipeline, so
+ * strict RLS now requires wrapping those calls in `withTestTenant`.
  */
 describe('soft delete (BE-10)', () => {
   let app: INestApplication;
@@ -43,16 +48,18 @@ describe('soft delete (BE-10)', () => {
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
@@ -71,11 +78,6 @@ describe('soft delete (BE-10)', () => {
       },
     });
     socioToken = await jwt.signAsync({ sub: socioAccount.id });
-    socioMemberId = (
-      await prisma.member.create({
-        data: { name: 'Alberto Socio', role: 'socio', contextId },
-      })
-    ).id;
 
     const colaboradorAccount = await prisma.account.create({
       data: {
@@ -85,42 +87,57 @@ describe('soft delete (BE-10)', () => {
       },
     });
     colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    colaboradorMemberId = (
-      await prisma.member.create({
-        data: { name: 'Ayudante Colaborador', role: 'colaborador', contextId },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      socioMemberId = (
+        await prisma.member.create({
+          data: { name: 'Alberto Socio', role: 'socio', contextId },
+        })
+      ).id;
+      colaboradorMemberId = (
+        await prisma.member.create({
+          data: {
+            name: 'Ayudante Colaborador',
+            role: 'colaborador',
+            contextId,
+          },
+        })
+      ).id;
 
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE10 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE10 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.abono.deleteMany({
-        where: { deuda: { createdByMember: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.abono.deleteMany({
+          where: { deuda: { createdByMember: { contextId } } },
+        });
+        await prisma.deuda.deleteMany({
+          where: { createdByMember: { contextId } },
+        });
+        await prisma.deudor.deleteMany({ where: { contextId } });
+        await prisma.saleItem.deleteMany({
+          where: { sale: { deviceId, product: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { deviceId } });
+        await prisma.productAudit.deleteMany({
+          where: { product: { contextId } },
+        });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.deuda.deleteMany({ where: { createdByMember: { contextId } } });
-      await prisma.deudor.deleteMany({ where: { contextId } });
-      await prisma.saleItem.deleteMany({
-        where: { sale: { deviceId, product: { contextId } } },
-      });
-      await prisma.sale.deleteMany({ where: { deviceId } });
-      await prisma.productAudit.deleteMany({
-        where: { product: { contextId } },
-      });
-      await prisma.product.deleteMany({ where: { contextId } });
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -181,9 +198,11 @@ describe('soft delete (BE-10)', () => {
       ).expect(200);
       expect(deleteRes.body.active).toBe(false);
 
-      const stillExists = await prisma.product.findUniqueOrThrow({
-        where: { id: product.id },
-      });
+      const stillExists = await withTestTenant(contextId, () =>
+        prisma.product.findUniqueOrThrow({
+          where: { id: product.id },
+        }),
+      );
       expect(stillExists.active).toBe(false);
 
       // Idempotent repeat.
@@ -226,8 +245,11 @@ describe('soft delete (BE-10)', () => {
         })
         .expect(400);
       expect(
-        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-          .stock,
+        (
+          await withTestTenant(contextId, () =>
+            prisma.product.findUniqueOrThrow({ where: { id: product.id } }),
+          )
+        ).stock,
       ).toBe(10);
     });
 
@@ -250,8 +272,11 @@ describe('soft delete (BE-10)', () => {
         })
         .expect(400);
       expect(
-        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-          .stock,
+        (
+          await withTestTenant(contextId, () =>
+            prisma.product.findUniqueOrThrow({ where: { id: product.id } }),
+          )
+        ).stock,
       ).toBe(10);
     });
 
@@ -338,30 +363,36 @@ describe('soft delete (BE-10)', () => {
       ).expect(400);
       expect(
         (
-          await prisma.member.findUniqueOrThrow({
-            where: { id: socioMemberId },
-          })
+          await withTestTenant(contextId, () =>
+            prisma.member.findUniqueOrThrow({
+              where: { id: socioMemberId },
+            }),
+          )
         ).active,
       ).toBe(true);
     });
 
     it('DELETE /members/:id by a colaborador is rejected (403)', async () => {
-      const other = await prisma.member.create({
-        data: { name: 'Otro Colaborador', role: 'colaborador', contextId },
-      });
+      const other = await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: { name: 'Otro Colaborador', role: 'colaborador', contextId },
+        }),
+      );
       await asColaborador(
         request(app.getHttpServer()).delete(`/members/${other.id}`),
       ).expect(403);
     });
 
     it('DELETE /members/:id on a colaborador soft-deletes; history stays intact and blocks reselection', async () => {
-      const colaborador = await prisma.member.create({
-        data: {
-          name: 'Historial Colaborador',
-          role: 'colaborador',
-          contextId,
-        },
-      });
+      const colaborador = await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: {
+            name: 'Historial Colaborador',
+            role: 'colaborador',
+            contextId,
+          },
+        }),
+      );
       const product = await createProduct({
         name: `Historial ${randomUUID()}`,
         tipo: 'cantidad',
@@ -400,15 +431,19 @@ describe('soft delete (BE-10)', () => {
       ).expect(200);
       expect(deleteRes.body.active).toBe(false);
 
-      const stillExists = await prisma.member.findUniqueOrThrow({
-        where: { id: colaborador.id },
-      });
+      const stillExists = await withTestTenant(contextId, () =>
+        prisma.member.findUniqueOrThrow({
+          where: { id: colaborador.id },
+        }),
+      );
       expect(stillExists.active).toBe(false);
 
       // Past sales for this member remain fully queryable.
-      const salesCount = await prisma.sale.count({
-        where: { memberId: colaborador.id },
-      });
+      const salesCount = await withTestTenant(contextId, () =>
+        prisma.sale.count({
+          where: { memberId: colaborador.id },
+        }),
+      );
       expect(salesCount).toBe(1);
 
       // A deactivated member can no longer be selected as the acting actor.
@@ -435,9 +470,11 @@ describe('soft delete (BE-10)', () => {
     });
 
     it('PATCH /members/:id/reactivate restores selectability', async () => {
-      const colaborador = await prisma.member.create({
-        data: { name: 'Para reactivar', role: 'colaborador', contextId },
-      });
+      const colaborador = await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: { name: 'Para reactivar', role: 'colaborador', contextId },
+        }),
+      );
       await asSocio(
         request(app.getHttpServer()).delete(`/members/${colaborador.id}`),
       ).expect(200);
@@ -450,9 +487,11 @@ describe('soft delete (BE-10)', () => {
     });
 
     it('PATCH /members/:id edits name and commissionRateBps for a colaborador', async () => {
-      const colaborador = await prisma.member.create({
-        data: { name: 'Editable', role: 'colaborador', contextId },
-      });
+      const colaborador = await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: { name: 'Editable', role: 'colaborador', contextId },
+        }),
+      );
       const res = await asSocio(
         request(app.getHttpServer()).patch(`/members/${colaborador.id}`),
       )
@@ -471,9 +510,15 @@ describe('soft delete (BE-10)', () => {
     });
 
     it('GET /members hides deactivated colaboradores by default, shows them with includeInactive=true only for a socio', async () => {
-      const colaborador = await prisma.member.create({
-        data: { name: `Oculto ${randomUUID()}`, role: 'colaborador', contextId },
-      });
+      const colaborador = await withTestTenant(contextId, () =>
+        prisma.member.create({
+          data: {
+            name: `Oculto ${randomUUID()}`,
+            role: 'colaborador',
+            contextId,
+          },
+        }),
+      );
       await asSocio(
         request(app.getHttpServer()).delete(`/members/${colaborador.id}`),
       ).expect(200);

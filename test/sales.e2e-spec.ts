@@ -7,6 +7,11 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { expectUuidV7 } from './uuid-v7.js';
 import { SalesService } from '../src/sales/sales.service.js';
+import { withTestTenant } from './tenant-scope.js';
+
+// BE-11 follow-up: direct Prisma fixture/assertion calls against tenant-
+// scoped tables now need an explicit tenant scope so strict RLS sets
+// `app.context_id` before they hit Postgres.
 
 describe('multi-item cash sales', () => {
   let app: INestApplication;
@@ -32,16 +37,18 @@ describe('multi-item cash sales', () => {
     unitPriceMinor: number;
     stock: number;
   }) =>
-    prisma.product.create({
-      data: {
-        name: data.name,
-        tipo: data.tipo,
-        unitPriceMinor: data.unitPriceMinor,
-        initialStock: data.stock,
-        stock: data.stock,
-        contextId,
-      },
-    });
+    withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: data.name,
+          tipo: data.tipo,
+          unitPriceMinor: data.unitPriceMinor,
+          initialStock: data.stock,
+          stock: data.stock,
+          contextId,
+        },
+      }),
+    );
 
   const saleBody = (
     overrides: Partial<{
@@ -76,35 +83,40 @@ describe('multi-item cash sales', () => {
     });
     accountId = account.id;
     token = await app.get(JwtService).signAsync({ sub: accountId });
-    memberId = (
-      await prisma.member.create({
-        data: { name: 'Socio', role: 'socio', contextId },
-      })
-    ).id;
-    deviceId = (
-      await prisma.device.create({
-        data: {
-          name: 'BE05 tablet',
-          identifier: randomUUID(),
-          contextId,
-          authorized: true,
-        },
-      })
-    ).id;
+    await withTestTenant(contextId, async () => {
+      memberId = (
+        await prisma.member.create({
+          data: { name: 'Socio', role: 'socio', contextId },
+        })
+      ).id;
+      deviceId = (
+        await prisma.device.create({
+          data: {
+            name: 'BE05 tablet',
+            identifier: randomUUID(),
+            contextId,
+            authorized: true,
+          },
+        })
+      ).id;
+    });
   });
 
   afterAll(async () => {
     if (prisma) {
-      await prisma.saleItem.deleteMany({
-        where: { sale: { member: { contextId } } },
+      await withTestTenant(contextId, async () => {
+        await prisma.saleItem.deleteMany({
+          where: { sale: { member: { contextId } } },
+        });
+        await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.product.deleteMany({ where: { contextId } });
+        await prisma.device.deleteMany({ where: { contextId } });
+        await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.sale.deleteMany({ where: { member: { contextId } } });
-      await prisma.product.deleteMany({
-        where: { contextId: { in: [contextId, otherContext] } },
-      });
+      await withTestTenant(otherContext, () =>
+        prisma.product.deleteMany({ where: { contextId: otherContext } }),
+      );
       await prisma.account.deleteMany({ where: { contextId } });
-      await prisma.device.deleteMany({ where: { contextId } });
-      await prisma.member.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -127,10 +139,12 @@ describe('multi-item cash sales', () => {
     expect(res.body.totalMinor).toBe(15000);
     expect(res.body.changeMinor).toBe(0);
     expect(res.body.items[0].unitPriceMinor).toBe(15000);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(0);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(0);
+    });
   });
 
   it('discounts a cantidad product by the sold quantity', async () => {
@@ -148,10 +162,12 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(201);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(8);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(8);
+    });
   });
 
   it('sums multiple lines using the server price, ignoring the client unitPriceMinor', async () => {
@@ -208,10 +224,12 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(400);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(5);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(5);
+    });
   });
 
   it('rejects the whole sale when one line exceeds stock, leaving valid lines untouched', async () => {
@@ -238,14 +256,16 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(400);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: plentiful.id } }))
-        .stock,
-    ).toBe(10);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: scarce.id } }))
-        .stock,
-    ).toBe(1);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: plentiful.id } }))
+          .stock,
+      ).toBe(10);
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: scarce.id } }))
+          .stock,
+      ).toBe(1);
+    });
   });
 
   it('rolls back every line when a mid-sale product does not exist', async () => {
@@ -275,28 +295,32 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(400);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: first.id } }))
-        .stock,
-    ).toBe(10);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: third.id } }))
-        .stock,
-    ).toBe(10);
-    expect(await prisma.sale.findUnique({ where: { id: saleId } })).toBeNull();
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: first.id } }))
+          .stock,
+      ).toBe(10);
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: third.id } }))
+          .stock,
+      ).toBe(10);
+      expect(await prisma.sale.findUnique({ where: { id: saleId } })).toBeNull();
+    });
   });
 
   it('rejects a productId belonging to another context as if it did not exist', async () => {
-    const foreign = await prisma.product.create({
-      data: {
-        name: 'Foreign catalog item',
-        tipo: 'cantidad',
-        unitPriceMinor: 100,
-        initialStock: 10,
-        stock: 10,
-        contextId: otherContext,
-      },
-    });
+    const foreign = await withTestTenant(otherContext, () =>
+      prisma.product.create({
+        data: {
+          name: 'Foreign catalog item',
+          tipo: 'cantidad',
+          unitPriceMinor: 100,
+          initialStock: 10,
+          stock: 10,
+          contextId: otherContext,
+        },
+      }),
+    );
     await write(request(app.getHttpServer()).post('/sales'))
       .send(
         saleBody({
@@ -305,10 +329,12 @@ describe('multi-item cash sales', () => {
         }),
       )
       .expect(400);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: foreign.id } }))
-        .stock,
-    ).toBe(10);
+    await withTestTenant(otherContext, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: foreign.id } }))
+          .stock,
+      ).toBe(10);
+    });
   });
 
   it('rejects a sale whose declared member/device does not match the authenticated selection', async () => {
@@ -328,10 +354,12 @@ describe('multi-item cash sales', () => {
         memberId: impostor,
       })
       .expect(403);
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(5);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(5);
+    });
   });
 
   it.each([
@@ -429,23 +457,27 @@ describe('multi-item cash sales', () => {
       })) as typeof prisma.$transaction);
     try {
       await expect(
-        sales.create(
-          {
-            account: { id: accountId, contextId },
-            selection: { memberId, deviceId },
-          },
-          saleBody({
-            cashReceivedMinor: 1000,
-            items: [{ productId: product.id, quantity: 1 }],
-          }) as never,
+        withTestTenant(contextId, () =>
+          sales.create(
+            {
+              account: { id: accountId, contextId },
+              selection: { memberId, deviceId },
+            },
+            saleBody({
+              cashReceivedMinor: 1000,
+              items: [{ productId: product.id, quantity: 1 }],
+            }) as never,
+          ),
         ),
       ).rejects.toThrow('Injected sale persistence failure');
     } finally {
       spy.mockRestore();
     }
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
-        .stock,
-    ).toBe(5);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .stock,
+      ).toBe(5);
+    });
   });
 });
