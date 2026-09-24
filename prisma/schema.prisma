@@ -379,4 +379,10 @@ model BusinessRegistrationRequest {
   // "when was this resolved" answer alongside status.
   resolvedAt        DateTime?                  @db.Timestamptz(3)
   createdContextId  String?
+
+  // Every approve/reject request looks this table up by hash; not marked
+  // @unique since a genuine sha256 collision is not a correctness
+  // guarantee this schema needs to enforce at the DB level (the token
+  // itself already has 256 bits of entropy from crypto.randomBytes).
+  @@index([approvalTokenHash])
 }
