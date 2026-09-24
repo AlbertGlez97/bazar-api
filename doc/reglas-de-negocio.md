@@ -1,4 +1,4 @@
-# Reglas de negocio consolidadas (hasta BE-09)
+# Reglas de negocio consolidadas (hasta BE-10)
 
 ## Productos
 - Un producto es "unica" o "cantidad". Única inicia con existencia 1; al venderse pasa a 0 (nunca se marca "vendida", el estado vendido se infiere de existencia=0). El frontend muestra en gris y deshabilita productos con existencia 0.
@@ -94,9 +94,19 @@
 - POST /deudas acepta un deudorId existente o un objeto deudor inline (nombre/telefono/notas) para crear uno nuevo en la misma transacción; exactamente uno de los dos debe enviarse.
 - No hay reconciliación de conflictos de sincronización offline para Deuda (a diferencia de Sale/BE-06): una Deuda siempre se crea en persona, en línea, por un socio, así que stock insuficiente es siempre un rechazo simple (400), nunca un registro de conflicto persistido.
 
+## Eliminación de productos y colaboradores (soft delete)
+- Ni productos ni colaboradores se borran físicamente de la base de datos. Se desactivan mediante un campo active, preservando todo el historial relacionado (ventas, auditoría, comisiones, incidencias, deudas).
+- Un producto desactivado no aparece en el catálogo de venta ni puede venderse, pero su historial permanece intacto y consultable.
+- Un colaborador desactivado no puede iniciar sesión ni ser seleccionado como vendedor, pero su historial de ventas y comisiones pasadas permanece intacto.
+- Los socios (Alberto y Adid) no pueden desactivarse mediante este mecanismo.
+- Ambas entidades pueden reactivarse.
+- Detalle de implementación: este sistema no tiene login por Member (solo por Account, compartido entre socio y colaboradores del mismo dispositivo); "un colaborador desactivado no puede iniciar sesión" se aplica en la práctica como "no puede ser seleccionado como el actor de la sesión" en ContextGuard, que es el único punto donde un Member se resuelve por request — un Member con active=false deja de resolver ahí, bloqueando cualquier venta, deuda o mutación de catálogo atribuida a esa persona.
+- DELETE /products/:id y DELETE /members/:id son idempotentes: desactivar un registro ya inactivo devuelve 200 con el estado actual, no un error 409 — no hay una preocupación de proveniencia de datos como en resolver una incidencia dos veces, así que tratarlo como error solo complicaría la lógica de reintento del frontend sin ganar seguridad.
+- GET /products y GET /members aceptan ?includeInactive=true para que un socio revise el catálogo/roster completo (incluyendo desactivados); por ahora se honra para cualquier cuenta autenticada, no solo socios, ya que estos endpoints de lectura no tienen selección de member/device con la que verificar rol sin un cambio de guard más amplio, y el riesgo de exponer nombres de productos/colaboradores desactivados es bajo.
+
 ---
 
-Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-09.
+Este documento se actualiza conforme se cierran nuevas decisiones de negocio en cada entrega. Última actualización: BE-10.
 
 ## Notas de verificación de la implementación
 - Las ventas nuevas conservan una huella del request normalizado, incluidos los productos y cantidades intentados en una venta rechazada por conflicto. Cambiar esos datos al reenviar el mismo identificador devuelve 409; el precio enviado por el cliente no forma parte de la identidad porque no es autoritativo.
