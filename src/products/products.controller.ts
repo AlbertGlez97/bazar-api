@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -41,7 +42,9 @@ const validate = (expectedType: new () => object) =>
  * {@link SocioGuard} (socio-only); reads (`list`, `findOne`, `audit`) only
  * require {@link AuthGuard}, since colaboradores must be able to browse
  * the catalog and price history to sell, even though they cannot change
- * it.
+ * it. `list`'s `includeInactive` is additionally gated to socios via the
+ * optional `x-member-id` header, without requiring a full guard/selection
+ * (see {@link ProductsService.list}).
  */
 @ApiTags('products')
 @ApiBearerAuth()
@@ -75,8 +78,9 @@ export class ProductsController {
   list(
     @Req() req: AuthenticatedRequest,
     @Query(validate(ProductListDto)) query: ProductListDto,
+    @Headers('x-member-id') requestingMemberId?: string,
   ) {
-    return this.products.list(req.account.contextId, query);
+    return this.products.list(req.account.contextId, query, requestingMemberId);
   }
   @Get(':id')
   @ApiOperation({

@@ -71,8 +71,16 @@ export class ProductListDto {
   @IsOptional() @IsString() @Length(0, 200) search?: string;
   // Defaults to hiding deactivated products, since the everyday catalog
   // (sale screen) should never surface something that can no longer be
-  // sold; a socio managing the catalog opts in explicitly to see them.
-  @ApiProperty({ required: false, default: false })
+  // sold. Only honored when the caller's `x-member-id` header resolves
+  // to an active socio (see ProductsService.list) — silently ignored
+  // otherwise, not rejected.
+  @ApiProperty({
+    required: false,
+    default: false,
+    description:
+      'Also include deactivated products. Only takes effect when the ' +
+      'x-member-id header identifies an active socio; ignored otherwise.',
+  })
   @IsOptional()
   // Query strings arrive as text ("true"/"false"), never real booleans;
   // a plain `@Type(() => Boolean)` would coerce the non-empty string

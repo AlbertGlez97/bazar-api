@@ -47,10 +47,17 @@ export class PatchMemberDto {
 
 export class MemberListDto {
   // Defaults to hiding deactivated colaboradores, matching
-  // ProductListDto.includeInactive: the everyday seller-selector should
-  // never surface someone who can no longer act, but a socio managing the
-  // roster opts in explicitly.
-  @ApiProperty({ required: false, default: false })
+  // ProductListDto.includeInactive: only takes effect when the caller's
+  // x-member-id header resolves to an active socio (see
+  // MembersService.list) — silently ignored otherwise, not rejected.
+  @ApiProperty({
+    required: false,
+    default: false,
+    description:
+      'Also include deactivated colaboradores. Only takes effect when ' +
+      'the x-member-id header identifies an active socio; ignored ' +
+      'otherwise.',
+  })
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')
   @IsIn([true, false])

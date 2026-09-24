@@ -16,6 +16,7 @@ import type {
 } from './dto/product.dto.js';
 import { StorageService } from '../storage/storage.service.js';
 import { createServerId } from '../common/server-id.js';
+import { isRequestingSocio } from '../auth/socio-check.util.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 /**
@@ -222,19 +223,32 @@ export class ProductsService {
    * created/edited concurrently — otherwise a page boundary could shift
    * mid-scroll and duplicate or skip an item.
    *
-   * Deactivated products are excluded by default (BE-10): the everyday
-   * sale/catalog screen must never surface something that can no longer
-   * be sold. `includeInactive: true` is honored for any authenticated
-   * account rather than gated to socios specifically, since this
-   * read-only listing endpoint (unlike writes) currently has no
-   * member/device selection to check a role against, and showing a
-   * deactivated product's name in a management view carries no
-   * meaningful risk.
+   * Deactivated products are excluded by default (BE-10). `includeInactive:
+   * true` is only honored when the request also identifies an active
+   * socio via the optional `x-member-id` header ({@link isRequestingSocio})
+   * — this is a deliberately lightweight check (no `x-device-id`/full
+   * {@link ContextGuard} selection required) because this listing is also
+   * used *before* any Member has been selected (e.g. to populate the
+   * person selector), so it cannot require a selection to already exist.
+   * For a colaborador (or a request with no/invalid member header), the
+   * parameter is silently ignored rather than rejected with 403: the
+   * overwhelmingly likely cause is a stale/accidental query parameter
+   * from the frontend, not a malicious attempt to browse a deactivated
+   * catalog, and showing a deactivated product's name/id carries low risk
+   * even if it did happen — so there is no need to surface an error for
+   * it.
    */
-  async list(contextId: string, query: ProductListDto) {
+  async list(
+    contextId: string,
+    query: ProductListDto,
+    requestingMemberId?: string,
+  ) {
+    const includeInactive =
+      query.includeInactive &&
+      (await isRequestingSocio(this.prisma, contextId, requestingMemberId));
     const where = {
       contextId,
-      ...(query.includeInactive ? {} : { active: true }),
+      ...(includeInactive ? {} : { active: true }),
       ...(query.search
         ? { name: { contains: query.search, mode: 'insensitive' as const } }
         : {}),

@@ -255,7 +255,7 @@ describe('soft delete (BE-10)', () => {
       ).toBe(10);
     });
 
-    it('GET /products hides deactivated products by default, shows them with includeInactive=true', async () => {
+    it('GET /products hides deactivated products by default, shows them with includeInactive=true only for a socio', async () => {
       const product = await createProduct({
         name: `Listing ${randomUUID()}`,
         tipo: 'cantidad',
@@ -275,6 +275,28 @@ describe('soft delete (BE-10)', () => {
         ),
       ).toBe(false);
 
+      const defaultListColaborador = await asColaborador(
+        request(app.getHttpServer()).get('/products'),
+      ).expect(200);
+      expect(
+        defaultListColaborador.body.items.some(
+          (p: { id: string }) => p.id === product.id,
+        ),
+      ).toBe(false);
+
+      // A colaborador passing includeInactive=true is silently ignored
+      // (not 403'd) — the parameter is only honored for a resolved socio.
+      const colaboradorWithInactive = await asColaborador(
+        request(app.getHttpServer())
+          .get('/products')
+          .query({ includeInactive: 'true' }),
+      ).expect(200);
+      expect(
+        colaboradorWithInactive.body.items.some(
+          (p: { id: string }) => p.id === product.id,
+        ),
+      ).toBe(false);
+
       const withInactive = await asSocio(
         request(app.getHttpServer())
           .get('/products')
@@ -286,6 +308,7 @@ describe('soft delete (BE-10)', () => {
         ),
       ).toBe(true);
     });
+
 
     it('PATCH /products/:id/reactivate reactivates a deactivated product', async () => {
       const product = await createProduct({
@@ -447,7 +470,7 @@ describe('soft delete (BE-10)', () => {
         .expect(400);
     });
 
-    it('GET /members hides deactivated colaboradores by default, shows them with includeInactive=true', async () => {
+    it('GET /members hides deactivated colaboradores by default, shows them with includeInactive=true only for a socio', async () => {
       const colaborador = await prisma.member.create({
         data: { name: `Oculto ${randomUUID()}`, role: 'colaborador', contextId },
       });
@@ -460,6 +483,28 @@ describe('soft delete (BE-10)', () => {
       ).expect(200);
       expect(
         defaultList.body.some((m: { id: string }) => m.id === colaborador.id),
+      ).toBe(false);
+
+      const defaultListColaborador = await asColaborador(
+        request(app.getHttpServer()).get('/members'),
+      ).expect(200);
+      expect(
+        defaultListColaborador.body.some(
+          (m: { id: string }) => m.id === colaborador.id,
+        ),
+      ).toBe(false);
+
+      // A colaborador passing includeInactive=true is silently ignored
+      // (not 403'd) — the parameter is only honored for a resolved socio.
+      const colaboradorWithInactive = await asColaborador(
+        request(app.getHttpServer())
+          .get('/members')
+          .query({ includeInactive: 'true' }),
+      ).expect(200);
+      expect(
+        colaboradorWithInactive.body.some(
+          (m: { id: string }) => m.id === colaborador.id,
+        ),
       ).toBe(false);
 
       const withInactive = await asSocio(

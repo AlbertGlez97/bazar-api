@@ -8,16 +8,21 @@ import {
 import { PrismaService } from '../database/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
-import type { PatchMemberDto } from './dto/member.dto.js';
+import type { MemberListDto, PatchMemberDto } from './dto/member.dto.js';
+import { isRequestingSocio } from '../auth/socio-check.util.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 
 /**
  * `list` is read-only, available to any authenticated account regardless
  * of role (the shared-tablet person selector needs every eligible member
- * visible to a colaborador too), and hides deactivated colaboradores by
- * default (BE-10) since a deactivated person cannot act — `includeInactive`
- * opts a socio into seeing them for roster management.
+ * visible to a colaborador too — the selector's whole purpose is to let
+ * someone identify themselves *before* any selection exists), and hides
+ * deactivated colaboradores by default (BE-10) since a deactivated person
+ * cannot act. `includeInactive` is only honored when the request also
+ * identifies an active socio via the optional `x-member-id` header (see
+ * {@link isRequestingSocio}); for anyone else it is silently ignored
+ * rather than rejected with 403 (see `list`'s own doc for the rationale).
  *
  * `patch`, `deactivate` and `reactivate` are socio-only (enforced by
  * {@link SocioGuard} at the controller) and never touch a socio's `active`
@@ -67,7 +72,28 @@ export class MembersService {
     return member.id;
   }
 
-  list(contextId: string, includeInactive: boolean) {
+  /**
+   * Deactivated colaboradores are excluded by default (BE-10).
+   * `includeInactive: true` is only honored when `requestingMemberId`
+   * (from the caller's optional `x-member-id` header) resolves to an
+   * active socio in this context — this endpoint is used *before* any
+   * Member has necessarily been selected (populating the person selector
+   * itself), so it cannot require a full {@link ContextGuard}/
+   * {@link SocioGuard} selection to already exist just to make this one
+   * parameter safe. For anyone else, the parameter is silently ignored
+   * (not rejected with 403): the far more likely cause is a stale or
+   * accidental query parameter from the frontend than a deliberate
+   * attempt to browse deactivated staff, and the roster this exposes
+   * (id/name/role/active) carries low risk even in that unlikely case.
+   */
+  async list(
+    contextId: string,
+    query: MemberListDto,
+    requestingMemberId?: string,
+  ) {
+    const includeInactive =
+      query.includeInactive &&
+      (await isRequestingSocio(this.prisma, contextId, requestingMemberId));
     return this.prisma.member.findMany({
       where: {
         contextId,
