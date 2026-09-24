@@ -394,6 +394,7 @@ export class SalesService {
             requestFingerprint: requestFingerprint(dto),
             memberId,
             deviceId,
+            contextId: actor.account.contextId,
             occurredAt,
             receivedAt,
             currency: dto.currency,
@@ -401,10 +402,16 @@ export class SalesService {
             totalMinor,
             cashReceivedMinor: dto.cashReceivedMinor,
             changeMinor,
+            // Nested writes for a *different* model (SaleItem,
+            // Incidencia) are invisible to the Prisma tenant-isolation
+            // extension (it only sees the top-level `Sale.create` call),
+            // so `contextId` is set by hand here (BE-11) rather than
+            // relying on automatic injection.
             items: {
               create: lines.map((line) => ({
                 id: createServerId(),
                 productId: line.productId,
+                contextId: actor.account.contextId,
                 quantity: line.quantity,
                 unitPriceMinor: line.unitPriceMinor,
                 subtotalMinor: line.subtotalMinor,
@@ -415,6 +422,7 @@ export class SalesService {
                   incidencias: {
                     create: {
                       id: createServerId(),
+                      contextId: actor.account.contextId,
                       type: 'incidencia_fecha',
                       reason: dateIssue,
                     },
@@ -463,6 +471,7 @@ export class SalesService {
             requestFingerprint: requestFingerprint(dto),
             memberId: dto.memberId,
             deviceId: dto.deviceId,
+            contextId: actor.account.contextId,
             occurredAt: new Date(dto.occurredAt),
             currency: dto.currency,
             status: 'rechazada_por_conflicto',
@@ -472,6 +481,7 @@ export class SalesService {
             incidencias: {
               create: {
                 id: createServerId(),
+                contextId: actor.account.contextId,
                 type: 'conflicto_stock',
                 reason: err.message,
               },

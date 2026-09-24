@@ -180,6 +180,7 @@ export class DeudasService {
       return tx.deuda.create({
         data: {
           id: createServerId(),
+          contextId: actor.account.contextId,
           type: dto.type,
           deudorId,
           productId: product.id,
@@ -289,6 +290,10 @@ export class DeudasService {
       });
       if (!existing) throw new NotFoundException();
 
+      // Deliberately locks by id only (not also contextId): `existing`
+      // above already confirmed this Deuda belongs to the actor's
+      // context, so this row is known-good — the RLS policies (BE-11)
+      // are the actual last line of defense here, not this filter.
       await tx.$queryRaw`SELECT id FROM "Deuda" WHERE id = ${deudaId}::uuid FOR UPDATE`;
 
       const paidSoFar = await tx.abono.aggregate({
@@ -308,6 +313,7 @@ export class DeudasService {
         data: {
           id: createServerId(),
           deudaId,
+          contextId: actor.account.contextId,
           montoMinor: dto.montoMinor,
           receivedByMemberId: memberId,
           nota: dto.nota,

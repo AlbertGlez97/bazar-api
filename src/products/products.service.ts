@@ -118,6 +118,7 @@ export class ProductsService {
         id: createServerId(),
         productId: product.id,
         memberId,
+        contextId: product.contextId,
         // Capture time after acquiring the row lock, not transaction start time.
         changedAt: new Date(),
         oldUnitPriceMinor: before?.unitPriceMinor ?? null,
