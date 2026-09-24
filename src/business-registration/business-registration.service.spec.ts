@@ -12,6 +12,11 @@ describe('approval email API URLs', () => {
     ['https://api.example.test/api/v1', 'https://api.example.test'],
     ['https://api.example.test/api/v1/', 'https://api.example.test'],
     ['  https://api.example.test/api/v1  ', 'https://api.example.test'],
+    ['https://api.example.test/API/v1', 'https://api.example.test'],
+    ['https://api.example.test/Api/V1/', 'https://api.example.test'],
+    ['https://api.example.test/api/v1?x=1', 'https://api.example.test'],
+    ['https://api.example.test/?x=1', 'https://api.example.test'],
+    ['https://api.example.test/api/v1#frag', 'https://api.example.test'],
     ['', 'http://localhost:3100'],
     [undefined, 'http://localhost:3100'],
   ])(

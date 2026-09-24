@@ -78,6 +78,12 @@ describe('business registration (BE-11)', () => {
     const warn = vi.spyOn(Logger.prototype, 'warn');
     try {
       await import('../src/main.js');
+      // The import only resolves after main.ts finished `await bootstrap()`
+      // (prefix, static/docs setup and app.listen). If that top-level await
+      // were removed, the spies below would be restored before the
+      // middleware is registered and the warning test would pass vacuously,
+      // so fail loudly instead of trusting microtask timing.
+      expect(app.getHttpServer().listening).toBe(true);
     } finally {
       bootWarnings = warn.mock.calls.map((args, i) => {
         const context = (warn.mock.contexts[i] as { context?: string })

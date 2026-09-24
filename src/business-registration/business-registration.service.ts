@@ -29,16 +29,19 @@ function hashToken(token: string): string {
 /**
  * Server origin used to build the email links. The `/api/v1` global prefix
  * is appended by the caller, so an `APP_BASE_URL` that already ends in it
- * (with or without trailing slashes) is normalized to avoid
- * `/api/v1/api/v1/...`.
+ * (in any letter case, with or without trailing slashes) is normalized to
+ * avoid `/api/v1/api/v1/...`. A query string or fragment is dropped too:
+ * appended after it, the path would end up inside the query and the link
+ * would point at the wrong place.
  */
 function baseUrl(): string {
   return (
     process.env.APP_BASE_URL?.trim() ||
     `http://localhost:${process.env.PORT ?? 3000}`
   )
+    .replace(/[?#].*$/, '')
     .replace(/\/+$/, '')
-    .replace(/\/api\/v1$/, '')
+    .replace(/\/api\/v1$/i, '')
     .replace(/\/+$/, '');
 }
 
