@@ -43,6 +43,12 @@ enum DeudaStatus {
   saldada
 }
 
+enum BusinessRegistrationStatus {
+  pendiente
+  aprobado
+  rechazado
+}
+
 model Account {
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
@@ -130,15 +136,21 @@ model ProductAudit {
   id                String   @id @default(uuid()) @db.Uuid
   productId         String   @db.Uuid
   memberId          String   @db.Uuid
+  // BE-11: direct contextId (not just reachable via `product`/`member`),
+  // matching every other tenant-scoped model — required by the Prisma
+  // Client Extension (which filters/injects on a model's own column, not
+  // a relation hop) and by the Postgres RLS policy on this table.
+  contextId         String   @default("legacy-unassigned")
   changedAt         DateTime @default(now()) @db.Timestamptz(3)
   oldUnitPriceMinor Int?
   newUnitPriceMinor Int
   before            Json?
   after             Json
   product           Product  @relation(fields: [productId], references: [id])
-  member            Member   @relation(fields: [memberId], references: [id])
+  member             Member  @relation(fields: [memberId], references: [id])
 
   @@index([productId, changedAt, id])
+  @@index([contextId])
 }
 
 model Sale {
@@ -146,6 +158,11 @@ model Sale {
   id         String     @id @db.Uuid
   memberId   String     @db.Uuid
   deviceId   String     @db.Uuid
+  // BE-11: direct contextId, denormalized from member/device (which must
+  // already agree — see SalesService.authorize) so this table can be
+  // filtered/RLS-protected on its own column instead of only reachable
+  // via a join through Member.
+  contextId  String     @default("legacy-unassigned")
   occurredAt DateTime   @db.Timestamptz(3)
   receivedAt DateTime   @default(now()) @db.Timestamptz(3)
   currency   String     @default("MXN") @db.Char(3)
@@ -178,18 +195,28 @@ model Sale {
   incidencias        Incidencia[]
 
   @@index([status, receivedAt, id])
+  @@index([contextId])
 }
 
 model SaleItem {
   id             String   @id @default(uuid()) @db.Uuid
   saleId         String   @db.Uuid
   productId      String   @db.Uuid
+  // BE-11: denormalized from the parent Sale, set explicitly by
+  // SalesService when constructing the nested `items: { create: [...] } }`
+  // payload — a Prisma Client Extension only intercepts a model's own
+  // top-level operation, not a nested relation write buried inside a
+  // different model's `create`, so this one column cannot rely on the
+  // extension and is filled in by hand at every call site instead.
+  contextId      String   @default("legacy-unassigned")
   quantity       Int
   unitPriceMinor Int
   subtotalMinor  Int
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
   sale           Sale     @relation(fields: [saleId], references: [id])
   product        Product  @relation(fields: [productId], references: [id])
+
+  @@index([contextId])
 }
 
 // A standing, independently-resolvable record of something that needed a
@@ -203,6 +230,10 @@ model SaleItem {
 model Incidencia {
   id       String                     @id @default(uuid()) @db.Uuid
   saleId   String                     @db.Uuid
+  // BE-11: same rationale as SaleItem.contextId — set by hand wherever an
+  // Incidencia is created nested under `Sale.create`, since a Prisma
+  // Client Extension cannot see inside another model's nested write.
+  contextId String                    @default("legacy-unassigned")
   type     IncidenciaType
   reason   String
   detectedAt DateTime                 @default(now()) @db.Timestamptz(3)
@@ -217,6 +248,7 @@ model Incidencia {
   resolvedBy         Member?                    @relation(fields: [resolvedByMemberId], references: [id])
 
   @@index([resolutionStatus, detectedAt, id])
+  @@index([contextId])
 }
 
 // A single settings row per context (contextId as primary key, not a
@@ -280,6 +312,9 @@ model Deuda {
   type              DeudaType
   deudorId          String      @db.Uuid
   productId         String      @db.Uuid
+  // BE-11: direct contextId (previously only reachable via
+  // `createdByMember.contextId`), required by the extension/RLS.
+  contextId         String      @default("legacy-unassigned")
   cantidad          Int
   totalMinor        Int
   // Never set directly through the API — always derived from the sum of
@@ -295,11 +330,15 @@ model Deuda {
   abonos            Abono[]
 
   @@index([status, createdAt, id])
+  @@index([contextId])
 }
 
 model Abono {
   id                 String   @id @default(uuid()) @db.Uuid
   deudaId            String   @db.Uuid
+  // BE-11: direct contextId (previously only reachable via
+  // `deuda.createdByMember.contextId`), required by the extension/RLS.
+  contextId          String   @default("legacy-unassigned")
   montoMinor         Int
   receivedByMemberId String   @db.Uuid
   receivedAt         DateTime @default(now()) @db.Timestamptz(3)
@@ -308,4 +347,36 @@ model Abono {
   receivedByMember   Member   @relation("AbonoReceivedBy", fields: [receivedByMemberId], references: [id])
 
   @@index([deudaId, receivedAt, id])
+  @@index([contextId])
+}
+
+// BE-11 part 2: a prospective new tenant's registration form, prior to
+// having any operative contextId at all. Deliberately NOT tenant-scoped
+// (no contextId column, never touched by the Prisma tenant-isolation
+// extension) — it exists *before* any tenant does, and a rejected/still-
+// pending request never becomes one, so scoping it by a contextId that
+// may not (yet, or ever) exist would be backwards. `createdContextId` is
+// only ever populated once, at approval time, as a forward pointer to the
+// tenant this request produced — it is record-keeping, not a scope.
+model BusinessRegistrationRequest {
+  id               String                     @id @default(uuid()) @db.Uuid
+  nombreNegocio    String
+  nombreSocio      String
+  contactoSocio    String
+  status           BusinessRegistrationStatus @default(pendiente)
+  // Hashed (sha256) the same way a password would be, never the raw
+  // token: the value that actually authorizes approving/rejecting a
+  // registration is exactly as sensitive as a credential, and it travels
+  // over email (a channel this system does not control end-to-end), so a
+  // leaked/misdelivered email must not, by itself, hand over a usable
+  // secret straight from a database dump either.
+  approvalTokenHash String
+  tokenExpiresAt    DateTime                   @db.Timestamptz(3)
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  // Set the first time the token is successfully consumed (approve or
+  // reject) — the actual one-use enforcement is "status is no longer
+  // pendiente", not this field, but it is kept for an admin-facing
+  // "when was this resolved" answer alongside status.
+  resolvedAt        DateTime?                  @db.Timestamptz(3)
+  createdContextId  String?
 }
