@@ -51,3 +51,36 @@ describe('approval email API URLs', () => {
     },
   );
 });
+
+describe('approve transaction options', () => {
+  // The credentials email is sent from inside the approve transaction, so
+  // Prisma's default 5s interactive-transaction timeout (a slow Resend call
+  // would roll the approval back) must be raised explicitly.
+  it('opens the approve transaction with a timeout sized for a Resend call', async () => {
+    const findFirst = vi.fn().mockResolvedValue({
+      id: 'req',
+      status: 'pendiente',
+      tokenExpiresAt: new Date(Date.now() + 60_000),
+      nombreNegocio: 'Test',
+      nombreSocio: 'Test',
+      contactoSocio: 'test@example.test',
+    });
+    const $transaction = vi.fn().mockResolvedValue('<html></html>');
+    const service = new BusinessRegistrationService(
+      {
+        businessRegistrationRequest: { findFirst },
+        $transaction,
+      } as unknown as PrismaService,
+      {} as unknown as EmailService,
+    );
+
+    await service.approve('token');
+
+    const options = $transaction.mock.calls[0][1] as {
+      timeout: number;
+      maxWait: number;
+    };
+    expect(options.timeout).toBeGreaterThanOrEqual(10_000);
+    expect(options.maxWait).toBeGreaterThan(0);
+  });
+});

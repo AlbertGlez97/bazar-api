@@ -112,3 +112,128 @@ describe('EmailService.sendBusinessRegistrationApprovalEmail', () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe('EmailService.sendBusinessCredentialsEmail', () => {
+  const credentials = {
+    nombreNegocio: 'Bolsas de prueba',
+    nombreSocio: 'Socio',
+    contactoSocio: 'socio@example.test',
+    username: 'socio@example.test',
+    temporaryPassword: 'Tmp-Pass_0123456789abcd',
+    deviceName: 'Dispositivo principal',
+    deviceIdentifier: '0b6f1c2e-4d5a-4c7b-9e1f-123456789abc',
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RESEND_API_KEY', API_KEY);
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', 'approver@example.test');
+    send.mockReset();
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  const sentPayload = () =>
+    send.mock.calls[0][0] as { to: string; subject: string; html: string };
+
+  it('sends the credentials to the socio with everything needed to sign in', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      ...credentials,
+      socioEmail: 'socio@example.test',
+    });
+
+    const { to, html } = sentPayload();
+    expect(to).toBe('socio@example.test');
+    expect(html).toContain('socio@example.test');
+    expect(html).toContain(credentials.temporaryPassword);
+    expect(html).toContain(credentials.deviceIdentifier);
+    expect(html).toContain(credentials.deviceName);
+    expect(html).toMatch(/contraseña temporal/i);
+    expect(html).not.toMatch(/reenv|hacer llegar/i);
+  });
+
+  it('sends to the approver with a relay note when the socio has no email', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      ...credentials,
+      contactoSocio: '555-000-0000',
+    });
+
+    const { to, subject, html } = sentPayload();
+    expect(to).toBe('approver@example.test');
+    expect(subject).toMatch(/reenviar|socio/i);
+    expect(html).toContain('555-000-0000');
+    expect(html).toMatch(/hacer llegar al socio/i);
+    expect(html).toContain(credentials.temporaryPassword);
+  });
+
+  it('escapes every interpolated value', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      nombreNegocio: '<script>alert(1)</script>',
+      nombreSocio: `"><img src=x onerror='a&b'>`,
+      contactoSocio: '<b>555</b>',
+      username: '<u>user</u>',
+      temporaryPassword: 'p<i>ss</i>&"\'',
+      deviceName: '<em>dev</em>',
+      deviceIdentifier: '<s>id</s>',
+    });
+
+    const { html } = sentPayload();
+    expect(html).not.toMatch(/<(script|img|b|u|i|em|s)[ >]/);
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).toContain('p&lt;i&gt;ss&lt;/i&gt;&amp;&quot;&#39;');
+    expect(html).toContain('&lt;s&gt;id&lt;/s&gt;');
+  });
+
+  it('throws when Resend rejects the email, without leaking the key or the password', async () => {
+    send.mockResolvedValue({
+      data: null,
+      error: { name: 'invalid_api_key', message: 'API key is invalid' },
+    });
+
+    const failure = await new EmailService()
+      .sendBusinessCredentialsEmail({
+        ...credentials,
+        socioEmail: 'socio@example.test',
+      })
+      .catch((e: Error) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    const { message } = failure as Error;
+    expect(message).toContain('invalid_api_key');
+    expect(message).not.toContain(API_KEY);
+    expect(message).not.toContain(credentials.temporaryPassword);
+  });
+
+  it('never logs the password', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+    const log = vi.spyOn(Logger.prototype, 'log');
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      ...credentials,
+      socioEmail: 'socio@example.test',
+    });
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('msg_cred'));
+    expect(log).not.toHaveBeenCalledWith(
+      expect.stringContaining(credentials.temporaryPassword),
+    );
+  });
+
+  it('fails fast when it must relay through the approver and none is configured', async () => {
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', '');
+
+    await expect(
+      new EmailService().sendBusinessCredentialsEmail(credentials),
+    ).rejects.toThrow(/APPROVAL_NOTIFICATION_EMAIL/);
+    expect(send).not.toHaveBeenCalled();
+  });
+});

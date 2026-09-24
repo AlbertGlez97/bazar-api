@@ -48,6 +48,19 @@ describe('tenant isolation extension ($transaction)', () => {
     const g = await prisma.$queryRaw<{ v: string | null }[]>`SELECT current_setting('app.context_id', true) AS v`;
     expect(g[0].v ?? '').toBe('');
   });
+  // BusinessRegistrationService.approve relies on this: it sends an email
+  // from inside the transaction and raises the default 5s timeout.
+  it('honors the transaction options passed to the $transaction override', async () => {
+    const sleep = (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) =>
+      tx.$queryRaw`SELECT pg_sleep(0.8)::text AS slept`;
+
+    await expect(
+      prisma.$transaction(async (tx) => sleep(tx), { timeout: 200 }),
+    ).rejects.toThrow(/timeout|expired|closed/i);
+    await expect(
+      prisma.$transaction(async (tx) => sleep(tx), { timeout: 5000 }),
+    ).resolves.toBeDefined();
+  });
   it('injects contextId into a standalone create', async () => {
     const m = await withTestTenant(b, () => prisma.member.create({ data: { name: 'x', role: 'socio' } as never }));
     expect(m.contextId).toBe(b);

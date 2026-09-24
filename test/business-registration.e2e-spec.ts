@@ -26,6 +26,7 @@ describe('business registration (BE-11)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let sendApprovalEmail: ReturnType<typeof vi.fn>;
+  let sendCredentialsEmail: ReturnType<typeof vi.fn>;
   let uploadRoot: string;
   // Nest warnings emitted while the production bootstrap runs.
   let bootWarnings: string[];
@@ -44,6 +45,8 @@ describe('business registration (BE-11)', () => {
   // also match rows left behind by an earlier (or crashed) run.
   const run = randomUUID();
   const name = (label: string) => `${label} ${run}`;
+  // Accounts created directly by these specs (not through an approval).
+  const extraUsernames: string[] = [];
 
   const emailPath = (url: string) => {
     const parsed = new URL(url);
@@ -59,11 +62,15 @@ describe('business registration (BE-11)', () => {
     vi.stubEnv('PRODUCT_UPLOAD_DIR', uploadRoot);
     await writeFile(join(uploadRoot, 'prefix-test.txt'), 'static route fixture');
     sendApprovalEmail = vi.fn().mockResolvedValue(undefined);
+    sendCredentialsEmail = vi.fn().mockResolvedValue(undefined);
     const module = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(EmailService)
-      .useValue({ sendBusinessRegistrationApprovalEmail: sendApprovalEmail })
+      .useValue({
+        sendBusinessRegistrationApprovalEmail: sendApprovalEmail,
+        sendBusinessCredentialsEmail: sendCredentialsEmail,
+      })
       .compile();
     app = module.createNestApplication();
     vi.stubEnv('PORT', '0');
@@ -160,12 +167,27 @@ describe('business registration (BE-11)', () => {
     const requests = await prisma.businessRegistrationRequest.findMany({
       where: { nombreNegocio: { endsWith: run } },
     });
+    const createdContextIds: string[] = [];
     for (const { createdContextId } of requests) {
-      if (createdContextId)
-        await withTestTenant(createdContextId, () =>
-          prisma.member.deleteMany({ where: { contextId: createdContextId } }),
-        );
+      if (!createdContextId) continue;
+      createdContextIds.push(createdContextId);
+      // Approval creates a Device and a Member per new context (both RLS
+      // tables, so the delete needs the tenant scope) plus an Account.
+      await withTestTenant(createdContextId, async () => {
+        await prisma.device.deleteMany({ where: { contextId: createdContextId } });
+        await prisma.member.deleteMany({ where: { contextId: createdContextId } });
+      });
     }
+    // Account has no RLS: it is removed by context, plus the fixture
+    // accounts these specs create by username.
+    await prisma.account.deleteMany({
+      where: {
+        OR: [
+          { contextId: { in: createdContextIds } },
+          { username: { in: extraUsernames } },
+        ],
+      },
+    });
     await prisma.businessRegistrationRequest.deleteMany({
       where: { nombreNegocio: { endsWith: run } },
     });
@@ -176,6 +198,9 @@ describe('business registration (BE-11)', () => {
 
   beforeEach(() => {
     sendApprovalEmail.mockClear();
+    // reset (not just clear): a test may queue a rejection for the
+    // credentials email, which must never leak into the next test.
+    sendCredentialsEmail.mockReset().mockResolvedValue(undefined);
   });
 
   it('prefixes production routes and OpenAPI without moving explicit docs mounts', async () => {
@@ -358,6 +383,257 @@ describe('business registration (BE-11)', () => {
     });
     expect(stored?.status).toBe('pendiente');
     expect(stored?.createdContextId).toBeNull();
+  });
+
+  describe('approval creates the initial Account and Device', () => {
+    interface CredentialsCall {
+      nombreNegocio: string;
+      nombreSocio: string;
+      contactoSocio: string;
+      socioEmail?: string;
+      username: string;
+      temporaryPassword: string;
+      deviceName: string;
+      deviceIdentifier: string;
+    }
+    const server = () => app.getHttpServer();
+    const register = async (
+      nombreNegocio: string,
+      nombreSocio: string,
+      contactoSocio: string,
+    ) => {
+      await request(server())
+        .post('/api/v1/business-registration')
+        .send({ nombreNegocio, nombreSocio, contactoSocio })
+        .expect(201);
+      const { approveUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
+      return emailPath(approveUrl);
+    };
+    const lastCredentials = () =>
+      sendCredentialsEmail.mock.calls.at(-1)![0] as CredentialsCall;
+    const login = (username: string, password: string) =>
+      request(server()).post('/api/v1/auth/login').send({ username, password });
+    const stored = (nombreNegocio: string) =>
+      prisma.businessRegistrationRequest.findFirst({ where: { nombreNegocio } });
+
+    it('lets the socio log in and identify the device with the emailed credentials', async () => {
+      const email = `adid.${run}@example.com`;
+      const path = await register(
+        name('Credenciales Felices'),
+        'Adid',
+        `  Adid.${run}@Example.COM  `,
+      );
+
+      const page = await request(server()).get(path).expect(200);
+
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
+      const creds = lastCredentials();
+      expect(creds.socioEmail).toBe(email);
+      expect(creds.username).toBe(email);
+      expect(creds.temporaryPassword.length).toBeGreaterThanOrEqual(22);
+      expect(creds.deviceName).toBe('Dispositivo principal');
+      expect(page.text).toMatch(/correo/i);
+      expect(page.text).not.toContain(creds.temporaryPassword);
+
+      const registration = await stored(name('Credenciales Felices'));
+      const contextId = registration!.createdContextId!;
+
+      const account = await prisma.account.findUnique({
+        where: { username: creds.username },
+      });
+      expect(account?.contextId).toBe(contextId);
+      expect(account?.active).toBe(true);
+      expect(account?.passwordHash).toMatch(/^\$argon2id\$/);
+      expect(account?.passwordHash).not.toContain(creds.temporaryPassword);
+
+      await login(creds.username, `${creds.temporaryPassword}x`).expect(401);
+      const session = await login(creds.username, creds.temporaryPassword).expect(200);
+      expect(session.body.accessToken).toEqual(expect.any(String));
+
+      const device = await withTestTenant(contextId, () =>
+        prisma.device.findFirst({
+          where: { contextId, identifier: creds.deviceIdentifier },
+        }),
+      );
+      expect(device).toMatchObject({
+        name: 'Dispositivo principal',
+        authorized: true,
+        contextId,
+      });
+      const founders = await withTestTenant(contextId, () =>
+        prisma.member.findMany({ where: { contextId, role: 'socio' } }),
+      );
+      expect(founders).toHaveLength(1);
+
+      const identified = await request(server())
+        .post('/api/v1/devices/identify')
+        .auth(session.body.accessToken, { type: 'bearer' })
+        .send({
+          identifier: creds.deviceIdentifier,
+          name: creds.deviceName,
+        })
+        .expect(200);
+      expect(identified.body).toEqual({ deviceId: device!.id });
+    });
+
+    it('answers 502, keeps the request pendiente and creates nothing when the credentials email fails, then succeeds on retry with the same link', async () => {
+      const email = `retry.${run}@example.com`;
+      const path = await register(name('Correo Caido'), 'Reintento', email);
+      sendCredentialsEmail.mockRejectedValueOnce(
+        new Error('Resend rejected the credentials email: boom'),
+      );
+
+      const failed = await request(server()).get(path).expect(502);
+
+      expect(failed.headers['content-type']).toMatch(/html/);
+      expect(failed.text).toMatch(/no se pudo enviar/i);
+      expect(failed.text).toMatch(/mismo enlace/i);
+      const firstAttempt = lastCredentials();
+      expect(failed.text).not.toContain(firstAttempt.temporaryPassword);
+      const pending = await stored(name('Correo Caido'));
+      expect(pending?.status).toBe('pendiente');
+      expect(pending?.createdContextId).toBeNull();
+      expect(pending?.resolvedAt).toBeNull();
+      // Account has no RLS, so its absence proves the whole transaction
+      // (Account + Device + Member + status) rolled back together.
+      await expect(
+        prisma.account.findUnique({ where: { username: email } }),
+      ).resolves.toBeNull();
+      await login(email, firstAttempt.temporaryPassword).expect(401);
+
+      await request(server()).get(path).expect(200);
+
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(2);
+      const retry = lastCredentials();
+      expect(retry.temporaryPassword).not.toBe(firstAttempt.temporaryPassword);
+      expect((await stored(name('Correo Caido')))?.status).toBe('aprobado');
+      await login(email, firstAttempt.temporaryPassword).expect(401);
+      await login(email, retry.temporaryPassword).expect(200);
+    });
+
+    it('sends the credentials to the approver when the contact is not an email', async () => {
+      const path = await register(
+        name('Solo Telefono'),
+        'Socia Sin Correo',
+        '<i>555-0100</i>',
+      );
+
+      const page = await request(server()).get(path).expect(200);
+
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
+      const creds = lastCredentials();
+      // No socio address: EmailService routes it to APPROVAL_NOTIFICATION_EMAIL
+      // with a relay note (covered in email.service.spec.ts).
+      expect(creds.socioEmail).toBeUndefined();
+      expect(creds.contactoSocio).toBe('<i>555-0100</i>');
+      expect(creds.username).toMatch(/^solo-telefono-[a-z0-9-]*[0-9a-f]{6}$/);
+      expect(page.text).toMatch(/aprobador/i);
+      expect(page.text).toContain('&lt;i&gt;555-0100&lt;/i&gt;');
+      expect(page.text).not.toContain('<i>');
+      expect(page.text).not.toContain(creds.temporaryPassword);
+      await login(creds.username, creds.temporaryPassword).expect(200);
+    });
+
+    it('never reuses a taken username: falls back to a unique one and leaves the other account alone', async () => {
+      const email = `colision.${run}@example.com`;
+      const existing = await prisma.account.create({
+        data: {
+          username: email,
+          passwordHash: 'not-a-login-fixture',
+          contextId: contextIdA,
+        },
+      });
+      extraUsernames.push(email);
+      const path = await register(
+        name('Colision'),
+        'Otra Socia',
+        `Colision.${run}@EXAMPLE.com`,
+      );
+
+      await request(server()).get(path).expect(200);
+
+      const creds = lastCredentials();
+      expect(creds.socioEmail).toBe(email);
+      expect(creds.username).not.toBe(email);
+      expect(creds.username).toMatch(/^colision-.*[0-9a-f]{6}$/);
+      const untouched = await prisma.account.findUnique({
+        where: { id: existing.id },
+      });
+      expect(untouched).toMatchObject({
+        username: email,
+        passwordHash: 'not-a-login-fixture',
+        contextId: contextIdA,
+      });
+      await login(creds.username, creds.temporaryPassword).expect(200);
+    });
+
+    it('creates nothing extra when the same link is used twice', async () => {
+      const path = await register(
+        name('Dos Clicks'),
+        'Socio Doble',
+        `dos.${run}@example.com`,
+      );
+
+      await request(server()).get(path).expect(200);
+      const second = await request(server()).get(path).expect(200);
+
+      expect(second.text).toMatch(/ya fue procesado/i);
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
+      const contextId = (await stored(name('Dos Clicks')))!.createdContextId!;
+      await expect(
+        prisma.account.count({ where: { contextId } }),
+      ).resolves.toBe(1);
+      const devices = await withTestTenant(contextId, () =>
+        prisma.device.count({ where: { contextId } }),
+      );
+      expect(devices).toBe(1);
+    });
+
+    it('creates a single account and sends a single email when the link is opened concurrently', async () => {
+      const path = await register(
+        name('Carrera'),
+        'Socio Veloz',
+        `carrera.${run}@example.com`,
+      );
+
+      const pages = await Promise.all([
+        request(server()).get(path),
+        request(server()).get(path),
+      ]);
+
+      expect(pages.map((p) => p.status)).toEqual([200, 200]);
+      expect(
+        pages.filter((p) => /ya fue procesado/i.test(p.text)),
+      ).toHaveLength(1);
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
+      const contextId = (await stored(name('Carrera')))!.createdContextId!;
+      await expect(
+        prisma.account.count({ where: { contextId } }),
+      ).resolves.toBe(1);
+      const founders = await withTestTenant(contextId, () =>
+        prisma.member.count({ where: { contextId, role: 'socio' } }),
+      );
+      expect(founders).toBe(1);
+    });
+
+    it('does not create an account when the request is rejected', async () => {
+      await request(server())
+        .post('/api/v1/business-registration')
+        .send({
+          nombreNegocio: name('Rechazo Sin Cuenta'),
+          nombreSocio: 'Nadie',
+          contactoSocio: `nadie.${run}@example.com`,
+        })
+        .expect(201);
+      const { rejectUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
+
+      await request(server()).get(emailPath(rejectUrl)).expect(200);
+
+      expect(sendCredentialsEmail).not.toHaveBeenCalled();
+      await expect(
+        prisma.account.findUnique({ where: { username: `nadie.${run}@example.com` } }),
+      ).resolves.toBeNull();
+    });
   });
 
   describe('stored XSS in the status pages', () => {

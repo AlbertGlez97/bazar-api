@@ -1,0 +1,81 @@
+import { randomBytes } from 'node:crypto';
+
+/** Name of the authorized Device created together with a new business. */
+export const INITIAL_DEVICE_NAME = 'Dispositivo principal';
+
+// Conservative on purpose: a plain `local@domain.tld` with no whitespace,
+// commas, angle brackets or quotes, so a free-text contact such as
+// "a@b.com, c@d.com" or "Name <a@b.com>" is never used as a recipient (no
+// header/multi-recipient tricks) and phone numbers never match.
+const EMAIL_PATTERN = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const MAX_EMAIL_LENGTH = 254;
+// `LoginDto.username` accepts at most 100 characters.
+const MAX_USERNAME_LENGTH = 100;
+const MAX_SLUG_LENGTH = 30;
+const USERNAME_ATTEMPTS = 5;
+
+/**
+ * `contactoSocio` is free text (email OR phone). Returns the trimmed,
+ * lower-cased address when it looks like a single plain email, otherwise
+ * `undefined` (the credentials then go to the approver, see
+ * {@link EmailService}).
+ */
+export function normalizeEmailContact(contacto: string): string | undefined {
+  const value = contacto.trim().toLowerCase();
+  if (value.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(value))
+    return undefined;
+  return value;
+}
+
+/**
+ * Temporary first-login password: 18 random bytes (144 bits) as base64url
+ * (24 url-safe characters), derived from nothing the requester supplied.
+ */
+export function generateTemporaryPassword(): string {
+  return randomBytes(18).toString('base64url');
+}
+
+/** Lower-case ASCII slug of a business name, at most 30 characters. */
+export function slugifyBusinessName(nombreNegocio: string): string {
+  const slug = nombreNegocio
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .slice(0, MAX_SLUG_LENGTH)
+    .replace(/^-+|-+$/g, '');
+  return slug || 'negocio';
+}
+
+/**
+ * Picks the username of the founding socio's Account, which is globally
+ * unique (`Account.username` is `@unique`, and login resolves the account
+ * by it before any tenant is known):
+ *
+ * 1. the normalized `contactoSocio` when it is an email (short enough for
+ *    the login limit) and not taken yet — the most memorable choice;
+ * 2. otherwise `<business-slug>-<6 random hex>`, retried with a fresh
+ *    suffix while taken. Never derived from the socio's name alone.
+ *
+ * `isTaken` is checked here for a friendly fallback; the unique constraint
+ * still has the last word if two approvals ever race for the same value.
+ */
+export async function deriveUniqueUsername(
+  input: { contactoSocio: string; nombreNegocio: string },
+  isTaken: (username: string) => Promise<boolean>,
+): Promise<string> {
+  const email = normalizeEmailContact(input.contactoSocio);
+  if (
+    email &&
+    email.length <= MAX_USERNAME_LENGTH &&
+    !(await isTaken(email))
+  )
+    return email;
+
+  const slug = slugifyBusinessName(input.nombreNegocio);
+  for (let attempt = 0; attempt < USERNAME_ATTEMPTS; attempt++) {
+    const candidate = `${slug}-${randomBytes(3).toString('hex')}`;
+    if (!(await isTaken(candidate))) return candidate;
+  }
+  throw new Error('Could not derive a unique username');
+}

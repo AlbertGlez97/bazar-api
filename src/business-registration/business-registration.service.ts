@@ -1,13 +1,46 @@
-import { randomBytes, createHash } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { argon2id, hash } from 'argon2';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { EmailService } from '../email/email.service.js';
 import { createServerId } from '../common/server-id.js';
 import { CreateBusinessRegistrationDto } from './dto/create-business-registration.dto.js';
+import {
+  INITIAL_DEVICE_NAME,
+  deriveUniqueUsername,
+  generateTemporaryPassword,
+  normalizeEmailContact,
+} from './initial-credentials.js';
 import { renderStatusPage } from './status-page.html.js';
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// Approve sends the credentials email from INSIDE its transaction (so a
+// failed send rolls the whole approval back). Prisma's default interactive
+// transaction timeout is 5s, which a slow Resend call could exceed and turn
+// into a spurious rollback, so approve opens its transaction with a larger
+// explicit budget. The tenant-isolation `$transaction` override forwards
+// these options untouched (see test/tenant-extension.e2e-spec.ts).
+const APPROVE_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
+
+/** The credentials email could not be sent; the approval was rolled back. */
+class CredentialsEmailError extends Error {}
+
+function alreadyProcessedPage(): string {
+  return renderStatusPage(
+    'Ya fue procesado',
+    'Esta solicitud ya fue resuelta anteriormente; este enlace ya no tiene efecto.',
+  );
+}
+
+/** The request fields the approve/reject callbacks need. */
+interface PendingRequest {
+  id: string;
+  nombreNegocio: string;
+  nombreSocio: string;
+  contactoSocio: string;
+}
 
 /** HTTP status + rendered HTML body for one of the approve/reject outcomes. */
 export interface HtmlPageResult {
@@ -49,15 +82,15 @@ function baseUrl(): string {
  * BE-11 Part 2: public registration of a brand-new business/tenant,
  * gated by manual email approval (Resend) rather than instant
  * self-service — a business only becomes operational (gets a real
- * contextId and a founding socio Member) once a human clicks "approve"
- * on the notification email.
+ * contextId, a founding socio Member, a login Account and an authorized
+ * Device) once a human clicks "approve" on the notification email.
  *
  * Runs with no tenant/contextId in scope by design: at creation time
  * there is no contextId yet at all, and the approve/reject endpoints are
  * public (no Account, so no AuthGuard, so nothing populates the
  * AsyncLocalStorage tenant context — see src/database/tenant-context.ts).
- * The one write that actually needs a contextId (the founding Member,
- * created on approval) passes it explicitly in its own `data`, which the
+ * The writes that need a contextId (the founding Member and the Device,
+ * created on approval) pass it explicitly in their own `data`, which the
  * tenant-isolation extension treats as the source of truth when no
  * request-scoped contextId is active — this is the documented
  * "bootstrapping a brand-new tenant from a public endpoint" escape
@@ -65,11 +98,14 @@ function baseUrl(): string {
  * thing: Postgres RLS denies every write to a tenant table unless the
  * session variable `app.context_id` matches the row, so `approve` sets
  * it (transaction-local) to the brand-new contextId before creating the
- * Member. Without that, the INSERT is rejected with SQLSTATE 42501 —
+ * Member and Device (Account has no RLS: login needs it before any
+ * context is known). Without that, the INSERT is rejected with SQLSTATE 42501 —
  * invisible while the app connected as a superuser, which bypasses RLS.
  */
 @Injectable()
 export class BusinessRegistrationService {
+  private readonly logger = new Logger(BusinessRegistrationService.name);
+
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(EmailService) private readonly email: EmailService,
@@ -114,37 +150,127 @@ export class BusinessRegistrationService {
   }
 
   /**
-   * Approves a pending, unexpired request: creates the real contextId
-   * and the founding socio Member, and marks the request "aprobado".
+   * Approves a pending, unexpired request. In ONE transaction it creates
+   * the real contextId with everything a new business needs to be usable:
+   * the founding socio Member, the socio's login Account (Argon2id-hashed
+   * temporary password), one authorized "Dispositivo principal" Device, and
+   * marks the request "aprobado". The credentials email is the LAST step
+   * inside that transaction: if it cannot be sent, everything rolls back,
+   * the request stays "pendiente" and the page (HTTP 502) tells the
+   * approver the same link can be used to retry. Trade-off: if the email
+   * is sent and the commit then fails, the recipient holds credentials that
+   * never became valid, and the retry sends a fresh, valid set.
+   *
    * Returns an HTML confirmation page in every case (see the module doc
-   * comment on {@link renderStatusPage}), never a JSON error.
+   * comment on {@link renderStatusPage}), never a JSON error. The password
+   * is never rendered, logged or stored in plaintext.
    */
   async approve(token: string): Promise<HtmlPageResult> {
-    return this.resolve(token, async (tx, request) => {
-      const contextId = createServerId();
-      await tx.$executeRaw`SELECT set_config('app.context_id', ${contextId}, true)`;
-      await tx.member.create({
-        data: {
-          id: createServerId(),
-          name: request.nombreSocio,
-          role: 'socio',
-          contextId,
-          active: true,
-        },
-      });
-      await tx.businessRegistrationRequest.update({
-        where: { id: request.id },
-        data: {
-          status: 'aprobado',
-          resolvedAt: new Date(),
-          createdContextId: contextId,
-        },
-      });
-      return renderStatusPage(
-        'Negocio aprobado',
-        `"${request.nombreNegocio}" ya está activo y listo para iniciar sesión.`,
+    try {
+      return await this.resolve(
+        token,
+        (tx, request) => this.approveInTransaction(tx, request),
+        APPROVE_TRANSACTION_OPTIONS,
       );
+    } catch (error) {
+      if (!(error instanceof CredentialsEmailError)) throw error;
+      // Message only (Resend's error name/message): no secrets involved.
+      this.logger.error(error.message);
+      return {
+        statusCode: 502,
+        html: renderStatusPage(
+          'No se pudo enviar el correo de credenciales',
+          'La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.',
+        ),
+      };
+    }
+  }
+
+  private async approveInTransaction(
+    tx: Prisma.TransactionClient,
+    request: PendingRequest,
+  ): Promise<string> {
+    const contextId = createServerId();
+    await tx.$executeRaw`SELECT set_config('app.context_id', ${contextId}, true)`;
+    // Claim the request first. The row lock makes a concurrent approval of
+    // the same link wait for this transaction and then match nothing, so
+    // credentials are never created (or emailed) twice.
+    const claimed = await tx.businessRegistrationRequest.updateMany({
+      where: { id: request.id, status: 'pendiente' },
+      data: {
+        status: 'aprobado',
+        resolvedAt: new Date(),
+        createdContextId: contextId,
+      },
     });
+    if (claimed.count === 0) return alreadyProcessedPage();
+
+    const socioEmail = normalizeEmailContact(request.contactoSocio);
+    const username = await deriveUniqueUsername(request, async (candidate) => {
+      const existing = await tx.account.findUnique({
+        where: { username: candidate },
+        select: { id: true },
+      });
+      return existing !== null;
+    });
+    const temporaryPassword = generateTemporaryPassword();
+    const deviceIdentifier = randomUUID();
+
+    await tx.member.create({
+      data: {
+        id: createServerId(),
+        name: request.nombreSocio,
+        role: 'socio',
+        contextId,
+        active: true,
+      },
+    });
+    await tx.device.create({
+      data: {
+        id: createServerId(),
+        name: INITIAL_DEVICE_NAME,
+        identifier: deviceIdentifier,
+        contextId,
+        authorized: true,
+      },
+    });
+    // Same Argon2id setup as AuthService/seed; only the hash is stored.
+    await tx.account.create({
+      data: {
+        id: createServerId(),
+        username,
+        passwordHash: await hash(temporaryPassword, { type: argon2id }),
+        contextId,
+      },
+    });
+
+    try {
+      await this.email.sendBusinessCredentialsEmail({
+        nombreNegocio: request.nombreNegocio,
+        nombreSocio: request.nombreSocio,
+        contactoSocio: request.contactoSocio,
+        socioEmail,
+        username,
+        temporaryPassword,
+        deviceName: INITIAL_DEVICE_NAME,
+        deviceIdentifier,
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new CredentialsEmailError(
+        `Credentials email for registration request ${request.id} failed; approval rolled back: ${reason}`,
+      );
+    }
+
+    return socioEmail
+      ? renderStatusPage(
+          'Negocio aprobado',
+          `El negocio "${request.nombreNegocio}" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a ${socioEmail}.`,
+        )
+      : renderStatusPage(
+          'Negocio aprobado',
+          `El negocio "${request.nombreNegocio}" fue aprobado. El contacto del socio ("${request.contactoSocio}") no es un correo electrónico, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.`,
+        );
   }
 
   /**
@@ -177,13 +303,9 @@ export class BusinessRegistrationService {
     token: string,
     onValid: (
       tx: Prisma.TransactionClient,
-      request: {
-        id: string;
-        nombreNegocio: string;
-        nombreSocio: string;
-        contactoSocio: string;
-      },
+      request: PendingRequest,
     ) => Promise<string>,
+    transactionOptions?: { maxWait?: number; timeout?: number },
   ): Promise<HtmlPageResult> {
     const approvalTokenHash = hashToken(token);
     const request = await this.prisma.businessRegistrationRequest.findFirst({
@@ -199,13 +321,7 @@ export class BusinessRegistrationService {
       };
     }
     if (request.status !== 'pendiente') {
-      return {
-        statusCode: 200,
-        html: renderStatusPage(
-          'Ya fue procesado',
-          'Esta solicitud ya fue resuelta anteriormente; este enlace ya no tiene efecto.',
-        ),
-      };
+      return { statusCode: 200, html: alreadyProcessedPage() };
     }
     if (request.tokenExpiresAt.getTime() < Date.now()) {
       return {
@@ -216,7 +332,10 @@ export class BusinessRegistrationService {
         ),
       };
     }
-    const html = await this.prisma.$transaction((tx) => onValid(tx, request));
+    const html = await this.prisma.$transaction(
+      (tx) => onValid(tx, request),
+      transactionOptions,
+    );
     return { statusCode: 200, html };
   }
 }
