@@ -20,6 +20,12 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
 1. Copy `.env.example` to `.env`; replace the development/test passwords in
    both PostgreSQL variables and their matching URLs. Set an independent random
    `JWT_SECRET` (at least 32 characters). Never commit `.env`.
+   Also set the runtime-role variables (`APP_DB_USER`, `APP_DB_PASSWORD` and the
+   `APP_DB_TEST_*` pair) and point `DATABASE_URL` / `DATABASE_URL_TEST` at that
+   role, keeping the owner URLs in `DATABASE_URL_MIGRATE` /
+   `DATABASE_URL_TEST_MIGRATE`: Postgres never applies row-level security to a
+   superuser, so the app must not run as the container owner (see
+   `doc/runtime-database-role.md`).
 2. Start infrastructure, install, and create the database schema:
 
    ```sh
@@ -28,9 +34,15 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
    npm install
    npx prisma generate
    npx prisma migrate dev
+   npm run db:provision
    ```
 
-   The committed migrations cover BE-02–BE-09. Do not reset a database to resolve
+   `migrate dev` runs as the owner (`DATABASE_URL_MIGRATE`); `npm run db:provision`
+   creates or updates the runtime role and its grants (idempotent; re-run it after
+   the first migration and whenever the password changes). The app refuses to
+   start on a superuser or BYPASSRLS connection.
+
+   The committed migrations cover BE-02–BE-11. Do not reset a database to resolve
    drift; inspect the migration history and back up its data first.
 
 3. Set `SEED_CONTEXT_ID`, `SEED_USERNAME`, and a `SEED_PASSWORD` of at least
@@ -58,7 +70,11 @@ disconnects when Nest closes; shutdown hooks are enabled.
 | Variable                                            | Meaning                                                                                                          |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `PORT`                                              | HTTP port, default 3000.                                                                                         |
-| `DATABASE_URL`                                      | Development/runtime PostgreSQL URL; required.                                                                    |
+| `DATABASE_URL` | Runtime PostgreSQL URL for the app, `prisma db seed` and tests: the dedicated `NOSUPERUSER NOBYPASSRLS` role; required. The app refuses to start on a superuser/BYPASSRLS role. |
+| `DATABASE_URL_MIGRATE` | Owner (`POSTGRES_USER`) URL used only by `prisma migrate` and provisioning; falls back to `DATABASE_URL` when unset. |
+| `DATABASE_URL_TEST_MIGRATE` | Same for the test database; falls back to `DATABASE_URL_TEST`. |
+| `APP_DB_USER`, `APP_DB_PASSWORD` | Development runtime role created by `npm run db:provision` (password of at least 16 characters). |
+| `APP_DB_TEST_USER`, `APP_DB_TEST_PASSWORD` | Test runtime role created by `npm run db:provision:test`. |
 | `DATABASE_URL_TEST`                                 | Separate local URL ending in `/bazar_test`; required by test tooling, never falls back to development.           |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Development container initialization; defaults for user/db are bazar_dev; password required.                     |
 | `POSTGRES_PORT`                                     | Local development port, default 5432.                                                                            |
@@ -85,6 +101,10 @@ npm run lint
 npm test
 npm run test:e2e
 ```
+
+`npm run db:migrate:test` migrates as the owner (`DATABASE_URL_TEST_MIGRATE`) and then
+provisions the test runtime role; the tests themselves run as that role, so
+row-level security is really enforced.
 
 The migration runner and both Vitest configurations require a local
 `DATABASE_URL_TEST` with database name `bazar_test`, no URL query/hash, and
