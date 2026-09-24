@@ -4,6 +4,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 
 - Fecha del documento: 2026-09-24.
 - Base de código: rama `feat/backend-e0-be11-multitenancy`, commit `1b1e449` ("fix(api): address the two advisory findings of the prefix review"), árbol de trabajo limpio.
+- Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base.
 - Alcance: 33 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -49,7 +50,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - En este documento toda ruta aparece con el prefijo completo, p. ej. `POST /api/v1/auth/login`.
 - Con Axios: `baseURL = '/api/v1'` (relativo, ver [CORS](#f-cors)) y llamar `api.post('/auth/login', ...)`.
 
-Fuente: `src/main.ts:13`, `test/business-registration.e2e-spec.ts:181-209`.
+Fuente: `src/main.ts:13`, `test/business-registration.e2e-spec.ts:206-234`.
 
 <a id="f-montajes"></a>
 ### 1.2 Montajes fuera del prefijo y `GET /api/v1`
@@ -79,7 +80,7 @@ GET /api/v1 HTTP/1.1
 Hello World!
 ```
 
-Fuente: `src/app.controller.ts:9-13`, `src/app.service.ts:5-7`, `src/docs/swagger.ts:32-62`, `src/storage/static-storage.ts:4-23`, `test/business-registration.e2e-spec.ts:181-209`.
+Fuente: `src/app.controller.ts:9-13`, `src/app.service.ts:5-7`, `src/docs/swagger.ts:32-62`, `src/storage/static-storage.ts:4-23`, `test/business-registration.e2e-spec.ts:206-234`.
 
 <a id="f-auth"></a>
 ### 1.3 Flujo de autenticación y guards
@@ -88,7 +89,7 @@ Fuente: `src/app.controller.ts:9-13`, `src/app.service.ts:5-7`, `src/docs/swagge
 
 1. `POST /api/v1/auth/login` con `{ username, password }` -> `{ accessToken, tokenType, expiresIn }`. Guardar el token.
 2. `GET /api/v1/members` (con `Authorization`) -> lista de personas; la persona que atiende se elige en un selector (sin PIN). Guardar el `id` elegido.
-3. `POST /api/v1/devices/identify` con `{ identifier, name }` (ambos deben coincidir exactamente con un dispositivo ya autorizado, sembrado fuera de banda) -> `{ deviceId }`. Guardar el `deviceId`.
+3. `POST /api/v1/devices/identify` con `{ identifier, name }` (ambos deben coincidir exactamente con un dispositivo ya autorizado: el de un negocio nuevo lo crea la aprobación y su `identifier` llega por correo, ver [Business Registration](#mod-business-registration); los del negocio de desarrollo los siembra el seed) -> `{ deviceId }`. Guardar el `deviceId`.
 4. En **cada** petición protegida enviar:
    - `Authorization: Bearer <accessToken>`
    - `x-member-id: <id del member elegido>`
@@ -302,7 +303,7 @@ Los servicios devuelven el registro de Prisma tal cual, sin capa de DTO de respu
 <a id="mod-auth"></a>
 ## 2. Auth
 
-Un único endpoint público: el login de la **cuenta** del negocio (una cuenta compartida por la tablet, no un login por persona). Solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas y los dispositivos se crean fuera de banda (seed); **no existe endpoint de registro de cuentas**. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el backend responde exactamente igual (no revela si el usuario existe).
+Un único endpoint público: el login de la **cuenta** del negocio (una cuenta compartida por la tablet, no un login por persona). Solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas se crean fuera de banda: por el seed en el negocio de desarrollo y, para un negocio nuevo, al **aprobar** su solicitud de registro (la cuenta del socio fundador llega por correo con una contraseña temporal, ver [Business Registration](#mod-business-registration)); **no existe endpoint de registro de cuentas** ni de cambio de contraseña. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el backend responde exactamente igual (no revela si el usuario existe).
 
 <a id="ep-auth-login"></a>
 ### `POST /api/v1/auth/login`
@@ -529,7 +530,7 @@ Fuente: `src/members/members.controller.ts:123-134`, `src/members/members.servic
 <a id="mod-devices"></a>
 ## 4. Devices
 
-Los dispositivos son las tablets/teléfonos autorizados. **No se auto-registran**: existen previamente (seed) y deben estar `authorized`. Este endpoint solo traduce el `identifier` estable del dispositivo a su `id` interno, que luego se envía como `x-device-id`. Un dispositivo revocado deja de servir de inmediato (el `ContextGuard` lo rechaza con 403). No hay endpoint para listar ni crear dispositivos.
+Los dispositivos son las tablets/teléfonos autorizados. **No se auto-registran**: existen previamente y deben estar `authorized`. Los crea el seed (negocio de desarrollo) o la aprobación de un negocio nuevo, que crea un dispositivo `"Dispositivo principal"` autorizado con un `identifier` aleatorio que se entrega en el correo de credenciales (el cliente debe guardarlo: no hay endpoint para consultarlo después). Este endpoint solo traduce el `identifier` estable del dispositivo a su `id` interno, que luego se envía como `x-device-id`. Un dispositivo revocado deja de servir de inmediato (el `ContextGuard` lo rechaza con 403). No hay endpoint para listar ni crear dispositivos.
 
 Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo: `identifier: "shared-tablet"` (`name: "Shared tablet"`), `"alberto-backup-phone"` (`"Alberto backup phone"`) y `"adid-backup-phone"` (`"Adid backup phone"`).
 
@@ -1754,9 +1755,13 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 1. Alguien envía el formulario (`POST /business-registration`). Se crea una solicitud `pendiente` y se envía un correo (vía Resend) al aprobador fijo del sistema (`APPROVAL_NOTIFICATION_EMAIL`) con dos enlaces: aprobar y rechazar.
 2. El aprobador abre uno de los enlaces (`GET .../approve?token=...` o `GET .../reject?token=...`) **desde su cliente de correo**. Ambos endpoints devuelven una **página HTML**, no JSON: no están pensados para llamarse desde el frontend con Axios. Los enlaces apuntan al origen de la API (`APP_BASE_URL` + `/api/v1/business-registration/...`), no al frontend.
 3. El token es de un solo uso y expira a los **30 días**; solo se guarda su hash. Nunca se devuelve por la API.
-4. Al **aprobar** se crea el `contextId` real del negocio y un Member fundador con `role: "socio"` (activo). Al **rechazar** no se crea nada operativo.
-5. **Importante**: la aprobación crea únicamente el Member fundador. **No crea ninguna cuenta (Account) ni dispositivo (Device)**, y no existe endpoint para crearlos; sin ellos el negocio nuevo todavía no puede hacer login ni operar (la página de aprobación dice "listo para iniciar sesión", pero según el código hacen falta cuenta y dispositivo creados fuera de banda).
-6. **No existe `GET /business-registration`** ni ningún endpoint para consultar el estado de una solicitud: el frontend no puede saber si fue aprobada. Las únicas rutas de este módulo son `POST /business-registration`, `GET /business-registration/approve` y `GET /business-registration/reject`.
+4. Al **aprobar**, en **una sola transacción**, se crea: el `contextId` real del negocio; un Member fundador con `role: "socio"` (activo); la **cuenta (Account)** de ese socio, con una contraseña temporal aleatoria (solo se guarda su hash Argon2id); y un **dispositivo (Device)** `"Dispositivo principal"` ya `authorized`, con un `identifier` aleatorio (UUID). Al **rechazar** no se crea nada operativo.
+5. **Credenciales por correo.** Como último paso de esa transacción se envía un correo (Resend) con: usuario, contraseña temporal, nombre e identificador del dispositivo, y el aviso de que la contraseña es temporal. El destinatario es `contactoSocio` cuando parece un correo (una sola dirección simple `algo@dominio.tld`); si es un teléfono u otro texto, va al aprobador (`APPROVAL_NOTIFICATION_EMAIL`) con una nota para que se las haga llegar al socio. La contraseña **nunca** se muestra en la página de aprobación, no se registra en logs y no se guarda en claro.
+   - **Usuario (`username`)**: el correo de `contactoSocio` normalizado (sin espacios y en minúsculas) si es un correo, mide 100 caracteres o menos y no está tomado; si no, `<nombre-del-negocio-en-minúsculas-sin-acentos>-<6 hex aleatorios>` (p. ej. `bolsas-de-adid-3fa91c`). El `username` es único en todo el sistema.
+   - **Contraseña temporal**: 24 caracteres URL-safe (`A-Z a-z 0-9 _ -`, 144 bits aleatorios), independiente de cualquier dato del formulario.
+6. **Si el correo de credenciales falla, la aprobación no ocurre**: la transacción se revierte (no queda Account, Device, Member ni contexto), la solicitud sigue `pendiente` y la página responde **502**. El aprobador puede reintentar abriendo **el mismo enlace**. Caso límite aceptado: si el correo sale y el commit falla justo después, el destinatario tiene credenciales que nunca fueron válidas; el reintento envía un juego nuevo y válido.
+7. **Qué implica para el frontend**: el primer inicio de sesión de un negocio nuevo usa el `username` y la contraseña temporal del correo (`POST /auth/login`); después se identifica el dispositivo con `POST /devices/identify` usando el `identifier` del correo y el nombre `"Dispositivo principal"`. El cliente **debe guardar el `identifier`** (no hay endpoint para consultarlo de nuevo). **Todavía no existe un endpoint para cambiar la contraseña**: la contraseña temporal sigue siendo la contraseña vigente hasta que se construya ese flujo (brecha conocida, ver [B.4](#b-conocidos)).
+8. **No existe `GET /business-registration`** ni ningún endpoint para consultar el estado de una solicitud: el frontend no puede saber si fue aprobada. Las únicas rutas de este módulo son `POST /business-registration`, `GET /business-registration/approve` y `GET /business-registration/reject`.
 
 <a id="ep-br-create"></a>
 ### `POST /api/v1/business-registration`
@@ -1786,7 +1791,7 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 
 Notas: no hay limitación de tasa (*rate limiting*) en el código; cada llamada válida crea una solicitud y dispara un correo.
 
-**Ejemplo** (`test/business-registration.e2e-spec.ts:234-250`)
+**Ejemplo** (`test/business-registration.e2e-spec.ts:259-275`)
 
 ```json
 { "nombreNegocio": "Bonsáis del Alberto", "nombreSocio": "Alberto", "contactoSocio": "alberto@example.test" }
@@ -1796,7 +1801,7 @@ Notas: no hay limitación de tasa (*rate limiting*) en el código; cada llamada 
 { "id": "a0000000-0000-4000-8000-000000000001", "status": "pendiente", "createdAt": "2026-09-23T12:00:00.000Z" }
 ```
 
-Fuente: `src/business-registration/business-registration.controller.ts:39-53`, `src/business-registration/dto/create-business-registration.dto.ts:16-23`, `src/business-registration/business-registration.service.ts:83-114`, `src/email/email.service.ts:48-73`, `doc/reglas-de-negocio.md:131`.
+Fuente: `src/business-registration/business-registration.controller.ts:39-53`, `src/business-registration/dto/create-business-registration.dto.ts:16-23`, `src/business-registration/business-registration.service.ts:119-150`, `src/email/email.service.ts:63-76`, `doc/reglas-de-negocio.md:131`.
 
 <a id="ep-br-approve"></a>
 ### `GET /api/v1/business-registration/approve`
@@ -1813,13 +1818,21 @@ Respuestas (siempre una página HTML, nunca JSON):
 
 | HTTP | Situación | Título de la página (`<h1>`) |
 |---|---|---|
-| 200 | Token válido, pendiente y sin expirar: crea `contextId` y Member socio fundador, solicitud pasa a `aprobado` | `Negocio aprobado` |
-| 200 | La solicitud ya fue resuelta antes (aprobada o rechazada); no se duplica nada | `Ya fue procesado` |
+| 200 | Token válido, pendiente y sin expirar: crea `contextId`, Member socio fundador, cuenta y dispositivo `"Dispositivo principal"`, envía las credenciales por correo y la solicitud pasa a `aprobado` | `Negocio aprobado` (ver textos abajo) |
+| 200 | La solicitud ya fue resuelta antes (aprobada o rechazada), incluso si se abre el enlace dos veces a la vez; no se crea ni se envía nada más | `Ya fue procesado` |
 | 200 | El token expiró (más de 30 días desde la solicitud) | `El enlace expiró` |
 | 404 | Falta el parámetro `token` | `Enlace inválido` (`Falta el parámetro token en el enlace.`) |
 | 404 | El token no corresponde a ninguna solicitud | `Enlace inválido` (`Este enlace no corresponde a ninguna solicitud.`) |
+| 502 | El correo de credenciales no pudo enviarse: no se creó nada y la solicitud sigue `pendiente`; se puede reintentar con el mismo enlace | `No se pudo enviar el correo de credenciales` (`La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.`) |
 
 Un token ya usado o expirado **no** da error HTTP: es 200 con la página correspondiente.
+
+Texto de la página de éxito (`Negocio aprobado`), según el destinatario de las credenciales. Nunca incluye la contraseña, y el nombre del negocio y el contacto se muestran escapados (como texto, nunca como HTML):
+
+- `contactoSocio` es un correo: `El negocio "<nombre>" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a <correo normalizado>.`
+- `contactoSocio` no es un correo: `El negocio "<nombre>" fue aprobado. El contacto del socio ("<contacto>") no es un correo electrónico, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.`
+
+**Correo de credenciales** (asunto `Acceso a Bazar: <negocio>`, o `Credenciales para reenviar al socio: <negocio>` cuando va al aprobador): título `Tu negocio fue aprobado`; usuario; contraseña temporal; nombre (`Dispositivo principal`) e identificador del dispositivo; indicación de conservar el identificador y de cambiar la contraseña temporal en cuanto la aplicación lo permita. Cuando va al aprobador añade la nota "Para quien aprueba: el contacto del socio (...) no es un correo electrónico ... Debes hacer llegar al socio (...) estos datos de acceso por otro medio". Todos los valores interpolados se escapan.
 
 **Ejemplo**
 
@@ -1831,11 +1844,13 @@ GET /api/v1/business-registration/approve?token=example-raw-token-from-the-email
 <!doctype html>
 <html lang="es">
   <head><meta charset="utf-8" /><title>Negocio aprobado</title></head>
-  <body ...><h1>Negocio aprobado</h1><p>"Bonsáis del Alberto" ya está activo y listo para iniciar sesión.</p></body>
+  <body ...><h1>Negocio aprobado</h1><p>El negocio &quot;Bonsáis del Alberto&quot; fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a alberto@example.test.</p></body>
 </html>
 ```
 
-Fuente: `src/business-registration/business-registration.controller.ts:55-66`, `src/business-registration/business-registration.service.ts:122-148,176-221`, `src/business-registration/status-page.html.ts:9-21`, `test/business-registration.e2e-spec.ts:252-282,307-369`.
+Todas las páginas HTML de este módulo escapan `title` y `message` al renderizarse (`&`, `<`, `>`, `"`, `'`), por lo que un `nombreNegocio` con marcado HTML se muestra como texto.
+
+Fuente: `src/business-registration/business-registration.controller.ts:55-66`, `src/business-registration/business-registration.service.ts:152-274,293-340`, `src/business-registration/initial-credentials.ts:1-81`, `src/email/email.service.ts:78-159`, `src/business-registration/status-page.html.ts:16-30`, `src/common/escape-html.ts:1-14`, `test/business-registration.e2e-spec.ts:277-307,332-358,388-700`.
 
 <a id="ep-br-reject"></a>
 ### `GET /api/v1/business-registration/reject`
@@ -1846,11 +1861,11 @@ Fuente: `src/business-registration/business-registration.controller.ts:55-66`, `
 | Headers | ninguno |
 | Éxito | **200** con `Content-Type: text/html` |
 
-Mismo `token` y mismas respuestas HTML que `approve`, salvo que el caso exitoso marca la solicitud como `rechazado` y **no crea nada** (ni `contextId` ni Member). Título en éxito: `Solicitud rechazada`.
+Mismo `token` y mismas respuestas HTML que `approve`, salvo que el caso exitoso marca la solicitud como `rechazado` y **no crea nada** (ni `contextId`, ni Member, ni cuenta, ni dispositivo, y no envía credenciales). Título en éxito: `Solicitud rechazada`.
 
 Ejemplo de página de éxito: `<h1>Solicitud rechazada</h1><p>La solicitud de "Bonsáis del Alberto" fue rechazada. No se creó nada.</p>`.
 
-Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `src/business-registration/business-registration.service.ts:154-165`, `test/business-registration.e2e-spec.ts:284-305`.
+Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `src/business-registration/business-registration.service.ts:276-291`, `test/business-registration.e2e-spec.ts:309-330,639-700`.
 
 ---
 
@@ -1909,7 +1924,6 @@ Montajes **fuera** del prefijo `/api/v1` (no son rutas de negocio; ver [1.2](#f-
 
 - **`doc/reglas-de-negocio.md`, línea 141**: dice que un `contextId` enviado en el body "sería ignorado". En el código actual es **400** (`forbidNonWhitelisted: true`).
 - **Swagger (`src/docs/bazaar-examples.ts`)** puede estar desactualizado en detalles: los ejemplos de `GET /members` y de Member completo omiten `active`; los ejemplos de producto omiten `active`; el ejemplo de auditoría omite `contextId`; el ejemplo de respuesta de `POST /business-registration` incluye `resolvedAt` y `createdContextId` que el servicio **no devuelve** (solo `id`, `status`, `createdAt`); los ejemplos de `GET /products` y `GET /members` no mencionan `includeInactive`.
-- **Swagger, `businessRegistrationApprove`**, y la página HTML de aprobación dicen que el negocio queda "listo para iniciar sesión", pero la aprobación no crea `Account` ni `Device` (ver [Business Registration](#mod-business-registration)).
 - **`README.md`**: su tabla de rutas omite `GET /products/:id`, `DELETE /products/:id`, `PATCH /products/:id/reactivate`, `PATCH|DELETE /members/:id`, `PATCH /members/:id/reactivate` y el módulo de business-registration.
 - **`bazar-frontend/.env.example`** propone `VITE_API_URL` absoluto (`http://localhost:3000/api/v1`), incompatible con el proxy de Vite y con la ausencia de CORS (ver [1.10](#f-cors)).
 
@@ -1929,7 +1943,7 @@ Lo que en el primer borrador quedó "por verificar" se ejecutó contra un servid
 | Imágenes | Confirmado: subida 201 con `image: "/uploads/products/<uuid>.png"` (sin `imagePath`); el archivo se sirve con `Content-Type: image/png`, `X-Content-Type-Options: nosniff` y `Content-Security-Policy: default-src 'none'; sandbox`; `/api/v1/uploads/...` 404. Errores: `Image is required`, `Unsupported image signature` (SVG), `Unexpected file field - foto`, `Too many fields`, `Too many files`, 413 `File too large`; colaborador 403 |
 | Comisiones y reportes | Confirmado: semana por defecto domingo–sábado en UTC-6 (`2026-09-20T06:00:00.000Z` a `2026-09-27T05:59:59.999Z`); un solo extremo 400 con el mensaje documentado; `memberId` de un socio 404; `from` > `to` 200 en ceros; semana u ordinal ISO 400 `Invalid date: ...`; los totales de `sales-by-period` coinciden con las ventas hechas |
 | Deudas | Confirmado: creación con `deudor` en línea 201 sin `deudor` anidado; ambos o ninguno de `deudorId`/`deudor` 400 `Exactly one of deudorId or deudor must be provided`; campo desconocido anidado `deudor.property foo should not exist`; colaborador no crea (403) pero **sí** registra abonos; un abono mayor al saldo 400 `Abono of <monto> exceeds the remaining balance of <saldo>`; un abono a una deuda saldada 400 con saldo 0 |
-| Business registration | Confirmado solo lo que no envía correo: validación 400 (vacío, campo desconocido, cadenas en blanco), y las páginas HTML `Enlace inválido` con `404` y `Content-Type: text/html` para `approve`/`reject` sin `token` o con un token desconocido. El `201` con correo real se verificó en otra sesión (`Approval email accepted by Resend`); no se repitió para no enviar otro correo |
+| Business registration | Confirmado en vivo solo lo que no envía correo: validación 400 (vacío, campo desconocido, cadenas en blanco), y las páginas HTML `Enlace inválido` con `404` y `Content-Type: text/html` para `approve`/`reject` sin `token` o con un token desconocido. El `201` con correo real se verificó en otra sesión (`Approval email accepted by Resend`); no se repitió para no enviar otro correo. La aprobación con creación de cuenta y dispositivo y el envío de credenciales (commit `3399370`) se verificó con tests unitarios y e2e (Resend simulado), **no** en vivo con correo real |
 | Formatos de error | Ver [1.8](#f-errores): 404 JSON bajo `/api/v1` y HTML fuera del prefijo; 413 para body JSON de más de ~100 kb; 400 con `message` string para un body que no es JSON |
 
 Sin verificar aquí: que Axios con `FormData` mande el `boundary` correcto cuando la instancia fuerza `Content-Type: application/json` (depende del cliente del frontend, no del backend), y la forma exacta del 500 cuando el correo falla.
@@ -1939,14 +1953,13 @@ Sin verificar aquí: que Axios con `FormData` mande el `boundary` correcto cuand
 - Un `GET` con parámetro de query no declarado es 400 (p. ej. `GET /members?foo=1`). Las rutas de `business-registration/approve|reject` son la excepción: leen `token` sin `ValidationPipe`.
 - Cabeceras HTTP no distinguen mayúsculas (`x-member-id` = `X-Member-Id`), pero cada una debe aparecer **una sola vez**.
 - `image` de producto y el resto de campos crudos: ver [1.11](#f-crudos).
-- No hay endpoints para: crear Members, crear/listar dispositivos, crear cuentas, cerrar sesión, refrescar token, editar/cancelar ventas o deudas, consultar el estado de un registro de negocio.
+- No hay endpoints para: crear Members, crear/listar dispositivos, crear cuentas (salvo la que crea la aprobación de un negocio), cambiar la contraseña, cerrar sesión, refrescar token, editar/cancelar ventas o deudas, consultar el estado de un registro de negocio.
 
+<a id="b-conocidos"></a>
 ### B.4 Problemas conocidos del backend (verificados, no corregidos)
 
 Esto no cambia el contrato de arriba, pero conviene saberlo al construir el frontend:
 
-- **Un negocio aprobado no puede iniciar sesión.** La aprobación crea solo el Member socio fundador; no hay endpoint ni código que cree su `Account` ni un `Device`. La página de aprobación dice "listo para iniciar sesión", pero hace falta crear cuenta y dispositivo fuera de banda. Tampoco hay `GET` para consultar el estado de una solicitud.
-- **HTML sin escapar en las páginas de aprobar/rechazar.** `renderStatusPage` (`src/business-registration/status-page.html.ts`) inserta `nombreNegocio`, un campo de un formulario público, sin escapar; el correo sí lo escapa. Es un XSS almacenado que se ejecuta en el navegador de quien abre el enlace.
 - **Sin límite de tasa** en `POST /business-registration`: cada llamada válida crea una solicitud y dispara un correo. Si el correo falla responde 500, pero la solicitud ya quedó `pendiente`.
 - **Datos internos en las respuestas:** las ventas incluyen `requestFingerprint` (verificado en vivo) y los snapshots de auditoría de producto incluyen `imagePath`, la clave interna de almacenamiento (verificado en vivo).
 - **Reemplazar una imagen no borra la anterior** del disco; sigue accesible por su URL vieja.
@@ -1954,3 +1967,12 @@ Esto no cambia el contrato de arriba, pero conviene saberlo al construir el fron
 - **El cliente Axios actual** (`bazar-frontend/src/services/api.ts`) solo envía `Authorization`; faltan `x-member-id` y `x-device-id`. Además menciona `/auth/register`, que no existe.
 - **`GET /sales/:id`** solo pide token: cualquier cuenta del negocio lee cualquier venta de su propio negocio si conoce el `id`.
 - **El 401 no distingue** token expirado, cuenta desactivada o token inválido; no hay refresh ni logout.
+- **No hay cambio de contraseña** (ni recuperación). La contraseña temporal que recibe el socio al aprobarse su negocio sigue siendo su contraseña vigente hasta que exista ese flujo; el correo de credenciales la pide cambiar, pero la API aún no lo permite. Tampoco hay ningún endpoint para consultar el estado de una solicitud de registro.
+
+<a id="b-resueltos"></a>
+### B.5 Resueltos (corregidos en la rama)
+
+Antes figuraban en B.4 y ya no aplican:
+
+- **Un negocio aprobado no podía iniciar sesión** (commit `3399370`): la aprobación ahora crea, además del Member fundador, la cuenta del socio y un dispositivo autorizado, y envía las credenciales por correo; ver [Business Registration](#mod-business-registration). Consecuencia en el frontend: el primer login usa el usuario y la contraseña temporal del correo, y el dispositivo se identifica con el `identifier` del correo.
+- **HTML sin escapar en las páginas de aprobar/rechazar** (commit `73c7411`): `renderStatusPage` no escapaba ningún valor, lo que permitía un XSS almacenado vía `nombreNegocio`. Ahora escapa título y mensaje con un `escapeHtml` común (`src/common/escape-html.ts`), el mismo que usa el correo.

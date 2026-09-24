@@ -573,7 +573,7 @@ export const operations: Record<string, Operation> = {
   businessRegistrationApprove: {
     summary: 'Approve a pending business registration (link from the email)',
     description:
-      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving creates the real contextId and the founding socio Member (active immediately, ready to log in).',
+      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving, in one transaction, creates the real contextId, the founding socio Member, the socio login Account (random temporary password, stored only as an Argon2id hash) and one authorized "Dispositivo principal" Device, then emails the credentials (username, temporary password, device identifier) to the socio when contactoSocio is an email, or to the approver (to relay) when it is not. If that email cannot be sent, everything rolls back, the request stays "pendiente" and the response is 502 so the same link can be retried. The password is never shown on the page.',
     access: 'public',
     contentType: 'text/html',
     queries: [
@@ -589,9 +589,17 @@ export const operations: Record<string, Operation> = {
     responses: [
       {
         status: 200,
-        description: 'Valid, unused, unexpired token: business approved.',
+        description:
+          'Valid, unused, unexpired token: business approved and credentials emailed.',
         value:
-          '<html>...<h1>Negocio aprobado</h1><p>"Bonsáis de Alberto" ya está activo y listo para iniciar sesión.</p>...</html>',
+          '<html>...<h1>Negocio aprobado</h1><p>El negocio "Bonsáis de Alberto" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a alberto@example.com.</p>...</html>',
+      },
+      {
+        status: 502,
+        description:
+          'The credentials email could not be sent: nothing was created, the request is still pending and the same link can be used again.',
+        value:
+          '<html>...<h1>No se pudo enviar el correo de credenciales</h1><p>La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.</p>...</html>',
       },
       {
         status: 200,
