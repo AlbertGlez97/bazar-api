@@ -8,7 +8,7 @@ Apply one global controller prefix so the existing frontend (`VITE_API_URL=http:
 - Allowed: source, tests, docs and local runtime verification (dev server, curl). Atomic Conventional Commits, no AI attribution. **No push** until the user decides.
 - Never read `.env` (a permission rule denies it). The user's `.env` now has the runtime role, owner URLs and a real `RESEND_API_KEY`; do not send real registration emails during verification (use the mocked-email e2e).
 - TDD: **on** (repo policy from BE-05). RED first where there is new behavior. Runners: `npm run build`, `npm run lint`, `npm test`, `npm run test:e2e`.
-- Native review: RDD reports `on (decided by default)`; the BE-11 preflight offered START but it was never run and nothing is approved. The commits of this task assess independently; do not claim a review.
+- Native review: RDD reports `on (decided by default)`; run only with the user's per-candidate consent. The outcome for this task is recorded under "Progress and evidence".
 
 ## Starting state (audited 2026-09-24, nothing trusted beforehand)
 
@@ -51,7 +51,7 @@ Reasons: they are ordinary controller routes, so one contract, one reverse-proxy
 - Docs: `README.md`, `doc/reglas-de-negocio.md` and the `.env.example` comment describe the prefix, the origin-only `APP_BASE_URL` (a trailing `/api/v1` is normalized) and the `{*path}` registration; the `.env.example` comment ("do not include /api/v1") stays accurate as guidance.
 - `registro.json` (a manual-test file left in the repo root) removed.
 - Commit: `646e291` (`fix(api): add global /api/v1 prefix`), 8 files, +271/-37 authored lines; one coherent unit because the wildcard problem exists only behind the prefix. Not pushed.
-- Native review: not run (the earlier BE-11 START was never started and nothing is approved); RDD reports `on (decided by default)`.
+- Native review (2026-09-24, user-consented): APPROVED for exactly these two commits (`646e291`, `7fb0781`; medium, 9 files, 368 lines, one `review-reliability` lens, target `sha256:e59d6a08…db6a36`); receipt acknowledged and the authority burned, persisted review state clean. Path to get there: `gentle-ai sync --agent claude-code` was needed first (`managed_assets_outdated`); the first lineage was started from a preflight run without `--agent claude-code`, so `capture-result` failed `invalid_request` (no `--agent` in the provider tokens), and it was released with the user's maintainer authorization (`operator_disposition`, nothing discarded) and restarted with the agent-bound preflight. Two advisory, non-blocking findings, no correction opened: (1) WARNING `R3-bootstrap-capture-ordering` (`test/business-registration.e2e-spec.ts:75-91`): the reviewer worried that the spies are restored before `bootstrap()` finishes if `main.ts` does not await it; checked against the code, `src/main.ts:21` does `await bootstrap()` at top level, so the dynamic `import()` resolves only after `app.listen` and the premise does not hold (the RED run also captured the warning); (2) SUGGESTION `R3-baseurl-case` (`business-registration.service.ts:36-42`): `baseUrl()` strips `/api/v1` only in lowercase; low risk, optional follow-up. The whole-branch candidate against `main` (high, 133 files, 16041 lines) failed `lens_context_budget_exceeded` (nothing created) and was not reviewed. RDD reports `on (decided by default)`.
 
 ## Next step
 

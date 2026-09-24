@@ -89,7 +89,7 @@ Execute for the first time everything BE-11 introduced (new `resend` dependency,
 ### Closing state
 
 - Branch `feat/backend-e0-be11-multitenancy`: all verified fixes and documentation committed; unit 11 files / 80 tests and e2e 18 files / 125 tests pass with the user's real `.env`; `tsc --noEmit` and lint are clean (2 pre-existing BE-09 warnings).
-- Native review: every commit assesses `medium`; run at slice close only when the user grants consent (RDD reported `on (decided by default)`; not changed by the agent).
+- Native review: every commit assessed `medium`. BE-11 itself was **not reviewed**: its START was never run before the push, and the later whole-branch candidate against `main` (which contains BE-11; high, 133 files, 16041 lines) failed `lens_context_budget_exceeded` with nothing created, so BE-11 would have to be reviewed in smaller slices with their own consent. Only the two global-prefix commits were reviewed and approved (see `odd/tasks/global-api-prefix.md`). RDD reported `on (decided by default)`; not changed by the agent.
 - Pending, separate from BE-11: the global `/api/v1` prefix. The other session's uncommitted work (`src/main.ts`, the registration service links, its e2e spec and new service spec, `README.md`, `doc/reglas-de-negocio.md`, `.env.example`, `odd/tasks/global-api-prefix.md`) is untouched and not part of this branch's commits. It also raises `WARN [LegacyRouteConverter] Unsupported route path: "/api/v1/*"` from `consumer.apply(TenantContextMiddleware).forRoutes('*')` in `src/app.module.ts`; use `'*path'` and verify against the real bootstrap, which the e2e suites do not exercise.
 
 ## Next step
