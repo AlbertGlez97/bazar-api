@@ -2,6 +2,24 @@ import 'dotenv/config';
 import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 import { escapeHtml } from '../common/escape-html.js';
+import { withTimeout } from '../common/with-timeout.js';
+
+/**
+ * How long the credentials email may wait for Resend. The installed Resend
+ * SDK (4.x) offers no abort signal or request timeout, so the wait is bounded
+ * with {@link withTimeout}. The approval sends this email from INSIDE its
+ * database transaction (`APPROVE_TRANSACTION_OPTIONS.timeout`, 15 s in
+ * BusinessRegistrationService), so this MUST stay well below it: the email
+ * then fails first, in a controlled way (CredentialsEmailError -> rollback ->
+ * 502 retry page) instead of the transaction expiring under a pending call.
+ * A unit test pins the relation.
+ *
+ * Trade-off: timing out stops waiting, it cannot cancel the HTTP request. The
+ * email may still be delivered although the approval rolled back; the retry
+ * sends a fresh, valid set of credentials (the trade-off already accepted
+ * for "email sent, commit failed").
+ */
+export const CREDENTIALS_EMAIL_TIMEOUT_MS = 8_000;
 
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
@@ -95,18 +113,23 @@ export class EmailService {
       throw new Error(
         'APPROVAL_NOTIFICATION_EMAIL is required to send credentials when the socio has no email',
       );
-    await this.deliver('credentials', {
-      to,
-      subject: relayThroughApprover
-        ? `Credenciales para reenviar al socio: ${input.nombreNegocio}`
-        : `Acceso a Bazar: ${input.nombreNegocio}`,
-      html: renderCredentialsEmailHtml(input, relayThroughApprover),
-    });
+    await this.deliver(
+      'credentials',
+      {
+        to,
+        subject: relayThroughApprover
+          ? `Credenciales para reenviar al socio: ${input.nombreNegocio}`
+          : `Acceso a Bazar: ${input.nombreNegocio}`,
+        html: renderCredentialsEmailHtml(input, relayThroughApprover),
+      },
+      CREDENTIALS_EMAIL_TIMEOUT_MS,
+    );
   }
 
   private async deliver(
     kind: 'approval' | 'credentials',
     message: { to: string; subject: string; html: string },
+    timeoutMs?: number,
   ): Promise<void> {
     // The Resend SDK does not throw on API errors (invalid key, unverified
     // domain, testing-recipient restriction, rate limit...): it resolves to
@@ -114,11 +137,18 @@ export class EmailService {
     // like a successful one (the endpoint answered 201, nothing was sent
     // and nothing was logged), so the error is surfaced here. The message
     // carries only Resend's error name/message, never the API key.
-    const { data, error } = await this.getClient().emails.send({
+    const label = kind === 'approval' ? 'approval' : 'credentials';
+    const sending = this.getClient().emails.send({
       from: 'onboarding@resend.dev',
       ...message,
     });
-    const label = kind === 'approval' ? 'approval' : 'credentials';
+    // Only the credentials email is time-bounded (see
+    // CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps waiting
+    // for Resend as before.
+    const { data, error } =
+      timeoutMs === undefined
+        ? await sending
+        : await withTimeout(sending, timeoutMs, `Resend ${label} email`);
     if (error)
       throw new Error(
         `Resend rejected the ${label} email: ${error.name}: ${error.message}`,

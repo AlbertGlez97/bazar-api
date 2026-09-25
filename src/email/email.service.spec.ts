@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
-import { EmailService } from './email.service.js';
+import {
+  CREDENTIALS_EMAIL_TIMEOUT_MS,
+  EmailService,
+} from './email.service.js';
 
 // The Resend SDK does not throw on API errors: emails.send resolves to
 // `{ data, error }`. These tests pin that behavior so a rejected email can
@@ -235,5 +238,84 @@ describe('EmailService.sendBusinessCredentialsEmail', () => {
       new EmailService().sendBusinessCredentialsEmail(credentials),
     ).rejects.toThrow(/APPROVAL_NOTIFICATION_EMAIL/);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('EmailService.sendBusinessCredentialsEmail timeout', () => {
+  const credentials = {
+    nombreNegocio: 'Bolsas de prueba',
+    nombreSocio: 'Socio',
+    contactoSocio: 'socio@example.test',
+    socioEmail: 'socio@example.test',
+    username: 'socio@example.test',
+    temporaryPassword: 'Tmp-Pass_0123456789abcd',
+    deviceName: 'Dispositivo principal',
+    deviceIdentifier: '0b6f1c2e-4d5a-4c7b-9e1f-123456789abc',
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('RESEND_API_KEY', API_KEY);
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', 'approver@example.test');
+    send.mockReset();
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('gives up with a timeout error when Resend never answers, without leaking secrets', async () => {
+    send.mockReturnValue(new Promise(() => undefined));
+
+    const outcome = new EmailService()
+      .sendBusinessCredentialsEmail(credentials)
+      .catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(CREDENTIALS_EMAIL_TIMEOUT_MS - 1);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const failure = await outcome;
+    expect(failure).toBeInstanceOf(Error);
+    const { message } = failure as Error;
+    expect(message).toBe(
+      `Resend credentials email timed out after ${CREDENTIALS_EMAIL_TIMEOUT_MS} ms`,
+    );
+    expect(message).not.toContain(API_KEY);
+    expect(message).not.toContain(credentials.temporaryPassword);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears its timer when Resend accepts the email', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail(credentials);
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears its timer when Resend rejects the email', async () => {
+    send.mockResolvedValue({
+      data: null,
+      error: { name: 'invalid_api_key', message: 'API key is invalid' },
+    });
+
+    await expect(
+      new EmailService().sendBusinessCredentialsEmail(credentials),
+    ).rejects.toThrow(/invalid_api_key/);
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears its timer when the Resend call itself throws', async () => {
+    send.mockRejectedValue(new Error('network down'));
+
+    await expect(
+      new EmailService().sendBusinessCredentialsEmail(credentials),
+    ).rejects.toThrow('network down');
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

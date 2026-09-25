@@ -511,6 +511,131 @@ describe('business registration (BE-11)', () => {
       await login(email, retry.temporaryPassword).expect(200);
     });
 
+    // The status carries the body in its failure message, so a wrong answer
+    // (e.g. Nest's JSON 500) is visible in the assertion output.
+    const expectRetryPage = (res: request.Response, reason: RegExp) => {
+      expect(res.status, `status ${res.status}, body ${res.text}`).toBe(502);
+      expect(res.headers['content-type']).toMatch(/html/);
+      expect(res.text).toMatch(reason);
+      expect(res.text).toMatch(/no se completó/i);
+      expect(res.text).toMatch(/sigue pendiente/i);
+      expect(res.text).toMatch(/mismo enlace/i);
+    };
+    const expectStillPending = async (nombreNegocio: string) => {
+      const pending = await stored(nombreNegocio);
+      expect(pending?.status).toBe('pendiente');
+      expect(pending?.createdContextId).toBeNull();
+      expect(pending?.resolvedAt).toBeNull();
+    };
+
+    it('answers 502, keeps the request pendiente and creates nothing when the transaction expires under a slow credentials email, then succeeds on retry', async () => {
+      const email = `lento.${run}@example.com`;
+      const path = await register(name('Correo Lento'), 'Socio Lento', email);
+      // Seam: the production timeout is 15 s; waiting that long would make
+      // the suite slow, so for this one request the spy forwards every
+      // $transaction call to the real implementation with a 1 s timeout
+      // (production options are untouched otherwise). The mocked email then
+      // outlives it, exactly like a Resend call that never answers.
+      const realTransaction = prisma.$transaction.bind(prisma);
+      const shortTimeout = vi.spyOn(prisma, '$transaction').mockImplementation(((
+        callback: never,
+        options?: object,
+      ) =>
+        realTransaction(callback, { ...options, timeout: 1_000 })) as never);
+      sendCredentialsEmail.mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(resolve, 1_500)),
+      );
+
+      let failed: request.Response;
+      try {
+        failed = await request(server()).get(path);
+      } finally {
+        shortTimeout.mockRestore();
+      }
+
+      expectRetryPage(failed, /se agotó el tiempo/i);
+      await expectStillPending(name('Correo Lento'));
+      await expect(
+        prisma.account.findUnique({ where: { username: email } }),
+      ).resolves.toBeNull();
+
+      await request(server()).get(path).expect(200);
+
+      expect((await stored(name('Correo Lento')))?.status).toBe('aprobado');
+      const creds = lastCredentials();
+      expect(creds.username).toBe(email);
+      await login(email, creds.temporaryPassword).expect(200);
+    });
+
+    it('answers 502 and keeps the request pendiente when a concurrent approval wins the username, and the retry derives a fresh one', async () => {
+      const email = `choque.${run}@example.com`;
+      const pathA = await register(name('Choque Uno'), 'Socio Uno', email);
+      const pathB = await register(name('Choque Dos'), 'Socio Dos', email);
+      // A real race, made deterministic: approval A inserts its Account and
+      // then holds its (still uncommitted) transaction open inside the
+      // credentials email. Approval B pre-checks the username under READ
+      // COMMITTED, sees nothing committed, picks the same address and blocks
+      // on the unique index of A's uncommitted row. Once B is observed
+      // waiting on a lock, A is released and commits, so B's insert fails
+      // with the unique violation the pre-check could not see.
+      let reachedEmailA!: () => void;
+      const emailAReached = new Promise<void>((resolve) => {
+        reachedEmailA = resolve;
+      });
+      let releaseA!: () => void;
+      const heldByA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      sendCredentialsEmail.mockImplementationOnce(async () => {
+        reachedEmailA();
+        await heldByA;
+      });
+      const isBlockedOnAnAccountInsert = async () => {
+        const rows = await prisma.$queryRaw<{ n: bigint }[]>`
+          SELECT count(*) AS n FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%INSERT INTO%Account%'`;
+        return Number(rows[0].n) > 0;
+      };
+
+      const approvalA = request(server())
+        .get(pathA)
+        .then((res) => res);
+      await emailAReached;
+      const approvalB = request(server())
+        .get(pathB)
+        .then((res) => res);
+      for (let waited = 0; !(await isBlockedOnAnAccountInsert()); waited += 25) {
+        if (waited > 10_000)
+          throw new Error('approval B never blocked on the Account insert');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      releaseA();
+      const [pageA, pageB] = await Promise.all([approvalA, approvalB]);
+
+      expect(pageA.status, pageA.text).toBe(200);
+      expect(pageA.text).toMatch(/aprobado/i);
+      expectRetryPage(pageB, /nombre de usuario/i);
+      await expectStillPending(name('Choque Dos'));
+      const contextA = (await stored(name('Choque Uno')))!.createdContextId!;
+      await expect(
+        prisma.account.findMany({ where: { username: email } }),
+      ).resolves.toMatchObject([{ contextId: contextA }]);
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
+      const credsA = lastCredentials();
+
+      await request(server()).get(pathB).expect(200);
+
+      expect(sendCredentialsEmail).toHaveBeenCalledTimes(2);
+      const credsB = lastCredentials();
+      expect(credsB.username).not.toBe(email);
+      expect(credsB.username).toMatch(/^choque-dos-.*[0-9a-f]{6}$/);
+      expect((await stored(name('Choque Dos')))?.status).toBe('aprobado');
+      await login(credsB.username, credsB.temporaryPassword).expect(200);
+      await login(email, credsA.temporaryPassword).expect(200);
+    });
+
     it('sends the credentials to the approver when the contact is not an email', async () => {
       const path = await register(
         name('Solo Telefono'),

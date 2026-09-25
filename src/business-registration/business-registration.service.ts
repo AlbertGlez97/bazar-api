@@ -5,6 +5,10 @@ import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { EmailService } from '../email/email.service.js';
 import { createServerId } from '../common/server-id.js';
+import {
+  isAccountUsernameConflict,
+  isTransactionExpired,
+} from './approve-failures.js';
 import { CreateBusinessRegistrationDto } from './dto/create-business-registration.dto.js';
 import {
   INITIAL_DEVICE_NAME,
@@ -22,10 +26,54 @@ const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // into a spurious rollback, so approve opens its transaction with a larger
 // explicit budget. The tenant-isolation `$transaction` override forwards
 // these options untouched (see test/tenant-extension.e2e-spec.ts).
-const APPROVE_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
+// `timeout` must stay well above CREDENTIALS_EMAIL_TIMEOUT_MS (EmailService),
+// so a hung Resend call fails first, in a controlled way; a unit test pins it.
+export const APPROVE_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
 
 /** The credentials email could not be sent; the approval was rolled back. */
 class CredentialsEmailError extends Error {}
+
+/** How a failed (rolled back) approval is reported to the approver. */
+interface RetryableApproveFailure {
+  /** Server log line: never contains the password or raw driver output. */
+  log: string;
+  title: string;
+  message: string;
+}
+
+const RETRY_HINT =
+  'La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.';
+
+/**
+ * The approve failures that leave the request "pendiente" (the transaction
+ * rolled back) and that a retry with the same link can fix, so they get the
+ * HTML 502 retry page instead of a JSON 500. Anything else is not
+ * recognized (returns `undefined`) and must be rethrown by the caller.
+ */
+function retryableApproveFailure(
+  error: unknown,
+): RetryableApproveFailure | undefined {
+  if (error instanceof CredentialsEmailError)
+    return {
+      // Message only (Resend's error name/message or the timeout): no secrets.
+      log: error.message,
+      title: 'No se pudo enviar el correo de credenciales',
+      message: RETRY_HINT,
+    };
+  if (isTransactionExpired(error))
+    return {
+      log: 'Approval rolled back: the database transaction expired before it could commit.',
+      title: 'La aprobación tardó demasiado',
+      message: `Se agotó el tiempo de la operación. ${RETRY_HINT}`,
+    };
+  if (isAccountUsernameConflict(error))
+    return {
+      log: 'Approval rolled back: the derived username was taken by a concurrent approval.',
+      title: 'No se pudo crear el usuario',
+      message: `Otro registro tomó el mismo nombre de usuario al mismo tiempo. ${RETRY_HINT}`,
+    };
+  return undefined;
+}
 
 function alreadyProcessedPage(): string {
   return renderStatusPage(
@@ -155,11 +203,17 @@ export class BusinessRegistrationService {
    * the founding socio Member, the socio's login Account (Argon2id-hashed
    * temporary password), one authorized "Dispositivo principal" Device, and
    * marks the request "aprobado". The credentials email is the LAST step
-   * inside that transaction: if it cannot be sent, everything rolls back,
-   * the request stays "pendiente" and the page (HTTP 502) tells the
-   * approver the same link can be used to retry. Trade-off: if the email
-   * is sent and the commit then fails, the recipient holds credentials that
-   * never became valid, and the retry sends a fresh, valid set.
+   * inside that transaction: if it cannot be sent (Resend error or the
+   * EmailService timeout), everything rolls back, the request stays
+   * "pendiente" and the page (HTTP 502) tells the approver the same link can
+   * be used to retry. The same 502 page answers the two other rolled-back,
+   * retryable failures: the transaction expiring, and a concurrent approval
+   * taking the same username first (unique constraint on Account.username;
+   * the retry derives a fresh one). Any other error is rethrown. Trade-off:
+   * if the email is sent (or merely timed out, with the request still on the
+   * wire) and the approval then rolls back or fails to commit, the recipient
+   * holds credentials that never became valid, and the retry sends a fresh,
+   * valid set.
    *
    * Returns an HTML confirmation page in every case (see the module doc
    * comment on {@link renderStatusPage}), never a JSON error. The password
@@ -173,15 +227,13 @@ export class BusinessRegistrationService {
         APPROVE_TRANSACTION_OPTIONS,
       );
     } catch (error) {
-      if (!(error instanceof CredentialsEmailError)) throw error;
-      // Message only (Resend's error name/message): no secrets involved.
-      this.logger.error(error.message);
+      const failure = retryableApproveFailure(error);
+      if (!failure) throw error;
+      // Everything rolled back and the request is still "pendiente".
+      this.logger.error(failure.log);
       return {
         statusCode: 502,
-        html: renderStatusPage(
-          'No se pudo enviar el correo de credenciales',
-          'La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.',
-        ),
+        html: renderStatusPage(failure.title, failure.message),
       };
     }
   }

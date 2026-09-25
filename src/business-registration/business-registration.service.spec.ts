@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BusinessRegistrationService } from './business-registration.service.js';
+import { Logger } from '@nestjs/common';
+import {
+  APPROVE_TRANSACTION_OPTIONS,
+  BusinessRegistrationService,
+} from './business-registration.service.js';
+import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaService } from '../database/prisma.service.js';
+import { CREDENTIALS_EMAIL_TIMEOUT_MS } from '../email/email.service.js';
 import type { EmailService } from '../email/email.service.js';
 
 afterEach(() => vi.unstubAllEnvs());
@@ -82,5 +88,122 @@ describe('approve transaction options', () => {
     };
     expect(options.timeout).toBeGreaterThanOrEqual(10_000);
     expect(options.maxWait).toBeGreaterThan(0);
+  });
+
+  // The Resend call runs inside that transaction and has no abort signal in
+  // the installed SDK, so EmailService bounds it with its own timer. That
+  // timer must fire first, in a controlled way (-> CredentialsEmailError,
+  // clean rollback, 502), instead of the transaction expiring under a
+  // pending call. The margin covers the queries and the Argon2 hash that run
+  // before the email is sent.
+  it('gives the credentials email a shorter timeout than the transaction', () => {
+    expect(CREDENTIALS_EMAIL_TIMEOUT_MS).toBeLessThan(
+      APPROVE_TRANSACTION_OPTIONS.timeout,
+    );
+    expect(
+      APPROVE_TRANSACTION_OPTIONS.timeout - CREDENTIALS_EMAIL_TIMEOUT_MS,
+    ).toBeGreaterThanOrEqual(5_000);
+  });
+});
+
+describe('approve failures that keep the request pending', () => {
+  const pendingRequest = {
+    id: 'req',
+    status: 'pendiente',
+    tokenExpiresAt: new Date(Date.now() + 60_000),
+    nombreNegocio: 'Test',
+    nombreSocio: 'Test',
+    contactoSocio: 'test@example.test',
+  };
+  const clientVersion = '7.10.0';
+  const serviceFailingWith = (error: unknown) =>
+    new BusinessRegistrationService(
+      {
+        businessRegistrationRequest: {
+          findFirst: vi.fn().mockResolvedValue(pendingRequest),
+        },
+        $transaction: vi.fn().mockRejectedValue(error),
+      } as unknown as PrismaService,
+      {} as unknown as EmailService,
+    );
+  const silenceLogger = () =>
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('answers the 502 retry page when the transaction expired', async () => {
+    const log = silenceLogger();
+    const expired = new Prisma.PrismaClientKnownRequestError(
+      'Transaction API error: A commit cannot be executed on an expired transaction.',
+      {
+        code: 'P2028',
+        clientVersion,
+        meta: { operation: 'commit', timeout: 15_000, timeTaken: 15_600 },
+      },
+    );
+
+    const result = await serviceFailingWith(expired).approve('token');
+
+    expect(result.statusCode).toBe(502);
+    expect(result.html).toMatch(/no se completó/i);
+    expect(result.html).toMatch(/sigue pendiente/i);
+    expect(result.html).toMatch(/mismo enlace/i);
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers the 502 retry page on a username collision, without logging the raw Prisma message', async () => {
+    const log = silenceLogger();
+    const collision = new Prisma.PrismaClientKnownRequestError(
+      'Unique constraint failed on the constraint: `Account_username_key`',
+      {
+        code: 'P2002',
+        clientVersion,
+        meta: {
+          modelName: 'Account',
+          driverAdapterError: {
+            cause: {
+              originalCode: '23505',
+              constraint: { index: 'Account_username_key' },
+              table: 'Account',
+            },
+          },
+        },
+      },
+    );
+
+    const result = await serviceFailingWith(collision).approve('token');
+
+    expect(result.statusCode).toBe(502);
+    expect(result.html).toMatch(/no se completó/i);
+    expect(result.html).toMatch(/sigue pendiente/i);
+    expect(result.html).toMatch(/mismo enlace/i);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('Unique'));
+  });
+
+  it.each([
+    [
+      'a unique violation on another constraint',
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion,
+        meta: { modelName: 'Device', target: ['identifier'] },
+      }),
+    ],
+    [
+      'the P2028 for a transaction that could not start',
+      new Prisma.PrismaClientKnownRequestError('Unable to start', {
+        code: 'P2028',
+        clientVersion,
+        meta: { maxWait: 5_000 },
+      }),
+    ],
+    ['an unrelated error', new Error('database is down')],
+  ])('still rethrows %s untouched', async (_label, error) => {
+    silenceLogger();
+
+    await expect(serviceFailingWith(error).approve('token')).rejects.toBe(
+      error,
+    );
   });
 });
