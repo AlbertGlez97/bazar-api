@@ -103,5 +103,6 @@ describe('API documentation exposure', () => {
     expect(conflicts).toContain('La aprobación tardó demasiado');
     expect(conflicts).toContain('No se pudo crear el usuario');
     expect(htmlOf('200')).toContain('Negocio aprobado');
+    expect(htmlOf('200')).toContain('reenvío de respaldo');
   });
 });

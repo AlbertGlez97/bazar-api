@@ -573,7 +573,7 @@ export const operations: Record<string, Operation> = {
   businessRegistrationApprove: {
     summary: 'Approve a pending business registration (link from the email)',
     description:
-      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving, in one transaction, creates the real contextId, the founding socio Member, the socio login Account (random temporary password, stored only as an Argon2id hash) and one authorized "Dispositivo principal" Device, then emails the credentials (username, temporary password, device identifier) to the socio when contactoSocio is an email, or to the approver (to relay) when it is not. If that email cannot be sent (or Resend does not answer within 8 s), if the transaction times out, or if a concurrent approval takes the same username first, everything rolls back, the request stays "pendiente" and the response is 502 so the same link can be retried. The password is never shown on the page.',
+      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving, in one transaction, creates the real contextId, the founding socio Member, the socio login Account (random temporary password, stored only as an Argon2id hash) and one authorized "Dispositivo principal" Device, then emails the credentials (username, temporary password, device identifier) to the socio when contactoSocio is an email, or to the approver (to relay) when it is not. While Resend runs in test mode (no verified domain) it rejects any recipient but the account owner; only for that exact rejection the same credentials are forwarded to the approver as an explicit backup and the approval still succeeds (the page says so). If that email cannot be sent (any other Resend error, a failed backup, or no answer within the 10 s total deadline shared by the direct send and the backup), if the transaction times out, or if a concurrent approval takes the same username first, everything rolls back, the request stays "pendiente" and the response is 502 so the same link can be retried. The password is never shown on the page.',
     access: 'public',
     contentType: 'text/html',
     queries: [
@@ -593,6 +593,13 @@ export const operations: Record<string, Operation> = {
           'Valid, unused, unexpired token: business approved and credentials emailed.',
         value:
           '<html>...<h1>Negocio aprobado</h1><p>El negocio "Bonsáis de Alberto" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a alberto@example.com.</p>...</html>',
+      },
+      {
+        status: 200,
+        description:
+          'Valid token, but Resend (test mode) refused the socio address: the credentials were forwarded to the approver as a backup and must be relayed manually. The approval itself is complete.',
+        value:
+          '<html>...<h1>Negocio aprobado</h1><p>El negocio "Bonsáis de Alberto" fue aprobado. Resend (en modo de prueba) no permitió enviar las credenciales de acceso a alberto@example.com, así que se enviaron al correo del aprobador como reenvío de respaldo: hazlas llegar al socio.</p>...</html>',
       },
       {
         status: 502,
