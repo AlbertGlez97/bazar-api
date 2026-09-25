@@ -4,15 +4,12 @@ import {
   IsString,
   Length,
   Matches,
-  MaxLength,
   ValidateIf,
 } from 'class-validator';
 
 /** Shown to the person filling the form when the correo is not an email. */
 export const INVALID_CORREO_MESSAGE =
   'Escribe un correo válido, por ejemplo nombre@dominio.com';
-export const LONG_CORREO_MESSAGE =
-  'El correo no puede tener más de 254 caracteres';
 
 /** Trims surrounding whitespace so "  ana@x.com " and "   " behave sensibly. */
 const trim = ({ value }: { value: unknown }): unknown =>
@@ -54,12 +51,12 @@ export class CreateBusinessRegistrationDto {
   @Length(1, 100)
   @Matches(/\S/)
   apellidos!: string;
-  // 254 is the practical maximum length of an email address (RFC 5321).
-  // `ignore_max_length`: the length is enforced by @MaxLength alone, so an
-  // address over 254 characters gets the "too long" message only, not both.
+  // `@IsEmail()` already rejects an address over 254 characters (the practical
+  // maximum of RFC 5321), so a missing, blank, malformed OR over-long correo all
+  // get this one message. A separate `@MaxLength` would also fire for a MISSING
+  // correo (not a string) and tell the user it is "too long".
   @Transform(trim)
-  @IsEmail({ ignore_max_length: true }, { message: INVALID_CORREO_MESSAGE })
-  @MaxLength(254, { message: LONG_CORREO_MESSAGE })
+  @IsEmail({}, { message: INVALID_CORREO_MESSAGE })
   correo!: string;
   @ValidateIf((_dto, value) => value !== undefined)
   @Transform(trim)

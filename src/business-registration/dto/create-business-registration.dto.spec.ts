@@ -4,7 +4,6 @@ import { validate } from 'class-validator';
 import {
   CreateBusinessRegistrationDto,
   INVALID_CORREO_MESSAGE,
-  LONG_CORREO_MESSAGE,
 } from './create-business-registration.dto.js';
 
 const valid = {
@@ -103,11 +102,11 @@ describe('CreateBusinessRegistrationDto', () => {
     expect(messages).toContain(INVALID_CORREO_MESSAGE);
   });
 
-  it('rejects a missing or blank correo with the same clear message', async () => {
+  it('rejects a missing or blank correo with exactly the same clear message (never a "too long" one)', async () => {
     const { correo: _omitted, ...missing } = valid;
     for (const body of [missing, { ...valid, correo: '   ' }]) {
       const { messages } = await check(body);
-      expect(messages).toContain(INVALID_CORREO_MESSAGE);
+      expect(messages).toEqual([INVALID_CORREO_MESSAGE]);
     }
   });
 
@@ -118,7 +117,7 @@ describe('CreateBusinessRegistrationDto', () => {
     const { properties, messages } = await check({ ...valid, correo });
 
     expect(properties).toContain('correo');
-    expect(messages).toEqual([LONG_CORREO_MESSAGE]);
+    expect(messages).toEqual([INVALID_CORREO_MESSAGE]);
   });
 
   it('accepts a correo of exactly 254 characters', async () => {

@@ -366,8 +366,8 @@ describe('business registration (BE-11)', () => {
         expect(res.body.statusCode).toBe(400);
         expect(res.body.error).toBe('Bad Request');
         expect(res.body.message, correo.slice(0, 40)).toHaveLength(1);
-        expect(res.body.message[0]).toMatch(
-          /^(Escribe un correo válido, por ejemplo nombre@dominio.com|El correo no puede tener más de 254 caracteres)$/,
+        expect(res.body.message[0]).toBe(
+          'Escribe un correo válido, por ejemplo nombre@dominio.com',
         );
       }
       expect(sendApprovalEmail).not.toHaveBeenCalled();
