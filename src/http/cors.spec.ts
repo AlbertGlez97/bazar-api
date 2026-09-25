@@ -19,6 +19,10 @@ class PingController {
 
 const PREFLIGHT_HEADERS = 'authorization,content-type,x-member-id,x-device-id';
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function createApp(allowedOrigin: string | undefined) {
   if (allowedOrigin === undefined) delete process.env.ALLOWED_ORIGIN;
   else process.env.ALLOWED_ORIGIN = allowedOrigin;
@@ -162,6 +166,75 @@ describe('configureCors', () => {
       await expect(createApp(value)).rejects.toThrow(/ALLOWED_ORIGIN/);
     },
   );
+
+  it('refuses a partial wildcard at startup, naming the entry', async () => {
+    await expect(createApp('https://*.netlify.app')).rejects.toThrow(
+      /ALLOWED_ORIGIN.*wildcard.*https:\/\/\*\.netlify\.app/s,
+    );
+  });
+
+  // Entries that can never equal a browser Origin header used to pass
+  // silently: the API started fine and the browser blocked every request.
+  it.each([
+    ['a path', 'https://x.netlify.app/app', 'https://x.netlify.app'],
+    ['a query string', 'https://x.netlify.app?x=1', 'https://x.netlify.app'],
+    ['upper-case letters', 'https://X.Netlify.app', 'https://x.netlify.app'],
+    [
+      'an explicit default port',
+      'https://x.netlify.app:443',
+      'https://x.netlify.app',
+    ],
+    ['credentials', 'https://user@x.netlify.app', 'https://x.netlify.app'],
+  ])(
+    'refuses an entry with %s at startup and hints the exact origin',
+    async (_label, entry, hint) => {
+      await expect(createApp(entry)).rejects.toThrow(
+        new RegExp(
+          `ALLOWED_ORIGIN.*${escapeRegExp(entry)}.*${escapeRegExp(hint)}`,
+          's',
+        ),
+      );
+    },
+  );
+
+  it.each([['x.netlify.app'], ['//x.netlify.app'], ['not a url']])(
+    'refuses an entry that is not a URL at startup: %j',
+    async (entry) => {
+      await expect(createApp(entry)).rejects.toThrow(
+        new RegExp(`ALLOWED_ORIGIN.*${escapeRegExp(entry)}`, 's'),
+      );
+    },
+  );
+
+  it.each([['ftp://x.example'], ['localhost:5173'], ['file:///tmp']])(
+    'refuses a scheme other than http or https at startup: %j',
+    async (entry) => {
+      await expect(createApp(entry)).rejects.toThrow(
+        new RegExp(`ALLOWED_ORIGIN.*${escapeRegExp(entry)}.*http`, 's'),
+      );
+    },
+  );
+
+  it('fails on one bad entry in a list and names that entry, not the good ones', async () => {
+    const error = await createApp(
+      'https://a.netlify.app, https://b.netlify.app/app',
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain('https://b.netlify.app/app');
+    expect(error?.message).not.toContain('"https://a.netlify.app"');
+  });
+
+  it('accepts localhost with a non-default port next to a trimmed origin with a trailing slash', async () => {
+    app = await createApp(' https://a.netlify.app/ , http://localhost:5173 ');
+    for (const origin of ['https://a.netlify.app', 'http://localhost:5173']) {
+      const res = await preflight(app, origin);
+      expect(res.status).toBe(204);
+      expect(res.headers['access-control-allow-origin']).toBe(origin);
+    }
+  });
 
   it('does not allow a request header outside the list', async () => {
     app = await createApp('https://site.netlify.app');
