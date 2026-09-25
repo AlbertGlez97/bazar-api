@@ -4,7 +4,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 
 - Fecha del documento: 2026-09-24.
 - Base de código: rama `feat/backend-e0-be11-multitenancy`, commit `1b1e449` ("fix(api): address the two advisory findings of the prefix review"), árbol de trabajo limpio.
-- Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon.
+- Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - Alcance: 33 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -1754,12 +1754,12 @@ Fuente: `src/deudas/deudas.controller.ts:76-85`, `src/deudas/dto/create-abono.dt
 
 Alta pública de un negocio nuevo, con aprobación manual por correo. Es un flujo **especial**: enteramente público (sin `Authorization` ni headers de selección) y limitado a este alcance. Reglas:
 
-1. Alguien envía el formulario (`POST /business-registration`). Se crea una solicitud `pendiente` y se envía un correo (vía Resend) al aprobador fijo del sistema (`APPROVAL_NOTIFICATION_EMAIL`) con dos enlaces: aprobar y rechazar.
+1. Alguien envía el formulario (`POST /business-registration`). Se crea una solicitud `pendiente` y se envía un correo (vía Resend) al aprobador fijo del sistema (`APPROVAL_NOTIFICATION_EMAIL`) con el negocio, el nombre completo, el correo y el teléfono (si se dio) del socio, y dos enlaces: aprobar y rechazar.
 2. El aprobador abre uno de los enlaces (`GET .../approve?token=...` o `GET .../reject?token=...`) **desde su cliente de correo**. Ambos endpoints devuelven una **página HTML**, no JSON: no están pensados para llamarse desde el frontend con Axios. Los enlaces apuntan al origen de la API (`APP_BASE_URL` + `/api/v1/business-registration/...`), no al frontend.
 3. El token es de un solo uso y expira a los **30 días**; solo se guarda su hash. Nunca se devuelve por la API.
 4. Al **aprobar**, en **una sola transacción**, se crea: el `contextId` real del negocio; un Member fundador con `role: "socio"` (activo); la **cuenta (Account)** de ese socio, con una contraseña temporal aleatoria (solo se guarda su hash Argon2id); y un **dispositivo (Device)** `"Dispositivo principal"` ya `authorized`, con un `identifier` aleatorio (UUID). Al **rechazar** no se crea nada operativo.
-5. **Credenciales por correo.** Como último paso de esa transacción se envía un correo (Resend) con: usuario, contraseña temporal, nombre e identificador del dispositivo, y el aviso de que la contraseña es temporal. El destinatario es `contactoSocio` cuando parece un correo (una sola dirección simple `algo@dominio.tld`); si es un teléfono u otro texto, va al aprobador (`APPROVAL_NOTIFICATION_EMAIL`) con una nota para que se las haga llegar al socio. **Respaldo (Resend en modo de prueba):** mientras Resend no tenga un dominio verificado solo entrega al correo de su dueño y rechaza al socio con un `validation_error` ("You can only send testing emails to your own email address ..."); solo ante ese rechazo exacto las mismas credenciales se reenvían al aprobador como *reenvío de respaldo* (asunto `[RESPALDO] ...`, nota "Este correo era para <contactoSocio> ...; reenviarlo manualmente") y la aprobación **se completa** (200, con un texto propio en la página, ver abajo). Cualquier otro error, o un respaldo que también falle, da el 502 de siempre. Con un dominio verificado el envío directo es el normal. La contraseña **nunca** se muestra en la página de aprobación, no se registra en logs y no se guarda en claro.
-   - **Usuario (`username`)**: el correo de `contactoSocio` normalizado (sin espacios y en minúsculas) si es un correo, mide 100 caracteres o menos y no está tomado; si no, `<nombre-del-negocio-en-minúsculas-sin-acentos>-<6 hex aleatorios>` (p. ej. `bolsas-de-adid-3fa91c`). El `username` es único en todo el sistema.
+5. **Credenciales por correo.** Como último paso de esa transacción se envía un correo (Resend) con: usuario, contraseña temporal, nombre e identificador del dispositivo, y el aviso de que la contraseña es temporal. El destinatario es el `correo` del socio (una sola dirección simple `algo@dominio.tld`); si no hay un correo utilizable (solicitudes antiguas, anteriores a la separación de campos, con `correo` vacío, o una dirección que el formulario acepta pero que el patrón conservador de envío no acepta, p. ej. con un apóstrofo), va al aprobador (`APPROVAL_NOTIFICATION_EMAIL`) con una nota, con el nombre completo y el teléfono del socio, para que se las haga llegar. **Respaldo (Resend en modo de prueba):** mientras Resend no tenga un dominio verificado solo entrega al correo de su dueño y rechaza al socio con un `validation_error` ("You can only send testing emails to your own email address ..."); solo ante ese rechazo exacto las mismas credenciales se reenvían al aprobador como *reenvío de respaldo* (asunto `[RESPALDO] ...`, nota "Este correo era para <correo> ...; reenviarlo manualmente") y la aprobación **se completa** (200, con un texto propio en la página, ver abajo). Cualquier otro error, o un respaldo que también falle, da el 502 de siempre. Con un dominio verificado el envío directo es el normal. La contraseña **nunca** se muestra en la página de aprobación, no se registra en logs y no se guarda en claro.
+   - **Usuario (`username`)**: el `correo` del socio normalizado (sin espacios y en minúsculas) si mide 100 caracteres o menos y no está tomado; si no, `<nombre-del-negocio-en-minúsculas-sin-acentos>-<6 hex aleatorios>` (p. ej. `bolsas-de-adid-3fa91c`). El `username` es único en todo el sistema.
    - **Contraseña temporal**: 24 caracteres URL-safe (`A-Z a-z 0-9 _ -`, 144 bits aleatorios), independiente de cualquier dato del formulario.
 6. **Si la aprobación no puede completarse, no ocurre**: la transacción se revierte (no queda Account, Device, Member ni contexto), la solicitud sigue `pendiente` y la página responde **502**. Tres causas dan esa misma respuesta: el correo de credenciales falla (incluido un respaldo al aprobador que también falla) o Resend no contesta dentro del plazo total de 10 s (compartido por el envío directo y el respaldo); la transacción agota su tiempo (15 s); o dos aprobaciones distintas compiten por el mismo nombre de usuario y la otra gana (el reintento deriva uno nuevo). El aprobador puede reintentar abriendo **el mismo enlace**. Caso límite aceptado: si el correo sale (o solo se agotó la espera, con la petición aún en vuelo) y la aprobación se revierte o el commit falla justo después, el destinatario tiene credenciales que nunca fueron válidas; el reintento envía un juego nuevo y válido.
 7. **Qué implica para el frontend**: el primer inicio de sesión de un negocio nuevo usa el `username` y la contraseña temporal del correo (`POST /auth/login`); después se identifica el dispositivo con `POST /devices/identify` usando el `identifier` del correo y el nombre `"Dispositivo principal"`. El cliente **debe guardar el `identifier`** (no hay endpoint para consultarlo de nuevo). **Todavía no existe un endpoint para cambiar la contraseña**: la contraseña temporal sigue siendo la contraseña vigente hasta que se construya ese flujo (brecha conocida, ver [B.4](#b-conocidos)).
@@ -1779,8 +1779,12 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 | Campo | Tipo | Reglas |
 |---|---|---|
 | `nombreNegocio` | string | requerido; 1..200; con algún carácter no blanco |
-| `nombreSocio` | string | requerido; 1..200; con algún carácter no blanco (nombre del socio fundador) |
-| `contactoSocio` | string | requerido; 1..200; con algún carácter no blanco. Texto libre (correo o teléfono), sin validar formato |
+| `nombre` | string | requerido; 1..100; con algún carácter no blanco (nombre del socio fundador). Se recorta antes de validar |
+| `apellidos` | string | requerido; 1..100; con algún carácter no blanco (apellidos del socio fundador). Se recorta antes de validar |
+| `correo` | string | requerido; una dirección de correo válida (`@IsEmail()`), máximo 254 caracteres. Se recorta antes de validar y se guarda en minúsculas; ahí llegan las credenciales. **Solo se valida el formato: no se comprueba que el buzón exista** y no se llama a ningún servicio externo |
+| `telefono` | string | **opcional** (omitirlo es válido); si se envía: 1..30 caracteres, sin formato estricto, no en blanco (se recorta antes de validar). `null` no se acepta: omite el campo |
+
+Los campos `nombreSocio` y `contactoSocio` **ya no existen**: enviarlos es un 400 por campo desconocido.
 
 **Respuesta 201**: `{ "id": string, "status": "pendiente", "createdAt": string (ISO 8601) }` (solo esos tres campos).
 
@@ -1788,22 +1792,30 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 
 | HTTP | Situación | `message` |
 |---|---|---|
-| 400 | Falta un campo, está en blanco, supera 200 caracteres o hay un campo desconocido | array de validación |
+| 400 | Falta un campo obligatorio, está en blanco, supera su límite, `correo` no es una dirección válida, `telefono` está en blanco o supera 30 caracteres, o hay un campo desconocido (p. ej. `nombreSocio` o `contactoSocio`) | array de validación (ver abajo) |
 | 500 | El correo de aprobación no pudo enviarse (falta `RESEND_API_KEY` o `APPROVAL_NOTIFICATION_EMAIL`, o Resend rechazó el envío). **La solicitud ya se creó** como `pendiente`, pero nadie tiene su enlace | `"Internal server error"` |
 
-Notas: no hay limitación de tasa (*rate limiting*) en el código; cada llamada válida crea una solicitud y dispara un correo.
+Notas: no hay limitación de tasa (*rate limiting*) en el código; cada llamada válida crea una solicitud y dispara un correo. El único fallo de validación es el 400 estándar de class-validator (`{ "statusCode": 400, "message": [...], "error": "Bad Request" }`, `message` es un **array de strings**); no hay códigos de error propios ni sugerencias de corrección. Para `correo` el texto es en español y apto para mostrarse al usuario: "Escribe un correo válido, por ejemplo nombre@dominio.com" (falta, en blanco o mal formado) o "El correo no puede tener más de 254 caracteres". Los mensajes de los demás campos son los genéricos de class-validator (en inglés, p. ej. `nombre must be longer than or equal to 1 characters`): conviene que el frontend mapee por nombre de campo. El frontend debería además validar el formato antes de enviar; una dirección con buen formato pero inexistente **se acepta** (no se verifica el buzón).
 
-**Ejemplo** (`test/business-registration.e2e-spec.ts:259-275`)
+**Ejemplo** (`test/business-registration.e2e-spec.ts`, describe "registration fields")
 
 ```json
-{ "nombreNegocio": "Bonsáis del Alberto", "nombreSocio": "Alberto", "contactoSocio": "alberto@example.test" }
+{ "nombreNegocio": "Bonsáis del Alberto", "nombre": "Alberto", "apellidos": "Gómez Pérez", "correo": "alberto@example.test", "telefono": "+52 55 1234 5678" }
 ```
+
+El mismo caso sin `telefono` también es válido. Ejemplo del 400 por un correo inválido (`{ "correo": "alberto@example" }` con el resto válido):
+
+```json
+{ "statusCode": 400, "message": ["Escribe un correo válido, por ejemplo nombre@dominio.com"], "error": "Bad Request" }
+```
+
+Respuesta 201:
 
 ```json
 { "id": "a0000000-0000-4000-8000-000000000001", "status": "pendiente", "createdAt": "2026-09-23T12:00:00.000Z" }
 ```
 
-Fuente: `src/business-registration/business-registration.controller.ts:39-53`, `src/business-registration/dto/create-business-registration.dto.ts:16-23`, `src/business-registration/business-registration.service.ts:119-150`, `src/email/email.service.ts:63-76`, `doc/reglas-de-negocio.md:131`.
+Fuente: `src/business-registration/business-registration.controller.ts:39-53`, `src/business-registration/dto/create-business-registration.dto.ts:49-69`, `src/business-registration/business-registration.service.ts:119-150`, `src/email/email.service.ts:63-76`, `doc/reglas-de-negocio.md:131`.
 
 <a id="ep-br-approve"></a>
 ### `GET /api/v1/business-registration/approve`
@@ -1820,7 +1832,7 @@ Respuestas (siempre una página HTML, nunca JSON):
 
 | HTTP | Situación | Título de la página (`<h1>`) |
 |---|---|---|
-| 200 | Token válido, pendiente y sin expirar: crea `contextId`, Member socio fundador, cuenta y dispositivo `"Dispositivo principal"`, envía las credenciales por correo (al socio, o al aprobador si el contacto no es un correo o Resend en modo de prueba rechazó al socio) y la solicitud pasa a `aprobado` | `Negocio aprobado` (tres variantes de texto, ver abajo) |
+| 200 | Token válido, pendiente y sin expirar: crea `contextId`, Member socio fundador, cuenta y dispositivo `"Dispositivo principal"`, envía las credenciales por correo (al socio, o al aprobador si no hay un correo utilizable del socio o Resend en modo de prueba rechazó al socio) y la solicitud pasa a `aprobado` | `Negocio aprobado` (tres variantes de texto, ver abajo) |
 | 200 | La solicitud ya fue resuelta antes (aprobada o rechazada), incluso si se abre el enlace dos veces a la vez; no se crea ni se envía nada más | `Ya fue procesado` |
 | 200 | El token expiró (más de 30 días desde la solicitud) | `El enlace expiró` |
 | 404 | Falta el parámetro `token` | `Enlace inválido` (`Falta el parámetro token en el enlace.`) |
@@ -1831,13 +1843,13 @@ Respuestas (siempre una página HTML, nunca JSON):
 
 Un token ya usado o expirado **no** da error HTTP: es 200 con la página correspondiente.
 
-Texto de la página de éxito (`Negocio aprobado`), según el destinatario **real** de las credenciales (tres variantes, todas con HTTP 200). Nunca incluye la contraseña, y el nombre del negocio y el contacto se muestran escapados (como texto, nunca como HTML):
+Texto de la página de éxito (`Negocio aprobado`), según el destinatario **real** de las credenciales (tres variantes, todas con HTTP 200). Nunca incluye la contraseña, y el nombre del negocio y el nombre del socio se muestran escapados (como texto, nunca como HTML):
 
-- `contactoSocio` es un correo y Resend lo aceptó: `El negocio "<nombre>" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a <correo normalizado>.`
-- `contactoSocio` es un correo pero Resend (en modo de prueba) lo rechazó y las credenciales se reenviaron al aprobador como respaldo: `El negocio "<nombre>" fue aprobado. Resend (en modo de prueba) no permitió enviar las credenciales de acceso a <correo normalizado>, así que se enviaron al correo del aprobador como reenvío de respaldo: hazlas llegar al socio.` La aprobación es válida (cuenta, socio y dispositivo creados); solo falta que el aprobador haga llegar las credenciales al socio por otro medio.
-- `contactoSocio` no es un correo: `El negocio "<nombre>" fue aprobado. El contacto del socio ("<contacto>") no es un correo electrónico, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.`
+- Hay un `correo` utilizable y Resend lo aceptó: `El negocio "<nombre>" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a <correo normalizado>.`
+- Hay un `correo` pero Resend (en modo de prueba) lo rechazó y las credenciales se reenviaron al aprobador como respaldo: `El negocio "<nombre>" fue aprobado. Resend (en modo de prueba) no permitió enviar las credenciales de acceso a <correo normalizado>, así que se enviaron al correo del aprobador como reenvío de respaldo: hazlas llegar al socio.` La aprobación es válida (cuenta, socio y dispositivo creados); solo falta que el aprobador haga llegar las credenciales al socio por otro medio.
+- No hay un correo utilizable del socio (solicitud antigua con `correo` vacío): `El negocio "<nombre>" fue aprobado. El socio (<nombre completo>) no tiene un correo electrónico utilizable, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.` (con ` (teléfono: <teléfono>)` antes del punto final cuando la solicitud tiene teléfono)
 
-**Correo de credenciales** (asunto `Acceso a Bazar: <negocio>`, o `Credenciales para reenviar al socio: <negocio>` cuando va al aprobador por no ser un correo, o `[RESPALDO] Credenciales para reenviar al socio: <negocio>` en el reenvío de respaldo, con el título `Reenvío de respaldo: negocio aprobado` y la nota "Este correo era para <contactoSocio> (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (...) por otro medio"): título `Tu negocio fue aprobado`; usuario; contraseña temporal; nombre (`Dispositivo principal`) e identificador del dispositivo; indicación de conservar el identificador y de cambiar la contraseña temporal en cuanto la aplicación lo permita. Cuando va al aprobador añade la nota "Para quien aprueba: el contacto del socio (...) no es un correo electrónico ... Debes hacer llegar al socio (...) estos datos de acceso por otro medio". Todos los valores interpolados se escapan.
+**Correo de credenciales** (asunto `Acceso a Bazar: <negocio>`, o `Credenciales para reenviar al socio: <negocio>` cuando va al aprobador por no haber un correo utilizable del socio, o `[RESPALDO] Credenciales para reenviar al socio: <negocio>` en el reenvío de respaldo, con el título `Reenvío de respaldo: negocio aprobado` y la nota "Este correo era para <correo> (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (...) por otro medio"): título `Tu negocio fue aprobado`; saludo `Estimado/a <nombre>:` (solo en el correo dirigido al socio); usuario; contraseña temporal; nombre (`Dispositivo principal`) e identificador del dispositivo; indicación de conservar el identificador y de cambiar la contraseña temporal en cuanto la aplicación lo permita. Cuando va al aprobador añade la nota "Para quien aprueba: el socio no tiene un correo electrónico registrado ... Debes hacer llegar al socio (<nombre completo>, teléfono <teléfono>) estos datos de acceso por otro medio". Todos los valores interpolados se escapan.
 
 **Ejemplo**
 
@@ -1928,7 +1940,7 @@ Montajes **fuera** del prefijo `/api/v1` (no son rutas de negocio; ver [1.2](#f-
 ### B.1 Diferencias entre otras fuentes y el código (gana el código)
 
 - **`doc/reglas-de-negocio.md`, línea 141**: dice que un `contextId` enviado en el body "sería ignorado". En el código actual es **400** (`forbidNonWhitelisted: true`).
-- **Swagger (`src/docs/bazaar-examples.ts`)** puede estar desactualizado en detalles: los ejemplos de `GET /members` y de Member completo omiten `active`; los ejemplos de producto omiten `active`; el ejemplo de auditoría omite `contextId`; el ejemplo de respuesta de `POST /business-registration` incluye `resolvedAt` y `createdContextId` que el servicio **no devuelve** (solo `id`, `status`, `createdAt`); los ejemplos de `GET /products` y `GET /members` no mencionan `includeInactive`.
+- **Swagger (`src/docs/bazaar-examples.ts`)** puede estar desactualizado en detalles: los ejemplos de `GET /members` y de Member completo omiten `active`; los ejemplos de producto omiten `active`; el ejemplo de auditoría omite `contextId`; (el ejemplo de respuesta de `POST /business-registration` ya se corrigió: solo `id`, `status`, `createdAt`); los ejemplos de `GET /products` y `GET /members` no mencionan `includeInactive`.
 - **`README.md`**: su tabla de rutas omite `GET /products/:id`, `DELETE /products/:id`, `PATCH /products/:id/reactivate`, `PATCH|DELETE /members/:id`, `PATCH /members/:id/reactivate` y el módulo de business-registration.
 - **`bazar-frontend/.env.example`** propone `VITE_API_URL` absoluto (`http://localhost:3000/api/v1`), incompatible con el proxy de Vite y con la ausencia de CORS (ver [1.10](#f-cors)).
 
