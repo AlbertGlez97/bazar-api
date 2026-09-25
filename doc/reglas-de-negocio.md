@@ -59,6 +59,7 @@
 - Resolución automática de conflictos de sincronización offline (reembolso, reasignación de stock a la venta perdedora): permanece una decisión humana fuera del sistema (ver BE-06).
 - Migración de almacenamiento de imágenes de disco local a object storage (MinIO en home-lab). No implementado.
 - Pago efectivo de comisiones (marcar una comisión como "pagada", integración con algún medio de pago): BE-08 solo calcula el monto; el pago en sí sigue siendo manual y fuera del sistema.
+- **Pendiente (despliegue público): imágenes de producto con ruta relativa.** El campo `image` es una ruta relativa al origen de la API (`/uploads/products/...`, sin `/api/v1`). Cuando el frontend se sirve desde otro origen (por ejemplo un sitio en Netlify contra una API pública o un túnel temporal), el navegador la resuelve contra el origen del frontend y la imagen no carga. Hará falta que el frontend anteponga la URL base del backend (solo el origen, sin `/api/v1`) a las rutas de imagen, y que `/uploads` sea alcanzable desde el navegador (el proxy de Vite solo cubre `/api`). No está implementado: queda pendiente hasta resolver el despliegue público real.
 
 ## Metodología de desarrollo
 - TDD desactivado en BE-02 a BE-04 (infraestructura, auth, productos). Activo desde BE-05 (venta, cálculos, idempotencia).
@@ -69,6 +70,11 @@
 - La documentación OpenAPI/Swagger vive en /docs, protegida con HTTP Basic Auth (credenciales independientes del sistema de auth de socios/colaboradores, vía DOCS_USER/DOCS_PASSWORD).
 - Solo se registra si ENABLE_API_DOCS=true está presente en el entorno; si no, la ruta no existe (404, no 401), para no revelar su existencia.
 - No usar el mismo mecanismo de credenciales que la API de negocio; son capas de acceso distintas.
+
+## CORS
+- CORS es opt-in: solo se habilita si `ALLOWED_ORIGIN` está definida (lista de orígenes exactos separados por coma, sin ruta ni barra final). Vacía o ausente no se envía ningún header `Access-Control-*`, de modo que el flujo de desarrollo (proxy de Vite, mismo origen) y las llamadas sin `Origin` (curl, servidor a servidor) no cambian.
+- Un comodín (`*`) se rechaza al arrancar: la API tiene autenticación real y no debe abrirse a cualquier sitio. Solo se permiten los headers que la API lee (`Authorization`, `Content-Type`, `x-member-id`, `x-device-id`); no se usan credenciales/cookies porque la sesión viaja en `Authorization`.
+- Se necesita únicamente cuando un frontend en el navegador se sirve desde un origen distinto al de la API (por ejemplo un sitio en Netlify contra un túnel o una API pública).
 
 ## Idempotencia y conflictos offline (BE-06, extendido en BE-07)
 - Reenviar una venta con el mismo id y el mismo payload devuelve el resultado ya persistido con 200 OK (no 201, que queda reservado para la creación real de una venta nueva), sin duplicar ni volver a descontar stock. Si el payload difiere, se rechaza con 409.

@@ -278,15 +278,16 @@ Fuente: `src/common/server-id.ts:10-12`, `src/common/business-time.ts:19-100`, `
 <a id="f-cors"></a>
 ### 1.10 CORS
 
-Hechos verificados en el código (`rg enableCors src` no devuelve nada; `main.ts` no configura CORS ni hay `cors` en `src/`):
+Hechos verificados en el código (`src/http/cors.ts`, invocado desde `src/main.ts` justo después de `setGlobalPrefix`):
 
-- El backend **no habilita CORS**: no envía ningún header `Access-Control-*` y no responde a preflight (`OPTIONS`). Verificado en vivo: `OPTIONS /api/v1/auth/login` con `Origin: http://localhost:5173` y `Access-Control-Request-Method: POST` da `404 { "message": "Cannot OPTIONS /api/v1/auth/login", "error": "Not Found", "statusCode": 404 }` y ningún header `Access-Control-*`.
-- Por tanto, una llamada desde el navegador a un origen distinto del de la API (por ejemplo `http://localhost:5173` -> `http://localhost:3000`) **queda bloqueada por el navegador**. Esto vale tanto para peticiones "simples" como para las que llevan `Authorization`, `x-member-id`, `x-device-id` o `Content-Type: application/json` (todas provocan preflight).
+- El backend habilita CORS **solo si** la variable `ALLOWED_ORIGIN` está definida: lista de orígenes exactos separados por coma, sin ruta ni barra final (por ejemplo `https://tu-sitio.netlify.app`). Un `*` se rechaza al arrancar. **Por defecto (vacía o ausente) no habilita CORS**: no envía ningún header `Access-Control-*` y no responde a preflight (`OPTIONS`). Verificado en vivo con ese valor por defecto: `OPTIONS /api/v1/auth/login` con `Origin: http://localhost:5173` y `Access-Control-Request-Method: POST` da `404 { "message": "Cannot OPTIONS /api/v1/auth/login", "error": "Not Found", "statusCode": 404 }` y ningún header `Access-Control-*`.
+- Con `ALLOWED_ORIGIN` definida, el preflight de un origen listado responde `204` con `Access-Control-Allow-Origin` igual a ese origen, métodos `GET, POST, PUT, PATCH, DELETE, OPTIONS`, headers permitidos `Authorization`, `Content-Type`, `x-member-id` y `x-device-id`, `Access-Control-Max-Age: 600` y sin credenciales (no se envía `Access-Control-Allow-Credentials`; la sesión viaja en `Authorization`). Un origen no listado no recibe `Access-Control-Allow-Origin` y el navegador lo bloquea. La API no envía headers de respuesta propios que el frontend deba leer, así que no hay `Access-Control-Expose-Headers`.
+- Por tanto, sin `ALLOWED_ORIGIN` una llamada desde el navegador a un origen distinto del de la API (por ejemplo `http://localhost:5173` -> `http://localhost:3000`) **queda bloqueada por el navegador**. Esto vale tanto para peticiones "simples" como para las que llevan `Authorization`, `x-member-id`, `x-device-id` o `Content-Type: application/json` (todas provocan preflight).
 - **Desarrollo**: usar el proxy de Vite. `bazar-frontend/vite.config.ts` ya proxea `/api` a `http://localhost:3000` (`changeOrigin: true`). Para que funcione, `VITE_API_URL` debe ser **relativa** (`/api/v1`); en `src/services/api.ts` el valor por defecto ya es `'/api/v1'`. Ojo: `bazar-frontend/.env.example` (2026-09-24) propone `VITE_API_URL=http://localhost:3000/api/v1`, un valor **absoluto** que saltaría el proxy y sería bloqueado por CORS; no lo copies tal cual a `.env`.
 - **Imágenes en desarrollo**: el proxy de Vite solo cubre `/api`, pero las imágenes de producto se sirven desde `/uploads/products/...` (fuera del prefijo). Hay que añadir también un proxy para `/uploads` en `vite.config.ts` (no está configurado hoy).
-- **Producción**: o se sirven frontend y API bajo el **mismo origen** (por ejemplo un reverse proxy que enruta `/api` y `/uploads` al backend y el resto a los estáticos del frontend), o hay que **configurar CORS en el backend antes de desplegar** (no existe configuración hoy y este documento no propone una).
+- **Producción**: o se sirven frontend y API bajo el **mismo origen** (por ejemplo un reverse proxy que enruta `/api` y `/uploads` al backend y el resto a los estáticos del frontend), o se define `ALLOWED_ORIGIN` en el backend con el origen exacto del frontend (ver arriba). Las imágenes siguen siendo rutas relativas (`/uploads/products/...`): con otro origen el frontend debe anteponer el origen de la API (pendiente, ver `doc/reglas-de-negocio.md`).
 
-Fuente: `src/main.ts:7-20`, `bazar-frontend/vite.config.ts` (`server.proxy`), `bazar-frontend/src/services/api.ts:6`, `bazar-frontend/.env.example:2`.
+Fuente: `src/main.ts`, `src/http/cors.ts`, `bazar-frontend/vite.config.ts` (`server.proxy`), `bazar-frontend/src/services/api.ts:6`, `bazar-frontend/.env.example:2`.
 
 <a id="f-crudos"></a>
 ### 1.11 Respuestas con registros crudos
@@ -1942,7 +1943,7 @@ Montajes **fuera** del prefijo `/api/v1` (no son rutas de negocio; ver [1.2](#f-
 - **`doc/reglas-de-negocio.md`, línea 141**: dice que un `contextId` enviado en el body "sería ignorado". En el código actual es **400** (`forbidNonWhitelisted: true`).
 - **Swagger (`src/docs/bazaar-examples.ts`)** puede estar desactualizado en detalles: los ejemplos de `GET /members` y de Member completo omiten `active`; los ejemplos de producto omiten `active`; el ejemplo de auditoría omite `contextId`; (el ejemplo de respuesta de `POST /business-registration` ya se corrigió: solo `id`, `status`, `createdAt`); los ejemplos de `GET /products` y `GET /members` no mencionan `includeInactive`.
 - **`README.md`**: su tabla de rutas omite `GET /products/:id`, `DELETE /products/:id`, `PATCH /products/:id/reactivate`, `PATCH|DELETE /members/:id`, `PATCH /members/:id/reactivate` y el módulo de business-registration.
-- **`bazar-frontend/.env.example`** propone `VITE_API_URL` absoluto (`http://localhost:3000/api/v1`), incompatible con el proxy de Vite y con la ausencia de CORS (ver [1.10](#f-cors)).
+- **`bazar-frontend/.env.example`** propone `VITE_API_URL` absoluto (`http://localhost:3000/api/v1`), incompatible con el proxy de Vite y con CORS apagado por defecto (ver [1.10](#f-cors)).
 
 ### B.2 Verificación contra un servidor en marcha (2026-09-24)
 
