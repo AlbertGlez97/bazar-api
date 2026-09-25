@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 import { escapeHtml } from '../common/escape-html.js';
+import { fullName } from '../common/full-name.js';
 import { TimeoutError, withTimeout } from '../common/with-timeout.js';
 
 /**
@@ -35,8 +36,11 @@ export const CREDENTIALS_EMAIL_TIMEOUT_MS = 10_000;
 export type CredentialsDelivery =
   /** The socio's own address (the normal path). */
   | 'socio'
-  /** The approver, because the contact is not an email (relay note). */
-  | 'approver-non-email-contact'
+  /**
+   * The approver, because the socio has no usable email address (a legacy
+   * request created before the correo field existed): relay note.
+   */
+  | 'approver-no-socio-email'
   /**
    * The approver, as a backup forward, because Resend test mode refused the
    * socio's address (see {@link isResendTestModeRecipientError}).
@@ -89,17 +93,22 @@ type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
-  nombreSocio: string;
-  contactoSocio: string;
+  nombre: string;
+  apellidos: string;
+  correo: string;
+  telefono?: string | null;
   approveUrl: string;
   rejectUrl: string;
 }
 
 export interface BusinessCredentialsEmailInput {
   nombreNegocio: string;
-  nombreSocio: string;
-  /** Raw free-text contact; shown in the relay note when there is no email. */
-  contactoSocio: string;
+  nombre: string;
+  /** Empty for legacy requests. */
+  apellidos: string;
+  /** The stored correo (empty for legacy requests); shown in the notes. */
+  correo: string;
+  telefono?: string | null;
   /** Normalized socio email; when absent the email goes to the approver. */
   socioEmail?: string;
   username: string;
@@ -162,7 +171,7 @@ export class EmailService {
   /**
    * Sends the initial credentials (username, temporary password and device
    * identifier) of a freshly approved business. They go to the socio's own
-   * address when the contact is an email (`socioEmail`); otherwise to the
+   * address when there is one (`socioEmail`); otherwise to the
    * approver (`APPROVAL_NOTIFICATION_EMAIL`) with a note to relay them, so
    * an approval never silently loses its credentials.
    *
@@ -212,7 +221,7 @@ export class EmailService {
         subject: `Credenciales para reenviar al socio: ${input.nombreNegocio}`,
         html: renderCredentialsEmailHtml(input, 'relay'),
       });
-      return { deliveredTo: 'approver-non-email-contact' };
+      return { deliveredTo: 'approver-no-socio-email' };
     }
 
     try {
@@ -294,18 +303,24 @@ function renderCredentialsEmailHtml(
   mode: CredentialsEmailMode,
 ): string {
   const nombreNegocio = escapeHtml(input.nombreNegocio);
-  const nombreSocio = escapeHtml(input.nombreSocio);
-  const contactoSocio = escapeHtml(input.contactoSocio);
+  const nombre = escapeHtml(input.nombre);
+  const nombreCompleto = escapeHtml(fullName(input.nombre, input.apellidos));
+  const correo = escapeHtml(input.correo);
+  const telefono = input.telefono ? escapeHtml(input.telefono) : undefined;
+  const telefonoNote = telefono ? `, teléfono ${telefono}` : '';
   const username = escapeHtml(input.username);
   const temporaryPassword = escapeHtml(input.temporaryPassword);
   const deviceName = escapeHtml(input.deviceName);
   const deviceIdentifier = escapeHtml(input.deviceIdentifier);
   const relayNote =
     mode === 'relay'
-      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Para quien aprueba:</strong> el contacto del socio (${contactoSocio}) no es un correo electrónico, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreSocio}) estos datos de acceso por otro medio.</p>`
+      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Para quien aprueba:</strong> ${correo ? `el correo registrado del socio (${correo}) no se pudo usar como destinatario` : 'el socio no tiene un correo electrónico registrado'}, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreCompleto}${telefonoNote}) estos datos de acceso por otro medio.</p>`
       : mode === 'backup'
-        ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien aprueba:</strong> Este correo era para ${contactoSocio} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (${nombreSocio}) por otro medio.</p>`
+        ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien aprueba:</strong> Este correo era para ${correo} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (${nombreCompleto}${telefonoNote}) por otro medio.</p>`
         : '';
+  // Only the socio reads it as a greeting; the approver gets the relay/backup
+  // variants, which name the socio in the note instead.
+  const greeting = mode === 'socio' ? `<p>Estimado/a ${nombre}:</p>` : '';
   const heading =
     mode === 'backup'
       ? 'Reenvío de respaldo: negocio aprobado'
@@ -314,8 +329,9 @@ function renderCredentialsEmailHtml(
 <html lang="es">
   <body style="font-family: sans-serif; line-height: 1.5;">
     <h1>${heading}</h1>
+    ${greeting}
     ${relayNote}
-    <p>El negocio <strong>${nombreNegocio}</strong> ya está activo. Estos son los datos de acceso de ${nombreSocio}:</p>
+    <p>El negocio <strong>${nombreNegocio}</strong> ya está activo. Estos son los datos de acceso de ${nombreCompleto}:</p>
     <p><strong>Usuario:</strong> <code>${username}</code></p>
     <p><strong>Contraseña temporal:</strong> <code>${temporaryPassword}</code></p>
     <p><strong>Dispositivo:</strong> ${deviceName}<br /><strong>Identificador del dispositivo:</strong> <code>${deviceIdentifier}</code></p>
@@ -329,15 +345,17 @@ function renderApprovalEmailHtml(
   input: BusinessRegistrationApprovalEmailInput,
 ): string {
   const nombreNegocio = escapeHtml(input.nombreNegocio);
-  const nombreSocio = escapeHtml(input.nombreSocio);
-  const contactoSocio = escapeHtml(input.contactoSocio);
+  const nombreCompleto = escapeHtml(fullName(input.nombre, input.apellidos));
+  const correo = escapeHtml(input.correo);
+  const telefono = input.telefono ? escapeHtml(input.telefono) : undefined;
   return `<!doctype html>
 <html lang="es">
   <body style="font-family: sans-serif; line-height: 1.5;">
     <h1>Nueva solicitud de registro de negocio</h1>
     <p><strong>Negocio:</strong> ${nombreNegocio}</p>
-    <p><strong>Socio fundador:</strong> ${nombreSocio}</p>
-    <p><strong>Contacto:</strong> ${contactoSocio}</p>
+    <p><strong>Socio fundador:</strong> ${nombreCompleto}</p>
+    <p><strong>Correo:</strong> ${correo}</p>${telefono ? `
+    <p><strong>Teléfono:</strong> ${telefono}</p>` : ''}
     <p>
       <a href="${input.approveUrl}" style="display:inline-block;padding:10px 20px;background:#2e7d32;color:#fff;text-decoration:none;border-radius:4px;margin-right:12px;">Aprobar</a>
       <a href="${input.rejectUrl}" style="display:inline-block;padding:10px 20px;background:#c62828;color:#fff;text-decoration:none;border-radius:4px;">Rechazar</a>

@@ -2,17 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   deriveUniqueUsername,
   generateTemporaryPassword,
-  normalizeEmailContact,
+  normalizeSocioEmail,
   slugifyBusinessName,
 } from './initial-credentials.js';
 
-describe('normalizeEmailContact', () => {
+describe('normalizeSocioEmail', () => {
   it.each([
     ['alberto@example.com', 'alberto@example.com'],
     ['  Alberto.Gomez+bazar@Example.COM  ', 'alberto.gomez+bazar@example.com'],
     ['a@b.co', 'a@b.co'],
   ])('accepts %j as an email', (contact, normalized) => {
-    expect(normalizeEmailContact(contact)).toBe(normalized);
+    expect(normalizeSocioEmail(contact)).toBe(normalized);
   });
 
   it.each([
@@ -22,12 +22,14 @@ describe('normalizeEmailContact', () => {
     '@example.com',
     'alberto@example',
     'a b@example.com',
+    '',
+    '   ',
     'a@example.com, b@example.com',
     'Alberto <a@example.com>',
     '<b>a@example.com</b>',
     `${'a'.repeat(250)}@example.com`,
   ])('does not treat %j as an email', (contact) => {
-    expect(normalizeEmailContact(contact)).toBeUndefined();
+    expect(normalizeSocioEmail(contact)).toBeUndefined();
   });
 });
 
@@ -62,15 +64,15 @@ describe('deriveUniqueUsername', () => {
   it('uses the normalized email when it is free', async () => {
     await expect(
       deriveUniqueUsername(
-        { contactoSocio: ' Socio@Example.com ', nombreNegocio: 'Bolsas' },
+        { correo: ' Socio@Example.com ', nombreNegocio: 'Bolsas' },
         never,
       ),
     ).resolves.toBe('socio@example.com');
   });
 
-  it('falls back to a business slug plus a random suffix when the contact is not an email', async () => {
+  it('falls back to a business slug plus a random suffix for a legacy row without a correo', async () => {
     const username = await deriveUniqueUsername(
-      { contactoSocio: '555-000-0000', nombreNegocio: 'Bolsas de Adid' },
+      { correo: '', nombreNegocio: 'Bolsas de Adid' },
       never,
     );
 
@@ -82,7 +84,7 @@ describe('deriveUniqueUsername', () => {
     const isTaken = vi.fn((u: string) => Promise.resolve(taken.has(u)));
 
     const username = await deriveUniqueUsername(
-      { contactoSocio: 'Socio@example.com', nombreNegocio: 'Bolsas' },
+      { correo: 'Socio@example.com', nombreNegocio: 'Bolsas' },
       isTaken,
     );
 
@@ -95,7 +97,7 @@ describe('deriveUniqueUsername', () => {
     const isTaken = () => Promise.resolve(++calls <= 2);
 
     const username = await deriveUniqueUsername(
-      { contactoSocio: '555', nombreNegocio: 'Bolsas' },
+      { correo: '', nombreNegocio: 'Bolsas' },
       isTaken,
     );
 
@@ -107,7 +109,7 @@ describe('deriveUniqueUsername', () => {
     const long = `${'a'.repeat(95)}@example.com`;
 
     const username = await deriveUniqueUsername(
-      { contactoSocio: long, nombreNegocio: 'Bolsas' },
+      { correo: long, nombreNegocio: 'Bolsas' },
       never,
     );
 
@@ -117,7 +119,7 @@ describe('deriveUniqueUsername', () => {
   it('gives up instead of looping forever when everything is taken', async () => {
     await expect(
       deriveUniqueUsername(
-        { contactoSocio: '555', nombreNegocio: 'Bolsas' },
+        { correo: '', nombreNegocio: 'Bolsas' },
         () => Promise.resolve(true),
       ),
     ).rejects.toThrow(/unique username/i);

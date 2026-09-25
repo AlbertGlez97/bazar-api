@@ -228,14 +228,15 @@ export const audit = {
 // ps5-bazaar example context used throughout the rest of this file.
 export const businessRegistrationInput = {
   nombreNegocio: 'Bonsáis de Alberto',
-  nombreSocio: 'Alberto',
-  contactoSocio: 'alberto@example.com',
+  nombre: 'Alberto',
+  apellidos: 'Gómez Pérez',
+  correo: 'alberto@example.com',
+  telefono: '+52 55 1234 5678',
 };
+// The 201 body is only { id, status, createdAt }: the request's other fields
+// are never echoed back.
 export const businessRegistration = {
   id: 'a0000000-0000-4000-8000-000000000001',
-  ...businessRegistrationInput,
   status: 'pendiente',
   createdAt,
-  resolvedAt: null,
-  createdContextId: null,
 };

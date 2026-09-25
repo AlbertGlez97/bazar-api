@@ -15,13 +15,16 @@ const MAX_SLUG_LENGTH = 30;
 const USERNAME_ATTEMPTS = 5;
 
 /**
- * `contactoSocio` is free text (email OR phone). Returns the trimmed,
- * lower-cased address when it looks like a single plain email, otherwise
- * `undefined` (the credentials then go to the approver, see
- * {@link EmailService}).
+ * The socio's stored `correo`, normalized as a recipient. Returns the
+ * trimmed, lower-cased address when it looks like a single plain email,
+ * otherwise `undefined` (the credentials then go to the approver, see
+ * {@link EmailService}). Requests created through the API always carry a real
+ * email; the `undefined` outcome covers legacy rows (empty `correo`, created
+ * before the correo/telefono split) and the rare address the API accepts but
+ * this conservative pattern does not (e.g. an apostrophe in the local part).
  */
-export function normalizeEmailContact(contacto: string): string | undefined {
-  const value = contacto.trim().toLowerCase();
+export function normalizeSocioEmail(correo: string): string | undefined {
+  const value = correo.trim().toLowerCase();
   if (value.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(value))
     return undefined;
   return value;
@@ -52,8 +55,8 @@ export function slugifyBusinessName(nombreNegocio: string): string {
  * unique (`Account.username` is `@unique`, and login resolves the account
  * by it before any tenant is known):
  *
- * 1. the normalized `contactoSocio` when it is an email (short enough for
- *    the login limit) and not taken yet — the most memorable choice;
+ * 1. the normalized `correo` when it is usable (short enough for the login
+ *    limit) and not taken yet — the most memorable choice;
  * 2. otherwise `<business-slug>-<6 random hex>`, retried with a fresh
  *    suffix while taken. Never derived from the socio's name alone.
  *
@@ -61,10 +64,10 @@ export function slugifyBusinessName(nombreNegocio: string): string {
  * still has the last word if two approvals ever race for the same value.
  */
 export async function deriveUniqueUsername(
-  input: { contactoSocio: string; nombreNegocio: string },
+  input: { correo: string; nombreNegocio: string },
   isTaken: (username: string) => Promise<boolean>,
 ): Promise<string> {
-  const email = normalizeEmailContact(input.contactoSocio);
+  const email = normalizeSocioEmail(input.correo);
   if (
     email &&
     email.length <= MAX_USERNAME_LENGTH &&

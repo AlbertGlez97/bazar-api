@@ -553,18 +553,34 @@ export const operations: Record<string, Operation> = {
   businessRegistrationCreate: {
     summary: 'Register a brand-new business for approval',
     description:
-      'Public, no auth. Creates a SolicitudNegocio in "pendiente" status and emails the fixed approval recipient (APPROVAL_NOTIFICATION_EMAIL) with one-time approve/reject links (30-day expiry, tokens stored hashed). No contextId or Member exists yet; those are only created if/when the approve link is followed.',
+      'Public, no auth. Creates a SolicitudNegocio in "pendiente" status and emails the fixed approval recipient (APPROVAL_NOTIFICATION_EMAIL) with one-time approve/reject links (30-day expiry, tokens stored hashed). No contextId or Member exists yet; those are only created if/when the approve link is followed. The founding socio is described by nombre + apellidos, a correo (only its format is validated, not that the mailbox exists; stored trimmed and lower-cased; the credentials are emailed there on approval) and an optional telefono. Validation failures are the standard 400 (message is an array of strings; an invalid correo says "Escribe un correo válido, por ejemplo nombre@dominio.com").',
     access: 'public',
     body: body(
       {
         nombreNegocio: string(e.businessRegistrationInput.nombreNegocio),
-        nombreSocio: string(e.businessRegistrationInput.nombreSocio),
-        contactoSocio: string(
-          e.businessRegistrationInput.contactoSocio,
-          'Email or phone; either is accepted, only non-empty is required.',
-        ),
+        nombre: { ...string(e.businessRegistrationInput.nombre), maxLength: 100 },
+        apellidos: {
+          ...string(e.businessRegistrationInput.apellidos),
+          maxLength: 100,
+        },
+        correo: {
+          ...string(
+            e.businessRegistrationInput.correo,
+            'A valid email address. Only the format is checked. Trimmed and stored lower-cased.',
+          ),
+          format: 'email',
+          maxLength: 254,
+        },
+        telefono: {
+          ...string(
+            e.businessRegistrationInput.telefono,
+            'Optional. 1 to 30 characters, no strict format; never blank when present.',
+          ),
+          minLength: 1,
+          maxLength: 30,
+        },
       },
-      ['nombreNegocio', 'nombreSocio', 'contactoSocio'],
+      ['nombreNegocio', 'nombre', 'apellidos', 'correo'],
       e.businessRegistrationInput,
     ),
     responses: ok(e.businessRegistration, 201),
@@ -573,7 +589,7 @@ export const operations: Record<string, Operation> = {
   businessRegistrationApprove: {
     summary: 'Approve a pending business registration (link from the email)',
     description:
-      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving, in one transaction, creates the real contextId, the founding socio Member, the socio login Account (random temporary password, stored only as an Argon2id hash) and one authorized "Dispositivo principal" Device, then emails the credentials (username, temporary password, device identifier) to the socio when contactoSocio is an email, or to the approver (to relay) when it is not. While Resend runs in test mode (no verified domain) it rejects any recipient but the account owner; only for that exact rejection the same credentials are forwarded to the approver as an explicit backup and the approval still succeeds (the page says so). If that email cannot be sent (any other Resend error, a failed backup, or no answer within the 10 s total deadline shared by the direct send and the backup), if the transaction times out, or if a concurrent approval takes the same username first, everything rolls back, the request stays "pendiente" and the response is 502 so the same link can be retried. The password is never shown on the page.',
+      'Public, no auth — meant to be opened directly from the approval email by a human, so every outcome renders a plain HTML status page instead of a JSON error, and returns 200 even for "already processed"/"expired" (only a missing/unrecognized token is 404). Approving, in one transaction, creates the real contextId, the founding socio Member, the socio login Account (random temporary password, stored only as an Argon2id hash) and one authorized "Dispositivo principal" Device, then emails the credentials (username, temporary password, device identifier) to the correo registered for the socio, or to the approver (to relay) for a legacy request that has no usable correo. While Resend runs in test mode (no verified domain) it rejects any recipient but the account owner; only for that exact rejection the same credentials are forwarded to the approver as an explicit backup and the approval still succeeds (the page says so). If that email cannot be sent (any other Resend error, a failed backup, or no answer within the 10 s total deadline shared by the direct send and the backup), if the transaction times out, or if a concurrent approval takes the same username first, everything rolls back, the request stays "pendiente" and the response is 502 so the same link can be retried. The password is never shown on the page.',
     access: 'public',
     contentType: 'text/html',
     queries: [

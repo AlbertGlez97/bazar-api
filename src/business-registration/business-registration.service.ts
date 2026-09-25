@@ -8,6 +8,7 @@ import {
   type CredentialsEmailResult,
 } from '../email/email.service.js';
 import { createServerId } from '../common/server-id.js';
+import { fullName } from '../common/full-name.js';
 import {
   isAccountUsernameConflict,
   isTransactionExpired,
@@ -17,7 +18,7 @@ import {
   INITIAL_DEVICE_NAME,
   deriveUniqueUsername,
   generateTemporaryPassword,
-  normalizeEmailContact,
+  normalizeSocioEmail,
 } from './initial-credentials.js';
 import { renderStatusPage } from './status-page.html.js';
 
@@ -91,8 +92,12 @@ function alreadyProcessedPage(): string {
 interface PendingRequest {
   id: string;
   nombreNegocio: string;
-  nombreSocio: string;
-  contactoSocio: string;
+  nombre: string;
+  /** Empty for legacy requests. */
+  apellidos: string;
+  /** Empty for legacy requests whose old contact was not an email. */
+  correo: string;
+  telefono: string | null;
 }
 
 /** HTTP status + rendered HTML body for one of the approve/reject outcomes. */
@@ -174,12 +179,19 @@ export class BusinessRegistrationService {
     const approvalTokenHash = hashToken(token);
     const tokenExpiresAt = new Date(Date.now() + TOKEN_TTL_MS);
 
+    // The DTO already trimmed it and checked its syntax; lower-casing gives
+    // the stored value (and the future username) a canonical form.
+    const correo = dto.correo.trim().toLowerCase();
+    const telefono = dto.telefono ?? null;
+
     const created = await this.prisma.businessRegistrationRequest.create({
       data: {
         id: createServerId(),
         nombreNegocio: dto.nombreNegocio,
-        nombreSocio: dto.nombreSocio,
-        contactoSocio: dto.contactoSocio,
+        nombre: dto.nombre,
+        apellidos: dto.apellidos,
+        correo,
+        telefono,
         approvalTokenHash,
         tokenExpiresAt,
       },
@@ -189,8 +201,10 @@ export class BusinessRegistrationService {
     const rejectUrl = `${baseUrl()}/api/v1/business-registration/reject?token=${token}`;
     await this.email.sendBusinessRegistrationApprovalEmail({
       nombreNegocio: dto.nombreNegocio,
-      nombreSocio: dto.nombreSocio,
-      contactoSocio: dto.contactoSocio,
+      nombre: dto.nombre,
+      apellidos: dto.apellidos,
+      correo,
+      telefono,
       approveUrl,
       rejectUrl,
     });
@@ -262,7 +276,7 @@ export class BusinessRegistrationService {
     });
     if (claimed.count === 0) return alreadyProcessedPage();
 
-    const socioEmail = normalizeEmailContact(request.contactoSocio);
+    const socioEmail = normalizeSocioEmail(request.correo);
     const username = await deriveUniqueUsername(request, async (candidate) => {
       const existing = await tx.account.findUnique({
         where: { username: candidate },
@@ -276,7 +290,7 @@ export class BusinessRegistrationService {
     await tx.member.create({
       data: {
         id: createServerId(),
-        name: request.nombreSocio,
+        name: fullName(request.nombre, request.apellidos),
         role: 'socio',
         contextId,
         active: true,
@@ -305,8 +319,10 @@ export class BusinessRegistrationService {
     try {
       delivery = await this.email.sendBusinessCredentialsEmail({
         nombreNegocio: request.nombreNegocio,
-        nombreSocio: request.nombreSocio,
-        contactoSocio: request.contactoSocio,
+        nombre: request.nombre,
+        apellidos: request.apellidos,
+        correo: request.correo,
+        telefono: request.telefono,
         socioEmail,
         username,
         temporaryPassword,
@@ -333,10 +349,10 @@ export class BusinessRegistrationService {
           'Negocio aprobado',
           `El negocio "${request.nombreNegocio}" fue aprobado. Resend (en modo de prueba) no permitió enviar las credenciales de acceso a ${socioEmail}, así que se enviaron al correo del aprobador como reenvío de respaldo: hazlas llegar al socio.`,
         );
-      case 'approver-non-email-contact':
+      case 'approver-no-socio-email':
         return renderStatusPage(
           'Negocio aprobado',
-          `El negocio "${request.nombreNegocio}" fue aprobado. El contacto del socio ("${request.contactoSocio}") no es un correo electrónico, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.`,
+          `El negocio "${request.nombreNegocio}" fue aprobado. El socio (${fullName(request.nombre, request.apellidos)}) no tiene un correo electrónico utilizable, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio${request.telefono ? ` (teléfono: ${request.telefono})` : ''}.`,
         );
     }
   }

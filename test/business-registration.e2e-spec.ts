@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import { NestFactory } from '@nestjs/core';
 import { Logger, type INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
+import { createServerId } from '../src/common/server-id.js';
 import { withTestTenant } from './tenant-scope.js';
 
 /**
@@ -52,7 +53,7 @@ describe('business registration (BE-11)', () => {
   // when there is an address, otherwise to the approver (relay note).
   const deliveredNormally = (input: { socioEmail?: string }) =>
     Promise.resolve({
-      deliveredTo: input.socioEmail ? 'socio' : 'approver-non-email-contact',
+      deliveredTo: input.socioEmail ? 'socio' : 'approver-no-socio-email',
     });
 
   const emailPath = (url: string) => {
@@ -268,8 +269,9 @@ describe('business registration (BE-11)', () => {
       .post('/api/v1/business-registration')
       .send({
         nombreNegocio: name('Bonsáis del Alberto'),
-        nombreSocio: 'Alberto',
-        contactoSocio: 'alberto@example.com',
+        nombre: 'Alberto',
+        apellidos: 'Prueba',
+        correo: 'alberto@example.com',
       })
       .expect(201);
 
@@ -281,13 +283,143 @@ describe('business registration (BE-11)', () => {
     expect(typeof call.rejectUrl).toBe('string');
   });
 
+  describe('registration fields', () => {
+    const post = (body: object) =>
+      request(app.getHttpServer()).post('/api/v1/business-registration').send(body);
+    const base = () => ({
+      nombreNegocio: name('Campos'),
+      nombre: 'Ana',
+      apellidos: 'López Ruiz',
+      correo: 'ana@example.com',
+    });
+
+    it('stores nombre, apellidos, a trimmed lower-cased correo and telefono, and shows them to the approver', async () => {
+      const res = await post({
+        ...base(),
+        correo: '  Ana.Campos@Example.COM ',
+        telefono: ' +52 55 1234 5678 ',
+      }).expect(201);
+
+      expect(Object.keys(res.body).sort()).toEqual(['createdAt', 'id', 'status']);
+      const stored = await prisma.businessRegistrationRequest.findUniqueOrThrow({
+        where: { id: res.body.id },
+      });
+      expect(stored).toMatchObject({
+        nombre: 'Ana',
+        apellidos: 'López Ruiz',
+        correo: 'ana.campos@example.com',
+        telefono: '+52 55 1234 5678',
+      });
+      expect(sendApprovalEmail.mock.calls[0][0]).toMatchObject({
+        nombre: 'Ana',
+        apellidos: 'López Ruiz',
+        correo: 'ana.campos@example.com',
+        telefono: '+52 55 1234 5678',
+      });
+    });
+
+    it('keeps telefono optional: absent is stored as null', async () => {
+      const res = await post(base()).expect(201);
+
+      const stored = await prisma.businessRegistrationRequest.findUniqueOrThrow({
+        where: { id: res.body.id },
+      });
+      expect(stored.telefono).toBeNull();
+    });
+
+    it.each(['nombreNegocio', 'nombre', 'apellidos', 'correo'])(
+      'answers 400 and creates nothing when %s is missing or blank',
+      async (field) => {
+        const { [field]: _omitted, ...missing } = base() as Record<string, string>;
+        for (const body of [missing, { ...missing, [field]: '   ' }]) {
+          const res = await post(body).expect(400);
+          expect(JSON.stringify(res.body.message)).toContain(field);
+        }
+        expect(sendApprovalEmail).not.toHaveBeenCalled();
+      },
+    );
+
+    it('answers 400 for a blank or too long telefono', async () => {
+      for (const telefono of ['   ', '', 'x'.repeat(31)]) {
+        const res = await post({ ...base(), telefono }).expect(400);
+        expect(JSON.stringify(res.body.message)).toContain('telefono');
+      }
+      expect(sendApprovalEmail).not.toHaveBeenCalled();
+    });
+
+    it('answers 400 with a clear Spanish message for a malformed correo and creates nothing', async () => {
+      const malformed = [
+        'ana',
+        'ana@',
+        '@example.com',
+        'ana@example',
+        'ana pérez@example.com',
+        '555-123-4567',
+        `${'a'.repeat(250)}@example.com`,
+      ];
+      for (const correo of malformed) {
+        const res = await post({
+          ...base(),
+          nombreNegocio: name('Campos malformado'),
+          correo,
+        }).expect(400);
+        expect(res.body.statusCode).toBe(400);
+        expect(res.body.error).toBe('Bad Request');
+        expect(res.body.message, correo.slice(0, 40)).toHaveLength(1);
+        expect(res.body.message[0]).toMatch(
+          /^(Escribe un correo válido, por ejemplo nombre@dominio.com|El correo no puede tener más de 254 caracteres)$/,
+        );
+      }
+      expect(sendApprovalEmail).not.toHaveBeenCalled();
+      await expect(
+        prisma.businessRegistrationRequest.count({
+          where: { nombreNegocio: name('Campos malformado') },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it('answers exactly the standard class-validator 400 body for an invalid correo', async () => {
+      const res = await post({ ...base(), correo: 'ana@example' }).expect(400);
+
+      expect(res.body).toEqual({
+        statusCode: 400,
+        message: ['Escribe un correo válido, por ejemplo nombre@dominio.com'],
+        error: 'Bad Request',
+      });
+    });
+
+    it('never calls an external service to validate the correo', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      try {
+        await post({ ...base(), correo: 'nadie.existe@dominio-inexistente.example' }).expect(201);
+        await post({ ...base(), correo: 'ana@example' }).expect(400);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('answers 400 for the removed nombreSocio and contactoSocio fields', async () => {
+      const res = await post({
+        ...base(),
+        nombreSocio: 'Ana',
+        contactoSocio: 'ana@example.com',
+      }).expect(400);
+      const messages = JSON.stringify(res.body.message);
+      expect(messages).toContain('nombreSocio');
+      expect(messages).toContain('contactoSocio');
+      expect(sendApprovalEmail).not.toHaveBeenCalled();
+    });
+  });
+
   it('approves with a valid token: creates a contextId and a founding socio Member', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/business-registration')
       .send({
         nombreNegocio: name('Bolsas de Adid'),
-        nombreSocio: 'Adid',
-        contactoSocio: 'adid@example.com',
+        nombre: 'Adid',
+        apellidos: 'Prueba',
+        correo: 'adid@example.com',
       })
       .expect(201);
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
@@ -309,7 +441,7 @@ describe('business registration (BE-11)', () => {
         where: { contextId: stored!.createdContextId!, role: 'socio' },
       }),
     );
-    expect(founder?.name).toBe('Adid');
+    expect(founder?.name).toBe('Adid Prueba');
     expect(founder?.active).toBe(true);
   });
 
@@ -318,8 +450,10 @@ describe('business registration (BE-11)', () => {
       .post('/api/v1/business-registration')
       .send({
         nombreNegocio: name('Lucha Libre Negocio'),
-        nombreSocio: 'Rudo Anonimo',
-        contactoSocio: '555-0000',
+        nombre: 'Rudo',
+        apellidos: 'Anonimo',
+        correo: 'rudo@example.com',
+        telefono: '555-0000',
       })
       .expect(201);
     const { rejectUrl } = sendApprovalEmail.mock.calls[0][0];
@@ -341,8 +475,9 @@ describe('business registration (BE-11)', () => {
       .post('/api/v1/business-registration')
       .send({
         nombreNegocio: name('Artículos Varios'),
-        nombreSocio: 'Socia Fundadora',
-        contactoSocio: 'socia@example.com',
+        nombre: 'Socia Fundadora',
+        apellidos: 'Prueba',
+        correo: 'socia@example.com',
       })
       .expect(201);
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
@@ -369,8 +504,9 @@ describe('business registration (BE-11)', () => {
       .post('/api/v1/business-registration')
       .send({
         nombreNegocio: name('Negocio Expirado'),
-        nombreSocio: 'Fundador Tardío',
-        contactoSocio: 'tarde@example.com',
+        nombre: 'Fundador Tardío',
+        apellidos: 'Prueba',
+        correo: 'tarde@example.com',
       })
       .expect(201);
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
@@ -395,8 +531,10 @@ describe('business registration (BE-11)', () => {
   describe('approval creates the initial Account and Device', () => {
     interface CredentialsCall {
       nombreNegocio: string;
-      nombreSocio: string;
-      contactoSocio: string;
+      nombre: string;
+      apellidos: string;
+      correo: string;
+      telefono?: string | null;
       socioEmail?: string;
       username: string;
       temporaryPassword: string;
@@ -406,12 +544,13 @@ describe('business registration (BE-11)', () => {
     const server = () => app.getHttpServer();
     const register = async (
       nombreNegocio: string,
-      nombreSocio: string,
-      contactoSocio: string,
+      nombre: string,
+      correo: string,
+      telefono?: string,
     ) => {
       await request(server())
         .post('/api/v1/business-registration')
-        .send({ nombreNegocio, nombreSocio, contactoSocio })
+        .send({ nombreNegocio, nombre, apellidos: 'Prueba', correo, telefono })
         .expect(201);
       const { approveUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
       return emailPath(approveUrl);
@@ -717,26 +856,47 @@ describe('business registration (BE-11)', () => {
       // never matches fails with its own diagnostic, not a generic timeout.
     }, 15_000);
 
-    it('sends the credentials to the approver when the contact is not an email', async () => {
-      const path = await register(
-        name('Solo Telefono'),
-        'Socia Sin Correo',
-        '<i>555-0100</i>',
-      );
+    it('sends the credentials to the approver for a legacy request that has no correo', async () => {
+      // Rows created before the correo/telefono split keep working: the
+      // migration backfills an empty correo and the old free-text contact
+      // that was not an email lands in telefono.
+      const token = randomUUID();
+      const nombreNegocio = name('Solo Telefono');
+      await prisma.businessRegistrationRequest.create({
+        data: {
+          id: createServerId(),
+          nombreNegocio,
+          nombre: '<i>Socia</i>',
+          apellidos: '',
+          correo: '',
+          telefono: '555-0100',
+          approvalTokenHash: createHash('sha256').update(token).digest('hex'),
+          tokenExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
 
-      const page = await request(server()).get(path).expect(200);
+      const page = await request(server())
+        .get(`/api/v1/business-registration/approve?token=${token}`)
+        .expect(200);
 
       expect(sendCredentialsEmail).toHaveBeenCalledTimes(1);
       const creds = lastCredentials();
       // No socio address: EmailService routes it to APPROVAL_NOTIFICATION_EMAIL
       // with a relay note (covered in email.service.spec.ts).
       expect(creds.socioEmail).toBeUndefined();
-      expect(creds.contactoSocio).toBe('<i>555-0100</i>');
+      expect(creds.correo).toBe('');
+      expect(creds.telefono).toBe('555-0100');
       expect(creds.username).toMatch(/^solo-telefono-[a-z0-9-]*[0-9a-f]{6}$/);
       expect(page.text).toMatch(/aprobador/i);
-      expect(page.text).toContain('&lt;i&gt;555-0100&lt;/i&gt;');
+      expect(page.text).toContain('&lt;i&gt;Socia&lt;/i&gt;');
       expect(page.text).not.toContain('<i>');
       expect(page.text).not.toContain(creds.temporaryPassword);
+      // A legacy row has no apellidos: the founder name is just the nombre.
+      const contextId = (await stored(nombreNegocio))!.createdContextId!;
+      const founder = await withTestTenant(contextId, () =>
+        prisma.member.findFirst({ where: { contextId, role: 'socio' } }),
+      );
+      expect(founder?.name).toBe('<i>Socia</i>');
       await login(creds.username, creds.temporaryPassword).expect(200);
     });
 
@@ -889,8 +1049,9 @@ describe('business registration (BE-11)', () => {
         .post('/api/v1/business-registration')
         .send({
           nombreNegocio: name('Rechazo Sin Cuenta'),
-          nombreSocio: 'Nadie',
-          contactoSocio: `nadie.${run}@example.com`,
+          nombre: 'Nadie',
+          apellidos: 'Prueba',
+          correo: `nadie.${run}@example.com`,
         })
         .expect(201);
       const { rejectUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
@@ -912,8 +1073,9 @@ describe('business registration (BE-11)', () => {
         .post('/api/v1/business-registration')
         .send({
           nombreNegocio,
-          nombreSocio: 'Socio Hostil',
-          contactoSocio: 'hostil@example.com',
+          nombre: 'Socio Hostil',
+          apellidos: 'Prueba',
+          correo: 'hostil@example.com',
         })
         .expect(201);
       return sendApprovalEmail.mock.calls[0][0] as {

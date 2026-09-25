@@ -18,8 +18,10 @@ vi.mock('resend', () => ({
 
 const input = {
   nombreNegocio: 'Bolsas de prueba',
-  nombreSocio: 'Socio',
-  contactoSocio: '555-000-0000',
+  nombre: 'Socio',
+  apellidos: 'Fundador',
+  correo: 'socio@example.test',
+  telefono: '555-000-0000',
   approveUrl: 'http://localhost:3000/api/v1/business-registration/approve?t=x',
   rejectUrl: 'http://localhost:3000/api/v1/business-registration/reject?t=x',
 };
@@ -92,19 +94,51 @@ describe('EmailService.sendBusinessRegistrationApprovalEmail', () => {
     await new EmailService().sendBusinessRegistrationApprovalEmail({
       ...input,
       nombreNegocio: '<script>alert(1)</script>',
-      nombreSocio: `"><img src=x onerror='a&b'>`,
-      contactoSocio: '<b>555</b>',
+      nombre: `"><img src=x onerror='a&b'>`,
+      apellidos: '<u>Apellido</u>',
+      correo: '<b>correo</b>',
+      telefono: '<s>555</s>',
     });
 
     const { html } = send.mock.calls[0][0] as { html: string };
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('<img');
     expect(html).not.toContain('<b>');
+    expect(html).not.toContain('<u>');
+    expect(html).not.toContain('<s>');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).toContain(
       '&quot;&gt;&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;',
     );
-    expect(html).toContain('&lt;b&gt;555&lt;/b&gt;');
+    expect(html).toContain('&lt;u&gt;Apellido&lt;/u&gt;');
+    expect(html).toContain('&lt;b&gt;correo&lt;/b&gt;');
+    expect(html).toContain('&lt;s&gt;555&lt;/s&gt;');
+  });
+
+  it('shows the socio full name, correo and telefono to the approver', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_fields' }, error: null });
+
+    await new EmailService().sendBusinessRegistrationApprovalEmail(input);
+
+    const { html } = send.mock.calls[0][0] as { html: string };
+    expect(html).toContain('Socio Fundador');
+    expect(html).toContain('socio@example.test');
+    expect(html).toContain('555-000-0000');
+    expect(html).toContain(input.approveUrl);
+    expect(html).toContain(input.rejectUrl);
+  });
+
+  it('omits the telefono line when there is none', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_notel' }, error: null });
+
+    await new EmailService().sendBusinessRegistrationApprovalEmail({
+      ...input,
+      telefono: null,
+    });
+
+    const { html } = send.mock.calls[0][0] as { html: string };
+    expect(html).toContain('socio@example.test');
+    expect(html).not.toMatch(/tel[eé]fono/i);
   });
 
   it('still fails fast when the approver address is not configured', async () => {
@@ -120,8 +154,9 @@ describe('EmailService.sendBusinessRegistrationApprovalEmail', () => {
 describe('EmailService.sendBusinessCredentialsEmail', () => {
   const credentials = {
     nombreNegocio: 'Bolsas de prueba',
-    nombreSocio: 'Socio',
-    contactoSocio: 'socio@example.test',
+    nombre: 'Socio',
+    apellidos: 'Fundador',
+    correo: 'socio@example.test',
     username: 'socio@example.test',
     temporaryPassword: 'Tmp-Pass_0123456789abcd',
     deviceName: 'Dispositivo principal',
@@ -166,15 +201,46 @@ describe('EmailService.sendBusinessCredentialsEmail', () => {
 
     await new EmailService().sendBusinessCredentialsEmail({
       ...credentials,
-      contactoSocio: '555-000-0000',
+      correo: '',
+      telefono: '555-000-0000',
     });
 
     const { to, subject, html } = sentPayload();
     expect(to).toBe('approver@example.test');
     expect(subject).toMatch(/reenviar|socio/i);
+    expect(html).toContain('Socio Fundador');
     expect(html).toContain('555-000-0000');
+    expect(html).toMatch(/no tiene un correo/i);
     expect(html).toMatch(/hacer llegar al socio/i);
     expect(html).toContain(credentials.temporaryPassword);
+  });
+
+  it('explains the relay when the registered correo cannot be used as a recipient', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      ...credentials,
+      correo: "o'brien@example.test",
+    });
+
+    const { to, html } = sentPayload();
+    expect(to).toBe('approver@example.test');
+    expect(html).toContain('o&#39;brien@example.test');
+    expect(html).toMatch(/hacer llegar al socio/i);
+  });
+
+  it('greets the socio by first name and lists the full name in the credentials email', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
+
+    await new EmailService().sendBusinessCredentialsEmail({
+      ...credentials,
+      nombre: 'Ana <b>',
+      socioEmail: 'socio@example.test',
+    });
+
+    const { html } = sentPayload();
+    expect(html).toContain('Estimado/a Ana &lt;b&gt;');
+    expect(html).not.toContain('<b>');
   });
 
   it('escapes every interpolated value', async () => {
@@ -182,8 +248,10 @@ describe('EmailService.sendBusinessCredentialsEmail', () => {
 
     await new EmailService().sendBusinessCredentialsEmail({
       nombreNegocio: '<script>alert(1)</script>',
-      nombreSocio: `"><img src=x onerror='a&b'>`,
-      contactoSocio: '<b>555</b>',
+      nombre: `"><img src=x onerror='a&b'>`,
+      apellidos: '<u>Ap</u>',
+      correo: '<b>555</b>',
+      telefono: '<i>555</i>',
       username: '<u>user</u>',
       temporaryPassword: 'p<i>ss</i>&"\'',
       deviceName: '<em>dev</em>',
@@ -192,6 +260,9 @@ describe('EmailService.sendBusinessCredentialsEmail', () => {
 
     const { html } = sentPayload();
     expect(html).not.toMatch(/<(script|img|b|u|i|em|s)[ >]/);
+    expect(html).toContain('&lt;u&gt;Ap&lt;/u&gt;');
+    expect(html).toContain('&lt;b&gt;555&lt;/b&gt;');
+    expect(html).toContain('&lt;i&gt;555&lt;/i&gt;');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).toContain('p&lt;i&gt;ss&lt;/i&gt;&amp;&quot;&#39;');
     expect(html).toContain('&lt;s&gt;id&lt;/s&gt;');
@@ -245,8 +316,9 @@ describe('EmailService.sendBusinessCredentialsEmail', () => {
 describe('EmailService.sendBusinessCredentialsEmail timeout', () => {
   const credentials = {
     nombreNegocio: 'Bolsas de prueba',
-    nombreSocio: 'Socio',
-    contactoSocio: 'socio@example.test',
+    nombre: 'Socio',
+    apellidos: 'Fundador',
+    correo: 'socio@example.test',
     socioEmail: 'socio@example.test',
     username: 'socio@example.test',
     temporaryPassword: 'Tmp-Pass_0123456789abcd',
@@ -363,8 +435,9 @@ describe('isResendTestModeRecipientError', () => {
 describe('EmailService.sendBusinessCredentialsEmail approver fallback', () => {
   const credentials = {
     nombreNegocio: 'Bolsas <de> prueba',
-    nombreSocio: 'Socio',
-    contactoSocio: 'socio@example.test',
+    nombre: 'Socio',
+    apellidos: 'Fundador',
+    correo: 'socio@example.test',
     socioEmail: 'socio@example.test',
     username: 'socio@example.test',
     temporaryPassword: 'Tmp-Pass_0123456789abcd',
@@ -426,7 +499,7 @@ describe('EmailService.sendBusinessCredentialsEmail approver fallback', () => {
 
     await new EmailService().sendBusinessCredentialsEmail({
       ...credentials,
-      contactoSocio: '<b>socio@example.test</b>',
+      correo: '<b>socio@example.test</b>',
     });
 
     const { html } = payload(1);
@@ -508,16 +581,17 @@ describe('EmailService.sendBusinessCredentialsEmail approver fallback', () => {
     expect(payload(0).subject).toBe('Acceso a Bazar: Bolsas <de> prueba');
   });
 
-  it('reports the non-email-contact relay as such', async () => {
+  it('reports the relay through the approver as such', async () => {
     send.mockResolvedValue({ data: { id: 'msg_cred' }, error: null });
 
     const result = await new EmailService().sendBusinessCredentialsEmail({
       ...credentials,
       socioEmail: undefined,
-      contactoSocio: '555-000-0000',
+      correo: '',
+      telefono: '555-000-0000',
     });
 
-    expect(result).toEqual({ deliveredTo: 'approver-non-email-contact' });
+    expect(result).toEqual({ deliveredTo: 'approver-no-socio-email' });
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -537,8 +611,9 @@ describe('EmailService.sendBusinessCredentialsEmail approver fallback', () => {
 describe('EmailService.sendBusinessCredentialsEmail shared deadline', () => {
   const credentials = {
     nombreNegocio: 'Bolsas de prueba',
-    nombreSocio: 'Socio',
-    contactoSocio: 'socio@example.test',
+    nombre: 'Socio',
+    apellidos: 'Fundador',
+    correo: 'socio@example.test',
     socioEmail: 'socio@example.test',
     username: 'socio@example.test',
     temporaryPassword: 'Tmp-Pass_0123456789abcd',

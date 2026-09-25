@@ -42,8 +42,9 @@ describe('approval email API URLs', () => {
       );
       await service.create({
         nombreNegocio: 'Test',
-        nombreSocio: 'Test',
-        contactoSocio: 'test@example.test',
+        nombre: 'Test',
+        apellidos: 'Socio',
+        correo: 'test@example.test',
       });
       const links = send.mock.calls[0][0];
       const approve = new URL(links.approveUrl);
@@ -58,6 +59,62 @@ describe('approval email API URLs', () => {
   );
 });
 
+describe('create', () => {
+  const build = () => {
+    const create = vi.fn().mockResolvedValue({
+      id: 'test',
+      status: 'pendiente',
+      createdAt: new Date(),
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const service = new BusinessRegistrationService(
+      { businessRegistrationRequest: { create } } as unknown as PrismaService,
+      {
+        sendBusinessRegistrationApprovalEmail: send,
+      } as unknown as EmailService,
+    );
+    return { service, create, send };
+  };
+  const dto = {
+    nombreNegocio: 'Bonsáis',
+    nombre: 'Alberto',
+    apellidos: 'Gómez',
+    correo: ' Alberto@Example.COM ',
+  };
+
+  it('stores nombre, apellidos, the trimmed lower-cased correo and a null telefono when it is absent', async () => {
+    const { service, create } = build();
+
+    await service.create(dto);
+
+    const { data } = create.mock.calls[0][0];
+    expect(data).toMatchObject({
+      nombreNegocio: 'Bonsáis',
+      nombre: 'Alberto',
+      apellidos: 'Gómez',
+      correo: 'alberto@example.com',
+      telefono: null,
+    });
+    expect(data).not.toHaveProperty('nombreSocio');
+    expect(data).not.toHaveProperty('contactoSocio');
+  });
+
+  it('stores the telefono and forwards every field to the approval email', async () => {
+    const { service, create, send } = build();
+
+    await service.create({ ...dto, telefono: '555-123-4567' });
+
+    expect(create.mock.calls[0][0].data.telefono).toBe('555-123-4567');
+    expect(send.mock.calls[0][0]).toMatchObject({
+      nombreNegocio: 'Bonsáis',
+      nombre: 'Alberto',
+      apellidos: 'Gómez',
+      correo: 'alberto@example.com',
+      telefono: '555-123-4567',
+    });
+  });
+});
+
 describe('approve transaction options', () => {
   // The credentials email is sent from inside the approve transaction, so
   // Prisma's default 5s interactive-transaction timeout (a slow Resend call
@@ -68,8 +125,10 @@ describe('approve transaction options', () => {
       status: 'pendiente',
       tokenExpiresAt: new Date(Date.now() + 60_000),
       nombreNegocio: 'Test',
-      nombreSocio: 'Test',
-      contactoSocio: 'test@example.test',
+      nombre: 'Test',
+      apellidos: 'Socio',
+      correo: 'test@example.test',
+      telefono: null,
     });
     const $transaction = vi.fn().mockResolvedValue('<html></html>');
     const service = new BusinessRegistrationService(
@@ -114,8 +173,10 @@ describe('approve failures that keep the request pending', () => {
     status: 'pendiente',
     tokenExpiresAt: new Date(Date.now() + 60_000),
     nombreNegocio: 'Test',
-    nombreSocio: 'Test',
-    contactoSocio: 'test@example.test',
+    nombre: 'Test',
+    apellidos: 'Socio',
+    correo: 'test@example.test',
+    telefono: null,
   };
   const clientVersion = '7.10.0';
   const serviceFailingWith = (error: unknown) =>

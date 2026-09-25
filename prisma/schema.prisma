@@ -361,8 +361,16 @@ model Abono {
 model BusinessRegistrationRequest {
   id               String                     @id @default(uuid()) @db.Uuid
   nombreNegocio    String
-  nombreSocio      String
-  contactoSocio    String
+  // The founding socio's first name(s) and last name(s), and how to reach
+  // them. `correo` is a verified-deliverable, trimmed, lower-cased email (the
+  // credentials go there); it is the empty string only for rows created
+  // before this split, whose free-text contact was not an email (they keep
+  // working through the "relay through the approver" path). `apellidos` is
+  // likewise '' for those legacy rows.
+  nombre           String
+  apellidos        String
+  correo           String
+  telefono         String?
   status           BusinessRegistrationStatus @default(pendiente)
   // Hashed (sha256) the same way a password would be, never the raw
   // token: the value that actually authorizes approving/rejecting a
