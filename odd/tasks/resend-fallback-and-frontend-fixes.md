@@ -30,12 +30,12 @@ Fix the findings of the last full end-to-end verification (registration -> appro
 
 - [x] **T1 — Backend fallback** (RED/GREEN, shared deadline, normal path unchanged). Commit `6df829a` `feat(email): forward credentials to the approver when Resend test mode rejects the socio`.
 - [x] **T2 — Backend docs:** `doc/reglas-de-negocio.md` (fallback decision), `doc/api-contract-for-frontend.md` (fallback, device identifier is a shared secret). Commit `docs: document Resend fallback and device identifier semantics`.
-- [ ] **T3 — Frontend reactivate:** toggle + action, socios only, tests.
-- [ ] **T4 — Frontend nav link** to the catalog (update the outdated home-only test; active-state must not keep "Inicio" highlighted on `/app/productos`).
-- [ ] **T5 — Frontend no-op edit:** no request, quiet close.
-- [ ] **T6 — Frontend texts:** registration success and device 403.
-- [ ] **T7 — Contract copy to the frontend** (parent) and commit.
-- [ ] **T8 — Full checks in both repos, servers still running, user handoff** (URL, available test data).
+- [x] **T3 — Frontend reactivate:** toggle + action, socios only, tests.
+- [x] **T4 — Frontend nav link** to the catalog (update the outdated home-only test; active-state must not keep "Inicio" highlighted on `/app/productos`).
+- [x] **T5 — Frontend no-op edit:** no request, quiet close.
+- [x] **T6 — Frontend texts:** registration success and device 403.
+- [x] **T7 — Contract copy to the frontend** (parent) and commit.
+- [x] **T8 — Full checks in both repos, servers still running, user handoff** (URL, available test data).
 
 ## Route declaration
 
@@ -61,8 +61,28 @@ Delegated direct: one backend writer (T1-T2) and one frontend writer (T3-T6), in
 
 - `npm.cmd run build` OK; `npm.cmd run lint` 0 errors, 2 known warnings (`test/sales-conflict.e2e-spec.ts`); `npm.cmd test` 181 passed (16 files); `npm.cmd run test:e2e` 143 passed (18 files). Real Resend was never called (SDK mocked in unit tests, `EmailService` mocked in e2e).
 
+### T3-T6 (frontend writer, commits `9fed475`, `c45d66e`, `ca944d5`, `1f4494c` on top of the earlier local `b476345`)
+
+- Route: delegated direct (frontend writer, resumed once after a rate-limit cut with nothing on disk).
+- T3 `9fed475`: socios-only "Mostrar inactivos" switch in `ProductCatalogGrid`, reset to page 1 on change, "Reactivar" only for inactive products and socios; a colaborador never inherits the filter from a previous socio session (the Pinia store survives logout). RED: 5 tests failed before (2 grid, 3 view); the reactivate/inactive-card tests already passed and are kept as characterization tests.
+- T4 `c45d66e`: "Productos" sidebar link, topbar title "Productos"; the old "solo la ruta de inicio" assertion dated from the commit that removed the personal-finance shell; "Inicio" now uses exact matching. RED: 5 tests failed (Inicio was highlighted on `/app/productos`).
+- T5 `ca944d5`: an edit with no changed field and no new image sends no request and closes the modal quietly; image-only edits now upload the image (before, they sent `PATCH {}`, got the 400 and never uploaded). RED: the no-change and image-only tests failed before.
+- T6 `1f4494c`: registration success "Tu solicitud fue enviada. Si es aprobada, recibirás tus credenciales de acceso." ("por correo" dropped on purpose: a non-email contact sends the credentials to the approver); device 403 "Este dispositivo no está autorizado. Contacta a soporte." RED: 2 tests failed before.
+- Left as is: `MemberSelector` "Contacta a un socio" (different situation) and `DeviceIdentifyForm` "Pide a un socio el identificador…" (plausible: the identifier arrives in the approval email).
+
+### T7 (parent)
+
+- Contract copied to `bazar-frontend/doc/api-contract-for-frontend.md` (byte-identical, `cmp`), commit `dda8212`.
+
+### T8 (parent, observed)
+
+- bazar-frontend: `npm run build` exit 0, `npm run lint` exit 0, `npm test -- --run` 42 files / 293 tests passed (baseline 41 / 273).
+- bazar-api: build ok, lint 0 errors + 2 known warnings, 181 unit, 143 e2e passed.
+- Servers: the `nest start --watch` process of the previous session had died and left an orphan `dist/main` (started 18:36) holding the OLD code in memory, so the API on :3000 was restarted with `npm run start:dev` (new pid, `Found 0 errors`); vite on :5173 was left untouched (HMR already served the new modules, verified by fetching them).
+- Dev DB test data untouched: approved request A (context `01a0d61c-...`, Account with the owner's email, 1 Member, 1 Device, 1 product), rejected request B. The earlier real approval `Bolsas Mama de Adid segunda prueba` predates the fix and has a Member but no Account/Device (cannot log in).
+
 ## Next step
 
-Frontend writer (T3-T6), then parent T7 (copy the contract) and T8.
+The user tests manually in the browser; pushing both repos (bazar-api: 2 commits + this record; bazar-frontend: 6 local commits) waits for the user's confirmation.
 
 Memory mirror: `odd/resend-fallback-and-frontend-fixes/tasks`; repository locator: `odd/tasks/resend-fallback-and-frontend-fixes.md`.
