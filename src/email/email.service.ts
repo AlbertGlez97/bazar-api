@@ -2,24 +2,90 @@ import 'dotenv/config';
 import { Injectable, Logger } from '@nestjs/common';
 import { Resend } from 'resend';
 import { escapeHtml } from '../common/escape-html.js';
-import { withTimeout } from '../common/with-timeout.js';
+import { TimeoutError, withTimeout } from '../common/with-timeout.js';
 
 /**
- * How long the credentials email may wait for Resend. The installed Resend
- * SDK (4.x) offers no abort signal or request timeout, so the wait is bounded
- * with {@link withTimeout}. The approval sends this email from INSIDE its
- * database transaction (`APPROVE_TRANSACTION_OPTIONS.timeout`, 15 s in
- * BusinessRegistrationService), so this MUST stay well below it: the email
- * then fails first, in a controlled way (CredentialsEmailError -> rollback ->
- * 502 retry page) instead of the transaction expiring under a pending call.
- * A unit test pins the relation.
+ * TOTAL time the credentials email operation may take, however many Resend
+ * calls it makes: the direct send to the socio plus, when Resend test mode
+ * rejects that recipient, the backup forward to the approver. Both sends
+ * share this ONE deadline (a single {@link withTimeout} around the whole
+ * operation) instead of getting one timeout each: two sequential 8 s waits
+ * would total 16 s and outlast the approve transaction.
+ *
+ * The installed Resend SDK (4.x) offers no abort signal or request timeout,
+ * so the wait is bounded with {@link withTimeout}. The approval sends this
+ * email from INSIDE its database transaction
+ * (`APPROVE_TRANSACTION_OPTIONS.timeout`, 15 s in
+ * BusinessRegistrationService), so this MUST stay well below it (at least a
+ * 5 s margin for the queries and the Argon2 hash that run before the email):
+ * the email then fails first, in a controlled way (CredentialsEmailError ->
+ * rollback -> 502 retry page) instead of the transaction expiring under a
+ * pending call. A unit test pins the relation.
  *
  * Trade-off: timing out stops waiting, it cannot cancel the HTTP request. The
  * email may still be delivered although the approval rolled back; the retry
  * sends a fresh, valid set of credentials (the trade-off already accepted
- * for "email sent, commit failed").
+ * for "email sent, commit failed"). The backup forward is never STARTED after
+ * the deadline has passed, so a late rejection cannot forward credentials of
+ * an approval that already rolled back.
  */
-export const CREDENTIALS_EMAIL_TIMEOUT_MS = 8_000;
+export const CREDENTIALS_EMAIL_TIMEOUT_MS = 10_000;
+
+/** Where the credentials email actually went. */
+export type CredentialsDelivery =
+  /** The socio's own address (the normal path). */
+  | 'socio'
+  /** The approver, because the contact is not an email (relay note). */
+  | 'approver-non-email-contact'
+  /**
+   * The approver, as a backup forward, because Resend test mode refused the
+   * socio's address (see {@link isResendTestModeRecipientError}).
+   */
+  | 'approver-fallback';
+
+export interface CredentialsEmailResult {
+  deliveredTo: CredentialsDelivery;
+}
+
+/** The error object the Resend SDK returns in `{ data, error }`. */
+export interface ResendApiError {
+  name: string;
+  message: string;
+}
+
+const RESEND_TEST_MODE_MESSAGE =
+  'You can only send testing emails to your own email address';
+
+/**
+ * True only for the rejection Resend answers while the account has no
+ * verified domain (test mode), when the recipient is not the account owner:
+ * `name` is `validation_error` AND the message says testing emails can only
+ * go to the owner's own address. Any other name or message (including other
+ * `validation_error`s such as a malformed address) is NOT this case.
+ */
+export function isResendTestModeRecipientError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { name, message } = error as { name?: unknown; message?: unknown };
+  return (
+    name === 'validation_error' &&
+    typeof message === 'string' &&
+    message.includes(RESEND_TEST_MODE_MESSAGE)
+  );
+}
+
+/** Resend answered `{ error }` (it does not throw); keeps the raw error. */
+class ResendRejectionError extends Error {
+  constructor(
+    label: string,
+    readonly resendError: ResendApiError,
+  ) {
+    super(
+      `Resend rejected the ${label} email: ${resendError.name}: ${resendError.message}`,
+    );
+  }
+}
+
+type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
@@ -100,36 +166,107 @@ export class EmailService {
    * approver (`APPROVAL_NOTIFICATION_EMAIL`) with a note to relay them, so
    * an approval never silently loses its credentials.
    *
+   * Fallback: while Resend has no verified domain it only delivers to the
+   * account owner and rejects any other recipient with a specific
+   * `validation_error` ({@link isResendTestModeRecipientError}). Only for
+   * that exact rejection of the SOCIO's address, the same credentials are
+   * forwarded to the approver as an explicit backup (subject marker and a
+   * note saying who it was meant for), and the result says so. Any other
+   * failure, or a failure of the backup itself, propagates.
+   *
+   * Direct send and backup share ONE total deadline
+   * ({@link CREDENTIALS_EMAIL_TIMEOUT_MS}).
+   *
    * Throws when the email cannot be sent: the caller relies on that to roll
    * the approval back. Neither the thrown message nor the logs ever contain
    * the password.
    */
   async sendBusinessCredentialsEmail(
     input: BusinessCredentialsEmailInput,
-  ): Promise<void> {
-    const relayThroughApprover = !input.socioEmail;
-    const to = input.socioEmail ?? process.env.APPROVAL_NOTIFICATION_EMAIL;
-    if (!to)
-      throw new Error(
-        'APPROVAL_NOTIFICATION_EMAIL is required to send credentials when the socio has no email',
+  ): Promise<CredentialsEmailResult> {
+    let deadlinePassed = false;
+    try {
+      return await withTimeout(
+        this.sendCredentials(input, () => deadlinePassed),
+        CREDENTIALS_EMAIL_TIMEOUT_MS,
+        'Resend credentials email',
       );
-    await this.deliver(
-      'credentials',
-      {
-        to,
-        subject: relayThroughApprover
-          ? `Credenciales para reenviar al socio: ${input.nombreNegocio}`
-          : `Acceso a Bazar: ${input.nombreNegocio}`,
-        html: renderCredentialsEmailHtml(input, relayThroughApprover),
-      },
-      CREDENTIALS_EMAIL_TIMEOUT_MS,
+    } catch (error) {
+      if (error instanceof TimeoutError) deadlinePassed = true;
+      throw error;
+    }
+  }
+
+  private async sendCredentials(
+    input: BusinessCredentialsEmailInput,
+    deadlinePassed: () => boolean,
+  ): Promise<CredentialsEmailResult> {
+    const approver = process.env.APPROVAL_NOTIFICATION_EMAIL;
+    if (!input.socioEmail) {
+      if (!approver)
+        throw new Error(
+          'APPROVAL_NOTIFICATION_EMAIL is required to send credentials when the socio has no email',
+        );
+      await this.deliver('credentials', {
+        to: approver,
+        subject: `Credenciales para reenviar al socio: ${input.nombreNegocio}`,
+        html: renderCredentialsEmailHtml(input, 'relay'),
+      });
+      return { deliveredTo: 'approver-non-email-contact' };
+    }
+
+    try {
+      await this.deliver('credentials', {
+        to: input.socioEmail,
+        subject: `Acceso a Bazar: ${input.nombreNegocio}`,
+        html: renderCredentialsEmailHtml(input, 'socio'),
+      });
+      return { deliveredTo: 'socio' };
+    } catch (error) {
+      if (
+        !(error instanceof ResendRejectionError) ||
+        !isResendTestModeRecipientError(error.resendError)
+      )
+        throw error;
+      // The approval may already have rolled back (deadline passed while the
+      // rejection was in flight): forwarding credentials that never became
+      // valid would only mislead the approver.
+      if (deadlinePassed()) throw error;
+      return this.forwardCredentialsToApprover(input, error, approver);
+    }
+  }
+
+  /** Backup forward to the approver after Resend test mode refused the socio. */
+  private async forwardCredentialsToApprover(
+    input: BusinessCredentialsEmailInput,
+    original: Error,
+    approver: string | undefined,
+  ): Promise<CredentialsEmailResult> {
+    this.logger.warn(
+      'Resend test mode rejected the credentials email to the socio; forwarding it to the approver as a backup',
     );
+    try {
+      if (!approver)
+        throw new Error(
+          'APPROVAL_NOTIFICATION_EMAIL is required to forward the credentials',
+        );
+      await this.deliver('credentials', {
+        to: approver,
+        subject: `[RESPALDO] Credenciales para reenviar al socio: ${input.nombreNegocio}`,
+        html: renderCredentialsEmailHtml(input, 'backup'),
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(
+        `${original.message}; the fallback to the approver also failed: ${reason}`,
+      );
+    }
+    return { deliveredTo: 'approver-fallback' };
   }
 
   private async deliver(
     kind: 'approval' | 'credentials',
     message: { to: string; subject: string; html: string },
-    timeoutMs?: number,
   ): Promise<void> {
     // The Resend SDK does not throw on API errors (invalid key, unverified
     // domain, testing-recipient restriction, rate limit...): it resolves to
@@ -138,21 +275,14 @@ export class EmailService {
     // and nothing was logged), so the error is surfaced here. The message
     // carries only Resend's error name/message, never the API key.
     const label = kind === 'approval' ? 'approval' : 'credentials';
-    const sending = this.getClient().emails.send({
+    // Only the credentials email is time-bounded, as a whole (see
+    // CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps waiting
+    // for Resend as before.
+    const { data, error } = await this.getClient().emails.send({
       from: 'onboarding@resend.dev',
       ...message,
     });
-    // Only the credentials email is time-bounded (see
-    // CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps waiting
-    // for Resend as before.
-    const { data, error } =
-      timeoutMs === undefined
-        ? await sending
-        : await withTimeout(sending, timeoutMs, `Resend ${label} email`);
-    if (error)
-      throw new Error(
-        `Resend rejected the ${label} email: ${error.name}: ${error.message}`,
-      );
+    if (error) throw new ResendRejectionError(label, error);
     this.logger.log(
       `${label[0].toUpperCase()}${label.slice(1)} email accepted by Resend (id ${data?.id})`,
     );
@@ -161,7 +291,7 @@ export class EmailService {
 
 function renderCredentialsEmailHtml(
   input: BusinessCredentialsEmailInput,
-  relayThroughApprover: boolean,
+  mode: CredentialsEmailMode,
 ): string {
   const nombreNegocio = escapeHtml(input.nombreNegocio);
   const nombreSocio = escapeHtml(input.nombreSocio);
@@ -170,13 +300,20 @@ function renderCredentialsEmailHtml(
   const temporaryPassword = escapeHtml(input.temporaryPassword);
   const deviceName = escapeHtml(input.deviceName);
   const deviceIdentifier = escapeHtml(input.deviceIdentifier);
-  const relayNote = relayThroughApprover
-    ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Para quien aprueba:</strong> el contacto del socio (${contactoSocio}) no es un correo electrónico, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreSocio}) estos datos de acceso por otro medio.</p>`
-    : '';
+  const relayNote =
+    mode === 'relay'
+      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Para quien aprueba:</strong> el contacto del socio (${contactoSocio}) no es un correo electrónico, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreSocio}) estos datos de acceso por otro medio.</p>`
+      : mode === 'backup'
+        ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien aprueba:</strong> Este correo era para ${contactoSocio} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (${nombreSocio}) por otro medio.</p>`
+        : '';
+  const heading =
+    mode === 'backup'
+      ? 'Reenvío de respaldo: negocio aprobado'
+      : 'Tu negocio fue aprobado';
   return `<!doctype html>
 <html lang="es">
   <body style="font-family: sans-serif; line-height: 1.5;">
-    <h1>Tu negocio fue aprobado</h1>
+    <h1>${heading}</h1>
     ${relayNote}
     <p>El negocio <strong>${nombreNegocio}</strong> ya está activo. Estos son los datos de acceso de ${nombreSocio}:</p>
     <p><strong>Usuario:</strong> <code>${username}</code></p>

@@ -48,6 +48,13 @@ describe('business registration (BE-11)', () => {
   // Accounts created directly by these specs (not through an approval).
   const extraUsernames: string[] = [];
 
+  // What the real EmailService reports when nothing goes wrong: to the socio
+  // when there is an address, otherwise to the approver (relay note).
+  const deliveredNormally = (input: { socioEmail?: string }) =>
+    Promise.resolve({
+      deliveredTo: input.socioEmail ? 'socio' : 'approver-non-email-contact',
+    });
+
   const emailPath = (url: string) => {
     const parsed = new URL(url);
     expect(parsed.origin).toBe('https://api.example.test');
@@ -62,7 +69,7 @@ describe('business registration (BE-11)', () => {
     vi.stubEnv('PRODUCT_UPLOAD_DIR', uploadRoot);
     await writeFile(join(uploadRoot, 'prefix-test.txt'), 'static route fixture');
     sendApprovalEmail = vi.fn().mockResolvedValue(undefined);
-    sendCredentialsEmail = vi.fn().mockResolvedValue(undefined);
+    sendCredentialsEmail = vi.fn().mockImplementation(deliveredNormally);
     const module = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -200,7 +207,7 @@ describe('business registration (BE-11)', () => {
     sendApprovalEmail.mockClear();
     // reset (not just clear): a test may queue a rejection for the
     // credentials email, which must never leak into the next test.
-    sendCredentialsEmail.mockReset().mockResolvedValue(undefined);
+    sendCredentialsEmail.mockReset().mockImplementation(deliveredNormally);
   });
 
   it('prefixes production routes and OpenAPI without moving explicit docs mounts', async () => {
@@ -543,7 +550,10 @@ describe('business registration (BE-11)', () => {
       ) =>
         realTransaction(callback, { ...options, timeout: 1_000 })) as never);
       sendCredentialsEmail.mockImplementationOnce(
-        () => new Promise((resolve) => setTimeout(resolve, 1_500)),
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ deliveredTo: 'socio' }), 1_500),
+          ),
       );
 
       let failed: request.Response;
@@ -622,6 +632,7 @@ describe('business registration (BE-11)', () => {
       sendCredentialsEmail.mockImplementationOnce(async () => {
         reachedEmailA();
         await heldByA;
+        return { deliveredTo: 'socio' };
       });
       const isBBlockedByA = async () => {
         const rows = await prisma.$queryRaw<{ n: bigint }[]>`
@@ -727,6 +738,68 @@ describe('business registration (BE-11)', () => {
       expect(page.text).not.toContain('<i>');
       expect(page.text).not.toContain(creds.temporaryPassword);
       await login(creds.username, creds.temporaryPassword).expect(200);
+    });
+
+    it('answers 200 with a truthful page when the credentials were forwarded to the approver because Resend test mode rejected the socio', async () => {
+      const email = `respaldo.${run}@example.com`;
+      const path = await register(
+        name('Resend Modo Prueba'),
+        'Socio Respaldo',
+        email,
+      );
+      sendCredentialsEmail.mockResolvedValueOnce({
+        deliveredTo: 'approver-fallback',
+      });
+
+      const page = await request(server()).get(path).expect(200);
+
+      expect(page.headers['content-type']).toMatch(/html/);
+      expect(page.text).toMatch(/aprobado/i);
+      expect(page.text).toMatch(/aprobador/i);
+      expect(page.text).toMatch(/modo de prueba/i);
+      expect(page.text).toMatch(/hazlas llegar/i);
+      expect(page.text).toContain(email);
+      // Truthful: it must not claim they went to the socio.
+      expect(page.text).not.toMatch(/se enviaron por correo a/i);
+      const creds = lastCredentials();
+      expect(page.text).not.toContain(creds.temporaryPassword);
+
+      const registration = await stored(name('Resend Modo Prueba'));
+      expect(registration?.status).toBe('aprobado');
+      const contextId = registration!.createdContextId!;
+      const account = await prisma.account.findUnique({
+        where: { username: creds.username },
+      });
+      expect(account?.contextId).toBe(contextId);
+      const device = await withTestTenant(contextId, () =>
+        prisma.device.findFirst({ where: { contextId } }),
+      );
+      expect(device?.identifier).toBe(creds.deviceIdentifier);
+      const members = await withTestTenant(contextId, () =>
+        prisma.member.count({ where: { contextId, role: 'socio' } }),
+      );
+      expect(members).toBe(1);
+      await login(creds.username, creds.temporaryPassword).expect(200);
+    });
+
+    it('still answers 502 and rolls everything back when the fallback to the approver also fails', async () => {
+      const email = `respaldo.falla.${run}@example.com`;
+      const path = await register(name('Respaldo Falla'), 'Socio Falla', email);
+      sendCredentialsEmail.mockRejectedValueOnce(
+        new Error(
+          'Resend rejected the credentials email (validation_error) and the fallback to the approver also failed: Resend rejected the credentials email: rate_limit_exceeded: Too many requests',
+        ),
+      );
+
+      const failed = await request(server()).get(path);
+
+      expectRetryPage(failed, /no se pudo enviar/i);
+      const attempt = lastCredentials();
+      expect(failed.text).not.toContain(attempt.temporaryPassword);
+      await expectStillPending(name('Respaldo Falla'));
+      await expect(
+        prisma.account.findUnique({ where: { username: email } }),
+      ).resolves.toBeNull();
     });
 
     it('never reuses a taken username: falls back to a unique one and leaves the other account alone', async () => {

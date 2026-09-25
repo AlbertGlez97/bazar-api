@@ -90,13 +90,15 @@ describe('approve transaction options', () => {
     expect(options.maxWait).toBeGreaterThan(0);
   });
 
-  // The Resend call runs inside that transaction and has no abort signal in
-  // the installed SDK, so EmailService bounds it with its own timer. That
-  // timer must fire first, in a controlled way (-> CredentialsEmailError,
-  // clean rollback, 502), instead of the transaction expiring under a
-  // pending call. The margin covers the queries and the Argon2 hash that run
-  // before the email is sent.
-  it('gives the credentials email a shorter timeout than the transaction', () => {
+  // The Resend calls run inside that transaction and have no abort signal in
+  // the installed SDK, so EmailService bounds them with its own timer. That
+  // timer is the TOTAL deadline of the direct send plus the approver
+  // fallback (they share it; two per-send timeouts would add up past the
+  // transaction). It must fire first, in a controlled way
+  // (-> CredentialsEmailError, clean rollback, 502), instead of the
+  // transaction expiring under a pending call. The margin covers the queries
+  // and the Argon2 hash that run before the email is sent.
+  it('keeps the credentials email total deadline (direct send + fallback) below the transaction timeout', () => {
     expect(CREDENTIALS_EMAIL_TIMEOUT_MS).toBeLessThan(
       APPROVE_TRANSACTION_OPTIONS.timeout,
     );

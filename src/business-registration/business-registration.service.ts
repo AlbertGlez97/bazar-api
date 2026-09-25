@@ -3,7 +3,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { argon2id, hash } from 'argon2';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
-import { EmailService } from '../email/email.service.js';
+import {
+  EmailService,
+  type CredentialsEmailResult,
+} from '../email/email.service.js';
 import { createServerId } from '../common/server-id.js';
 import {
   isAccountUsernameConflict,
@@ -27,7 +30,9 @@ const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // explicit budget. The tenant-isolation `$transaction` override forwards
 // these options untouched (see test/tenant-extension.e2e-spec.ts).
 // `timeout` must stay well above CREDENTIALS_EMAIL_TIMEOUT_MS (EmailService),
-// so a hung Resend call fails first, in a controlled way; a unit test pins it.
+// the TOTAL deadline of the credentials email including the approver
+// fallback (two sends share it), so a hung Resend call fails first, in a
+// controlled way; a unit test pins it.
 export const APPROVE_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
 
 /** The credentials email could not be sent; the approval was rolled back. */
@@ -296,8 +301,9 @@ export class BusinessRegistrationService {
       },
     });
 
+    let delivery: CredentialsEmailResult;
     try {
-      await this.email.sendBusinessCredentialsEmail({
+      delivery = await this.email.sendBusinessCredentialsEmail({
         nombreNegocio: request.nombreNegocio,
         nombreSocio: request.nombreSocio,
         contactoSocio: request.contactoSocio,
@@ -314,15 +320,25 @@ export class BusinessRegistrationService {
       );
     }
 
-    return socioEmail
-      ? renderStatusPage(
+    // The page must say where the credentials REALLY went (never the
+    // password itself).
+    switch (delivery.deliveredTo) {
+      case 'socio':
+        return renderStatusPage(
           'Negocio aprobado',
           `El negocio "${request.nombreNegocio}" fue aprobado. Las credenciales de acceso (usuario, contraseña temporal e identificador del dispositivo) se enviaron por correo a ${socioEmail}.`,
-        )
-      : renderStatusPage(
+        );
+      case 'approver-fallback':
+        return renderStatusPage(
+          'Negocio aprobado',
+          `El negocio "${request.nombreNegocio}" fue aprobado. Resend (en modo de prueba) no permitió enviar las credenciales de acceso a ${socioEmail}, así que se enviaron al correo del aprobador como reenvío de respaldo: hazlas llegar al socio.`,
+        );
+      case 'approver-non-email-contact':
+        return renderStatusPage(
           'Negocio aprobado',
           `El negocio "${request.nombreNegocio}" fue aprobado. El contacto del socio ("${request.contactoSocio}") no es un correo electrónico, así que las credenciales de acceso se enviaron al correo del aprobador: hazlas llegar al socio.`,
         );
+    }
   }
 
   /**
