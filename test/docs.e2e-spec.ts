@@ -59,4 +59,49 @@ describe('API documentation exposure', () => {
       expect(authorized.status).toBe(200);
     }
   });
+  it('documents every approve outcome that shares a status, not only the last one', async () => {
+    process.env.ENABLE_API_DOCS = 'true';
+    process.env.DOCS_USER = 'verification';
+    process.env.DOCS_PASSWORD = randomBytes(24).toString('hex');
+    const url = await start();
+    const res = await fetch(url + '/docs-json', {
+      headers: {
+        Authorization:
+          'Basic ' +
+          Buffer.from(
+            `${process.env.DOCS_USER}:${process.env.DOCS_PASSWORD}`,
+          ).toString('base64'),
+      },
+    });
+    const document = (await res.json()) as {
+      paths: Record<
+        string,
+        {
+          get: {
+            responses: Record<
+              string,
+              {
+                content: Record<
+                  string,
+                  { examples: Record<string, { value: string }> }
+                >;
+              }
+            >;
+          };
+        }
+      >;
+    };
+    const responses =
+      document.paths['/business-registration/approve'].get.responses;
+    const htmlOf = (status: string) =>
+      Object.values(responses[status].content['text/html'].examples)
+        .map((example) => example.value)
+        .join('\n');
+
+    const conflicts = htmlOf('502');
+    expect(conflicts).toContain('No se pudo enviar el correo de credenciales');
+    expect(conflicts).toContain('La aprobación tardó demasiado');
+    expect(conflicts).toContain('No se pudo crear el usuario');
+    expect(htmlOf('200')).toContain('Negocio aprobado');
+  });
 });

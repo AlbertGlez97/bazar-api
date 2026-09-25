@@ -578,6 +578,39 @@ describe('business registration (BE-11)', () => {
       // on the unique index of A's uncommitted row. Once B is observed
       // waiting on a lock, A is released and commits, so B's insert fails
       // with the unique violation the pre-check could not see.
+      //
+      // "B is waiting" must be about B's own connection and about A, not
+      // about any Account insert some other session happens to be blocked on.
+      // Seam (test only, production untouched): while this test runs, every
+      // $transaction opened by the app tags its Postgres session with a
+      // per-run application_name as its first statement (set_config with
+      // is_local = true, so it dies with the transaction). A's transaction is
+      // tagged before B is even requested, B's right after, so the tags are
+      // deterministic and unique to this run. The probe then requires ONE
+      // session that (1) carries B's tag, (2) waits on a lock in an Account
+      // insert and (3) is blocked by (pg_blocking_pids) the session carrying
+      // A's tag. Anything else keeps polling and, after the bound, fails the
+      // test with a dump of both sessions instead of releasing A blindly.
+      const tagA = `race-A-${run}`;
+      const tagB = `race-B-${run}`;
+      let sessionTag = tagA;
+      const realTransaction = prisma.$transaction.bind(prisma);
+      const tagSessions = vi.spyOn(prisma, '$transaction').mockImplementation(((
+        callback: (tx: {
+          $executeRaw: (
+            q: TemplateStringsArray,
+            ...v: unknown[]
+          ) => Promise<unknown>;
+        }) => Promise<unknown>,
+        options?: object,
+      ) => {
+        const tag = sessionTag;
+        return realTransaction(async (tx: never) => {
+          await (tx as Parameters<typeof callback>[0])
+            .$executeRaw`SELECT set_config('application_name', ${tag}, true)`;
+          return callback(tx);
+        }, options);
+      }) as never);
       let reachedEmailA!: () => void;
       const emailAReached = new Promise<void>((resolve) => {
         reachedEmailA = resolve;
@@ -590,29 +623,64 @@ describe('business registration (BE-11)', () => {
         reachedEmailA();
         await heldByA;
       });
-      const isBlockedOnAnAccountInsert = async () => {
+      const isBBlockedByA = async () => {
         const rows = await prisma.$queryRaw<{ n: bigint }[]>`
-          SELECT count(*) AS n FROM pg_stat_activity
+          SELECT count(*) AS n FROM pg_stat_activity b
+          WHERE b.datname = current_database()
+            AND b.application_name = ${tagB}
+            AND b.wait_event_type = 'Lock'
+            AND b.query ILIKE '%INSERT INTO%Account%'
+            AND EXISTS (
+              SELECT 1 FROM pg_stat_activity a
+              WHERE a.datname = current_database()
+                AND a.application_name = ${tagA}
+                AND a.pid = ANY (pg_blocking_pids(b.pid)))`;
+        return Number(rows[0].n) === 1;
+      };
+      const describeSessions = async () => {
+        const rows = await prisma.$queryRaw<object[]>`
+          SELECT application_name, state, wait_event_type, wait_event,
+                 pg_blocking_pids(pid) AS blocked_by, left(query, 80) AS query
+          FROM pg_stat_activity
           WHERE datname = current_database()
-            AND wait_event_type = 'Lock'
-            AND query ILIKE '%INSERT INTO%Account%'`;
-        return Number(rows[0].n) > 0;
+            AND application_name IN (${tagA}, ${tagB})`;
+        return JSON.stringify(rows);
       };
 
-      const approvalA = request(server())
-        .get(pathA)
-        .then((res) => res);
-      await emailAReached;
-      const approvalB = request(server())
-        .get(pathB)
-        .then((res) => res);
-      for (let waited = 0; !(await isBlockedOnAnAccountInsert()); waited += 25) {
-        if (waited > 10_000)
-          throw new Error('approval B never blocked on the Account insert');
-        await new Promise((resolve) => setTimeout(resolve, 25));
+      let pageA!: request.Response;
+      let pageB!: request.Response;
+      try {
+        const approvalA = request(server())
+          .get(pathA)
+          .then((res) => res);
+        await emailAReached;
+        sessionTag = tagB;
+        const approvalB = request(server())
+          .get(pathB)
+          .then((res) => res);
+        let observed = false;
+        for (let waited = 0; waited <= 10_000; waited += 25) {
+          if (await isBBlockedByA()) {
+            observed = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        if (!observed) {
+          // Fail closed: never release A on a guess. Let both requests drain
+          // (A is released only so the app can shut down) and report.
+          const sessions = await describeSessions();
+          releaseA();
+          await Promise.allSettled([approvalA, approvalB]);
+          throw new Error(
+            `approval B was never observed blocked by approval A on the Account insert; tagged sessions: ${sessions}`,
+          );
+        }
+        releaseA();
+        [pageA, pageB] = await Promise.all([approvalA, approvalB]);
+      } finally {
+        tagSessions.mockRestore();
       }
-      releaseA();
-      const [pageA, pageB] = await Promise.all([approvalA, approvalB]);
 
       expect(pageA.status, pageA.text).toBe(200);
       expect(pageA.text).toMatch(/aprobado/i);
@@ -634,7 +702,9 @@ describe('business registration (BE-11)', () => {
       expect((await stored(name('Choque Dos')))?.status).toBe('aprobado');
       await login(credsB.username, credsB.temporaryPassword).expect(200);
       await login(email, credsA.temporaryPassword).expect(200);
-    });
+      // The 15 s budget leaves room for the 10 s probe bound, so a probe that
+      // never matches fails with its own diagnostic, not a generic timeout.
+    }, 15_000);
 
     it('sends the credentials to the approver when the contact is not an email', async () => {
       const path = await register(

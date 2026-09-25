@@ -98,17 +98,37 @@ export function ApiExample(name: OperationName) {
     decorators.push(ApiBody(operation.body));
   }
   if (operation.multipart) decorators.push(ApiConsumes('multipart/form-data'));
-  for (const response of operation.responses) {
+  // OpenAPI keys responses by status code and Nest keeps only the last
+  // ApiResponse per status, so operations that document several outcomes with
+  // the same status (e.g. the approve page has three 200s and two 502s) are
+  // grouped here into ONE response carrying a named example per outcome.
+  const byStatus = new Map<number, typeof operation.responses>();
+  for (const response of operation.responses)
+    byStatus.set(response.status, [
+      ...(byStatus.get(response.status) ?? []),
+      response,
+    ]);
+  for (const [status, group] of byStatus) {
+    const [first] = group;
+    const media =
+      group.length === 1
+        ? { schema: exampleSchema(first.value), example: first.value }
+        : {
+            schema: group.every((r) => typeof r.value === 'string')
+              ? { type: 'string' as const }
+              : { oneOf: group.map((r) => exampleSchema(r.value)) },
+            examples: Object.fromEntries(
+              group.map((r, index) => [
+                `outcome${index + 1}`,
+                { summary: r.description, value: r.value },
+              ]),
+            ),
+          };
     decorators.push(
       ApiResponse({
-        status: response.status,
-        description: response.description,
-        content: {
-          [operation.contentType ?? 'application/json']: {
-            schema: exampleSchema(response.value),
-            example: response.value,
-          },
-        },
+        status,
+        description: group.map((r) => r.description).join('\n\n'),
+        content: { [operation.contentType ?? 'application/json']: media },
       }),
     );
   }

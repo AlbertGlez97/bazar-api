@@ -604,9 +604,16 @@ export const operations: Record<string, Operation> = {
       {
         status: 502,
         description:
-          'The transaction timed out or a concurrent approval took the same username first: nothing was created, the request is still pending and the same link can be used again (same page family, different title/text).',
+          'The approval transaction timed out: nothing was created, the request is still pending and the same link can be used again.',
         value:
           '<html>...<h1>La aprobación tardó demasiado</h1><p>Se agotó el tiempo de la operación. La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.</p>...</html>',
+      },
+      {
+        status: 502,
+        description:
+          'A concurrent approval took the same username first: nothing was created, the request is still pending and the retry with the same link derives a fresh username.',
+        value:
+          '<html>...<h1>No se pudo crear el usuario</h1><p>Otro registro tomó el mismo nombre de usuario al mismo tiempo. La aprobación no se completó y la solicitud sigue pendiente. Vuelve a abrir este mismo enlace para reintentarlo.</p>...</html>',
       },
       {
         status: 200,
