@@ -27,6 +27,11 @@ export function hashPassword(plain: string): Promise<string> {
  * fails closed, but it is logged once, so a systemic fault does not look like
  * users mistyping their passwords. Only the error class and message are
  * logged, never the stored hash or the password.
+ *
+ * Known limit: EVERY `TypeError` is classified as "malformed stored hash" and
+ * stays silent, because the library reports that case as a bare TypeError with
+ * no distinguishing code. A different TypeError from the library (for example
+ * an argument-shape failure) is therefore not logged either.
  */
 export async function verifyPassword(
   storedHash: string | null | undefined,

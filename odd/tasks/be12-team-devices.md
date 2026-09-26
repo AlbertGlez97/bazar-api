@@ -80,6 +80,11 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - (b) `authorized = false` -> `revocado` is a deliberate fail-closed assumption: such a device could not operate before either, and a socio can reissue it.
   - (c) `status` and `authorized` can drift (no CHECK constraint): T4 must pin the allowed pairs with tests.
 - **T2 (commit `0ba1564`): native review approved (four lenses) and the receipt is burned.** Its six non-blocking advisories (a silent catch-all in `verifyPassword`, a `storedHash: string` signature that did not match the runtime null handling, a redundant hash length check, a pinned library version in a comment, and no test proving the malformed-hash 401 at login) are addressed in the commit `fix(auth): log unexpected password verification failures`.
+- **T3 (commits `51e314b` + `bc703d6`): native review approved (four lenses) and the receipt is burned.** Five non-blocking advisories, all addressed in `refactor(auth): make the member binding explicit in isRequestingSocio`:
+  - (two advisories, one issue) `isRequestingSocio` took an optional `accountMemberId` tested by truthiness while `ContextGuard` tested `!== null`: the parameter is now required (`string | null`) and both enforcement points share one predicate, `isBoundToMember` (`!= null`).
+  - The impostor `PATCH /members` test only checked for a 403: it now asserts the generic guard message and that the member was not renamed.
+  - The e2e probe cast `deviceToken` to `string` without saying why: a comment explains the deliberate array-at-runtime cast used by the repeated-header test.
+  - Every `TypeError` from `argon2.verify` is treated as a malformed hash and stays silent: documented as a known limit in `verifyPassword`.
 
 ## Engram mirror
 

@@ -9,6 +9,7 @@ import { isUUID } from 'class-validator';
 import { verifyDeviceToken } from '../common/device-secret.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard.js';
+import { isBoundToMember } from './socio-check.util.js';
 
 /**
  * Establishes *who is attending the sale* and *from which device*, on top
@@ -71,7 +72,8 @@ export class ContextGuard implements CanActivate {
     const { contextId, memberId: boundMemberId } = request.account;
     // A login bound to a Member may only act as that Member. Without this,
     // a colaborador's own login could name a socio's id and act as the socio.
-    if (boundMemberId !== null && boundMemberId !== memberId) throw refuse();
+    if (isBoundToMember(boundMemberId) && boundMemberId !== memberId)
+      throw refuse();
     const [member, device] = await Promise.all([
       this.prisma.member.findFirst({
         where: { id: memberId, contextId, active: true },

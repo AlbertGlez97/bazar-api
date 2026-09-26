@@ -89,8 +89,8 @@ export class MembersService {
   async list(
     contextId: string,
     query: MemberListDto,
-    requestingMemberId?: string,
-    accountMemberId?: string | null,
+    requestingMemberId: string | undefined,
+    accountMemberId: string | null,
   ) {
     const includeInactive =
       query.includeInactive &&

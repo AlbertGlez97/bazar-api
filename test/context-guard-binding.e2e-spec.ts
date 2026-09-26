@@ -60,6 +60,10 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
       .set('x-member-id', memberId)
       .set('x-device-id', deviceId)
       .send({});
+    // superagent's typings only allow a string here, but it accepts an array
+    // at runtime and then sends the header once per element. The
+    // repeated-header test below relies on exactly that, so the cast is
+    // deliberate and not a way to hide a type error.
     if (deviceToken !== undefined) req.set('x-device-token', deviceToken as string);
     return req;
   };
@@ -166,13 +170,22 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
     });
 
     it('a bound account cannot even reach a socio-only route as the socio', async () => {
-      await request(app.getHttpServer())
+      const res = await request(app.getHttpServer())
         .patch(`/members/${colaboradorId}`)
         .auth(boundColaboradorToken, { type: 'bearer' })
         .set('x-member-id', socioId)
         .set('x-device-id', legacyDeviceId)
         .send({ name: 'Renamed by an impostor' })
         .expect(403);
+      // The refusal must come from the binding check (the generic message),
+      // not from any other 403 source on this route, and nothing was written.
+      expect(res.body.message).toBe(GENERIC_403);
+      await withTestTenant(contextId, async () => {
+        const unchanged = await prisma.member.findUniqueOrThrow({
+          where: { id: colaboradorId },
+        });
+        expect(unchanged.name).toBe('Guard Colaborador');
+      });
     });
 
     it('the shared (unbound) account keeps choosing any member of its context', async () => {

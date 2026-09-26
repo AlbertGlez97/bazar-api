@@ -242,8 +242,8 @@ export class ProductsService {
   async list(
     contextId: string,
     query: ProductListDto,
-    requestingMemberId?: string,
-    accountMemberId?: string | null,
+    requestingMemberId: string | undefined,
+    accountMemberId: string | null,
   ) {
     const includeInactive =
       query.includeInactive &&
