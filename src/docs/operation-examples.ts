@@ -203,7 +203,7 @@ export const operations: Record<string, Operation> = {
   members: {
     summary: 'List Alberto, Adid, Carlos and Javier for selection',
     description:
-      'Returns a bare array of id/name/role, ordered by name then id. No pagination. No member creation endpoint.',
+      'Returns a bare array of id/name/role/active, ordered by name then id. No pagination. People are added with POST /members (socio only).',
     access: 'jwt',
     responses: ok(e.members),
   },

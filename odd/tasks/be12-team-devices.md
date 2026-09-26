@@ -46,7 +46,7 @@ Route per task: delegated direct writer (one writer at a time). Trigger evidence
 - [x] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
 - [x] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
 - [x] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
-- [ ] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
+- [x] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
 - [ ] **T6 Change password.** `POST /auth/change-password`.
 - [ ] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file.
 
@@ -84,6 +84,15 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - RED -> GREEN: `test/devices.e2e-spec.ts` 35 failed / 8 passed before the implementation (mostly 404), 43/43 after; `src/devices/devices.service.spec.ts` failed on the missing module, 2/2 after. Commit `92d7cc5`: 9 new email tests (the credentials tests are untouched and green), and a mutation check (dropping the device-name escaping made exactly the escaping test fail).
   - Full suite after T4: unit 22 files / 297 tests; e2e 21 files / 232 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
   - Not decided by the request, left as is: a socio may revoke or reissue the very device they are using (they lose access from it until it is reactivated).
+- **T5 (two commits: `11de709` the member credentials email, and this one, the endpoint).**
+  - `POST /members` (`SocioGuard`; colaborador -> 403, no token -> 401). Body: `nombre`, `apellidos`, `correo` (`@IsEmail`, also normalized with `normalizeSocioEmail`; anything the credentials email could not go to is a 400), `role` (`socio` | `colaborador`), optional `commissionRateBps` (0..10000; any value, `null` included, is a 400 for a socio; omitted or `null` for a colaborador keeps the global rate). Ids, context, username and password can never come from the body (`forbidNonWhitelisted`).
+  - One transaction under the tenant context: re-validate the acting socio (`authorize`, which now returns the Member row), derive the username (`deriveUniqueUsername`: the normalized correo when free, else `<slug of the person name>-<6 hex>`), create the `Member` (`createdByMemberId` = the acting socio) and its `Account` (same `contextId`, `memberId` = the new Member, so that login can only act as them; this is how the same-context invariant left open by T1 is kept), and send the email as the LAST step.
+  - **The correo is not persisted** (no column holds it; the username derived from it is the only trace).
+  - **502 rollback policy**, same as the business approval: an email failure or an expired transaction (15 s vs the 10 s email deadline; a unit test pins the 5 s margin) rolls everything back and answers 502 with a clear Spanish message, never the password. A lost username race (unique violation on `Account_username_key`) is retried up to 3 times with a fresh derivation, then answered 409.
+  - **`credentialsEmail` in the 201**: `member` (the person's own address) or `approver-fallback` (Resend test mode forwarded the credentials to the approver as `[RESPALDO]`), so the frontend can confirm visually where they went. The response also carries `id`, `name`, `role`, `active`, `commissionRateBps`, `createdByMemberId` and `username`; never the password or its hash. `GET /members` is unchanged.
+  - RED -> GREEN: `test/members-create.e2e-spec.ts` 42 failed (all 404) before the endpoint, 42/42 after; `src/members/members.service.spec.ts` (transaction timeout relation and the failure handling: race retry and 409, 502 on expiry, no retry on other errors) 8/8; commit `11de709`: 13 new email tests failed on the missing method, 63/63 after.
+  - Mutation check: dropping `memberId` from the `Account` insert made exactly the 3 tests that depend on the binding fail (the created row, and both end-to-end impersonation tests); reverted.
+  - Full suite after T5: unit 23 files / 318 tests; e2e 22 files / 274 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
 
 ## Review notes
 
@@ -98,10 +107,12 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - The e2e probe cast `deviceToken` to `string` without saying why: a comment explains the deliberate array-at-runtime cast used by the repeated-header test.
   - Every `TypeError` from `argon2.verify` is treated as a malformed hash and stays silent: documented as a known limit in `verifyPassword`.
 
+- **T4 (commits `61f4af7`, `92d7cc5`, `942d5ba`): the native review was offered and the user declined it for this candidate.** Nothing was reviewed natively; the functional checks above are the only proof.
+
 ## Engram mirror
 
 Pending: `mem_save` fails with `ambiguous_project` (the working directory holds two repos) and the user has not chosen a project. Local file is the record until then.
 
 ## Next step
 
-T5 (team management).
+T6 (change password).

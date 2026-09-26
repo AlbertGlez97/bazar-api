@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -20,7 +21,11 @@ import { SocioGuard } from '../auth/socio.guard.js';
 import { CommissionsService } from '../commissions/commissions.service.js';
 import { SetMemberCommissionRateDto } from '../commissions/dto/commission.dto.js';
 import { MembersService } from './members.service.js';
-import { MemberListDto, PatchMemberDto } from './dto/member.dto.js';
+import {
+  CreateMemberDto,
+  MemberListDto,
+  PatchMemberDto,
+} from './dto/member.dto.js';
 
 const validate = (expectedType: new () => object) =>
   new ValidationPipe({
@@ -41,9 +46,9 @@ const validate = (expectedType: new () => object) =>
  * {@link SocioGuard} selection, since this endpoint is used *before* any
  * Member has necessarily been selected.
  *
- * `setCommissionRate`, `patch`, `deactivate` and `reactivate` all require
- * {@link SocioGuard}: configuring pay and activating/deactivating staff
- * are owner-only decisions.
+ * `create`, `setCommissionRate`, `patch`, `deactivate` and `reactivate` all
+ * require {@link SocioGuard}: adding people, configuring pay and
+ * activating/deactivating staff are owner-only decisions.
  */
 @ApiTags('members')
 @ApiBearerAuth()
@@ -69,6 +74,27 @@ export class MembersController {
       requestingMemberId,
       request.account.memberId,
     );
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: 'Add a socio or a colaborador with their own login',
+    description:
+      'Socio only. Creates the Member and its own login (bound to that ' +
+      'Member, so it can only act as them) in one transaction and emails ' +
+      'the username and a temporary password to `correo`, which is not ' +
+      'stored. If the email cannot be sent nothing is created (502). ' +
+      '`commissionRateBps` is rejected (400) for a socio. The response ' +
+      '`credentialsEmail` says where the credentials went: `member` or ' +
+      '`approver-fallback` (Resend test mode). The password is never ' +
+      'returned.',
+  })
+  @UseGuards(SocioGuard)
+  create(
+    @Req() request: AuthenticatedRequest,
+    @Body(validate(CreateMemberDto)) dto: CreateMemberDto,
+  ) {
+    return this.members.create(request, dto);
   }
 
   @Patch(':id/commission-rate')

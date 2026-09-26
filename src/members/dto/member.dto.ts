@@ -1,4 +1,5 @@
 import {
+  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -12,6 +13,56 @@ import {
 import { Transform } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_COMMISSION_RATE_BPS } from '../../commissions/dto/commission.dto.js';
+
+/** Trims surrounding whitespace so a value made only of spaces counts as blank. */
+const trim = ({ value }: { value: unknown }): unknown =>
+  typeof value === 'string' ? value.trim() : value;
+
+export const MEMBER_ROLES = ['socio', 'colaborador'] as const;
+export type MemberRoleName = (typeof MEMBER_ROLES)[number];
+
+/**
+ * A socio adds a person to its own business (`POST /members`, BE-12). The
+ * person gets their own login, created together with the Member and emailed
+ * to `correo`, which is used ONLY to send those credentials (it is not
+ * stored). `nombre`, `apellidos` and `correo` are trimmed before they are
+ * validated. The id, the context, the username and the password are always
+ * chosen by the server: any of them in the body is rejected (400), like every
+ * other unknown field.
+ *
+ * `commissionRateBps` only applies to a colaborador; {@link MembersService.create}
+ * rejects it (400) for a socio, since the DTO cannot see the role in the
+ * property validators. Omit it (or send null) to use the global rate.
+ */
+export class CreateMemberDto {
+  @Transform(trim) @IsString() @Length(1, 100) @Matches(/\S/) nombre!: string;
+  @Transform(trim)
+  @IsString()
+  @Length(1, 100)
+  @Matches(/\S/)
+  apellidos!: string;
+  // `@IsEmail()` already rejects an address over 254 characters and anything
+  // that is not a single plain address ("Ana <a@b.c>", "a@b.c, d@e.f").
+  @Transform(trim) @IsEmail() correo!: string;
+  @IsIn(MEMBER_ROLES) role!: MemberRoleName;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'Individual commission percentage in basis points (1000 = 10.00%). ' +
+      'Only for a colaborador; omit it or send null to use the global rate. ' +
+      'Rejected (400) when role is socio.',
+  })
+  @ValidateIf(
+    (o: CreateMemberDto) =>
+      o.commissionRateBps !== undefined && o.commissionRateBps !== null,
+  )
+  @IsInt()
+  @Min(0)
+  @Max(MAX_COMMISSION_RATE_BPS)
+  commissionRateBps?: number | null;
+}
 
 /**
  * Both fields optional/independent: a socio may want to rename a

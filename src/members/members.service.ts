@@ -1,17 +1,68 @@
 import {
+  BadGatewayException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
-import type { MemberListDto, PatchMemberDto } from './dto/member.dto.js';
+import type {
+  CreateMemberDto,
+  MemberListDto,
+  PatchMemberDto,
+} from './dto/member.dto.js';
 import { isRequestingSocio } from '../auth/socio-check.util.js';
+import {
+  isAccountUsernameConflict,
+  isTransactionExpired,
+} from '../business-registration/approve-failures.js';
+import {
+  deriveUniqueUsername,
+  generateTemporaryPassword,
+  normalizeSocioEmail,
+} from '../business-registration/initial-credentials.js';
+import { fullName } from '../common/full-name.js';
+import { hashPassword } from '../common/password.js';
+import { createServerId } from '../common/server-id.js';
+import { EmailService } from '../email/email.service.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
+
+/**
+ * The create transaction sends the credentials email from INSIDE it, so its
+ * timeout must stay well above the email's total deadline
+ * (`CREDENTIALS_EMAIL_TIMEOUT_MS`, 10 s): the email then fails first, in a
+ * controlled way (rollback and 502), instead of the transaction expiring under
+ * a pending call. A unit test pins the relation, as for the business approval.
+ */
+export const MEMBER_CREATE_TRANSACTION_OPTIONS = {
+  maxWait: 5_000,
+  timeout: 15_000,
+};
+
+/** How many times `create` re-derives a username lost to a racing insert. */
+const USERNAME_RACE_ATTEMPTS = 3;
+
+/** What `POST /members` answers; never the password or its hash. */
+export interface CreatedMember {
+  id: string;
+  name: string;
+  role: 'socio' | 'colaborador';
+  active: boolean;
+  commissionRateBps: number | null;
+  createdByMemberId: string | null;
+  username: string;
+  /**
+   * Where the credentials email went: the new person's own address, or the
+   * approver as a backup because Resend test mode refused it.
+   */
+  credentialsEmail: 'member' | 'approver-fallback';
+}
 
 /**
  * `list` is read-only, available to any authenticated account regardless
@@ -31,7 +82,12 @@ type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
  */
 @Injectable()
 export class MembersService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(MembersService.name);
+
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(EmailService) private readonly email: EmailService,
+  ) {}
 
   /**
    * Re-validates the actor inside the transaction rather than trusting
@@ -39,6 +95,8 @@ export class MembersService {
    * ProductsService/SalesService/DeudasService.authorize), so a device
    * deauthorized or a member demoted/deactivated between the guard
    * running and the transaction committing is still honored.
+   *
+   * Returns the acting socio's Member row.
    *
    * @throws ForbiddenException when there is no selection, or the
    * account, member (must be `active` and `role: 'socio'`) or device do
@@ -69,7 +127,147 @@ export class MembersService {
       },
     });
     if (!account || !member || !device) throw new ForbiddenException();
-    return member.id;
+    return member;
+  }
+
+  /**
+   * Adds a person to the actor's business (`POST /members`): the Member and
+   * its own login (an Account bound to it through `Account.memberId`, so that
+   * login can only ever act as this Member) are created in ONE transaction,
+   * and the credentials (username + a random temporary password) are emailed
+   * to `dto.correo` as its LAST step. If the email cannot be sent nothing is
+   * persisted and the answer is 502. The correo is used only for that email;
+   * it is not stored.
+   *
+   * The username comes from {@link deriveUniqueUsername} (the normalized
+   * correo when free, otherwise a random-suffix fallback). Two requests racing
+   * for the same username end in a unique violation on `Account.username`,
+   * which rolls the transaction back; it is retried a bounded number of times
+   * (a fresh derivation each time) and then answered as 409.
+   *
+   * @throws BadRequestException when a commission rate is sent for a socio.
+   * @throws ForbiddenException when the actor is not an active socio.
+   * @throws ConflictException when the username race is lost every attempt.
+   * @throws BadGatewayException when the email fails or the transaction
+   * expires (everything rolled back, safe to retry).
+   */
+  async create(actor: Actor, dto: CreateMemberDto): Promise<CreatedMember> {
+    if (dto.role === 'socio' && dto.commissionRateBps !== undefined)
+      throw new BadRequestException(
+        'commissionRateBps does not apply to a socio',
+      );
+    // `@IsEmail()` is more permissive than the recipient pattern the rest of
+    // the system uses; refuse what the credentials email could not go to.
+    const correo = normalizeSocioEmail(dto.correo);
+    if (!correo)
+      throw new BadRequestException(
+        'Escribe un correo válido, por ejemplo nombre@dominio.com',
+      );
+
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.prisma.$transaction(
+          (tx) => this.createInTransaction(tx, actor, dto, correo),
+          MEMBER_CREATE_TRANSACTION_OPTIONS,
+        );
+      } catch (error) {
+        if (isAccountUsernameConflict(error)) {
+          if (attempt < USERNAME_RACE_ATTEMPTS) continue;
+          this.logger.error(
+            `Could not reserve a username for a new member after ${attempt} attempts`,
+          );
+          throw new ConflictException(
+            'No se pudo asignar un usuario a la persona nueva. Inténtalo de nuevo.',
+          );
+        }
+        if (isTransactionExpired(error)) {
+          this.logger.error('Member creation transaction expired; rolled back');
+          throw new BadGatewayException(
+            'No se pudo agregar a la persona a tiempo. No se creó nada: inténtalo de nuevo.',
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async createInTransaction(
+    tx: Prisma.TransactionClient,
+    actor: Actor,
+    dto: CreateMemberDto,
+    correo: string,
+  ): Promise<CreatedMember> {
+    const socio = await this.authorize(tx, actor);
+    const contextId = actor.account.contextId;
+    const name = fullName(dto.nombre, dto.apellidos);
+
+    const username = await deriveUniqueUsername(
+      { correo, nombreNegocio: name },
+      async (candidate) =>
+        (await tx.account.findUnique({
+          where: { username: candidate },
+          select: { id: true },
+        })) !== null,
+    );
+    const temporaryPassword = generateTemporaryPassword();
+
+    const member = await tx.member.create({
+      data: {
+        id: createServerId(),
+        name,
+        role: dto.role,
+        contextId,
+        active: true,
+        commissionRateBps: dto.commissionRateBps ?? null,
+        createdByMemberId: socio.id,
+      },
+    });
+    // Same context as the Member; `memberId` binds this login to it.
+    await tx.account.create({
+      data: {
+        id: createServerId(),
+        username,
+        passwordHash: await hashPassword(temporaryPassword),
+        contextId,
+        memberId: member.id,
+        active: true,
+      },
+    });
+
+    let delivery: Awaited<
+      ReturnType<EmailService['sendMemberCredentialsEmail']>
+    >;
+    try {
+      delivery = await this.email.sendMemberCredentialsEmail({
+        to: correo,
+        memberName: name,
+        username,
+        temporaryPassword,
+        role: dto.role,
+        addedByName: socio.name,
+      });
+    } catch (cause) {
+      // Resend's error text never carries the password (pinned by the email
+      // service tests); only the reason is logged, never the credentials.
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(
+        `Credentials email for a new member failed; creation rolled back: ${reason}`,
+      );
+      throw new BadGatewayException(
+        'No se pudo enviar el correo con las credenciales. No se creó a la persona: inténtalo de nuevo.',
+      );
+    }
+
+    return {
+      id: member.id,
+      name: member.name,
+      role: member.role,
+      active: member.active,
+      commissionRateBps: member.commissionRateBps,
+      createdByMemberId: member.createdByMemberId,
+      username,
+      credentialsEmail: delivery.deliveredTo,
+    };
   }
 
   /**
