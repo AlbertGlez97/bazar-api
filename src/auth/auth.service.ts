@@ -62,6 +62,38 @@ export class AuthService {
   }
 
   /**
+   * Who is logged in, as far as the frontend needs to know: the username and
+   * the Member this login is bound to (BE-12), if any. A bound login can only
+   * ever act as that Member (see {@link ContextGuard}), so the frontend must
+   * not offer it the person selector; the shared business login (`memberId`
+   * null) keeps picking its person.
+   *
+   * Exposes exactly `username`, `memberId` and `member` (`id`, `name`, `role`,
+   * `active`): never the context, the account id or any credential. The
+   * Member is read through the tenant-scoped Prisma client (`AuthGuard` already
+   * set the account's context), so an account that points at a Member of
+   * another business gets `member: null` and nothing about that Member leaks.
+   * A deactivated bound Member is reported with `active: false` so the client
+   * can explain why the login cannot be used, instead of hiding the binding.
+   *
+   * @throws UnauthorizedException when the account is missing or inactive.
+   */
+  async me(accountId: string) {
+    const account = await this.prisma.account.findFirst({
+      where: { id: accountId, active: true },
+      select: { username: true, memberId: true },
+    });
+    if (!account) throw new UnauthorizedException();
+    const member = account.memberId
+      ? await this.prisma.member.findFirst({
+          where: { id: account.memberId },
+          select: { id: true, name: true, role: true, active: true },
+        })
+      : null;
+    return { username: account.username, memberId: account.memberId, member };
+  }
+
+  /**
    * Changes the password of the caller's own {@link Account}. The caller is
    * identified by the bearer token only (`AuthGuard`), so it works for a
    * socio, a colaborador and the shared business login alike, and right after

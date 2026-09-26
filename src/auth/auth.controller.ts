@@ -2,6 +2,7 @@ import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   Inject,
   Post,
@@ -39,6 +40,18 @@ export class AuthController {
     body: LoginDto,
   ) {
     return this.auth.login(body.username, body.password);
+  }
+
+  /**
+   * Which Member (if any) the logged-in account is bound to. Only `AuthGuard`
+   * runs: the frontend asks right after login, before it has chosen a device
+   * or a person, and skips the person selector for a bound login.
+   */
+  @Get('me')
+  @ApiExample('authMe')
+  @UseGuards(AuthGuard)
+  me(@Req() request: AuthenticatedRequest) {
+    return this.auth.me(request.account.id);
   }
 
   /**

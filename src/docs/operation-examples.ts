@@ -204,6 +204,22 @@ export const operations: Record<string, Operation> = {
     }),
     errors: [invalid, [401, 'Invalid credentials']],
   },
+  authMe: {
+    summary: 'Which member am I bound to?',
+    description:
+      'Only the bearer token is needed (no x-member-id or x-device-id): call it right after login. memberId and member are null for the shared business login, which chooses its person from GET /members; when memberId is not null the login is bound to that member and can ONLY act as it, so the client must skip the person selector. A deactivated bound member is reported with active false. Never returns the context, the account id or any credential.',
+    access: 'jwt',
+    responses: ok({
+      username: 'carlos@example.com',
+      memberId: e.ids.carlos,
+      member: {
+        id: e.ids.carlos,
+        name: 'Carlos',
+        role: 'colaborador',
+        active: true,
+      },
+    }),
+  },
   changePassword: {
     summary: 'Change my own password',
     description: `Any logged-in person (a socio, a colaborador or the shared business login) changes the password of their own account; only the bearer token is needed, no x-member-id or x-device-id. newPassword must have ${MIN_NEW_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.`,

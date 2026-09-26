@@ -6,6 +6,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - Base de código: rama `feat/backend-e0-be11-multitenancy`, commit `1b1e449` ("fix(api): address the two advisory findings of the prefix review"), árbol de trabajo limpio.
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
+- **Actualización de seguridad BE-12 (2026-09-25)**: nueva ruta [`GET /auth/me`](#ep-auth-me) (solo `AuthGuard`). Dice a qué persona está atada la cuenta autenticada (`memberId` y `member`, o `null` en la cuenta compartida). **La UI no debe mostrar el selector de persona cuando `memberId` no es `null`**: una cuenta atada solo puede actuar como esa persona y `ContextGuard` rechaza (403) cualquier otro `x-member-id`. Antes el login no exponía el vínculo y el selector dejaba a un colaborador elegir "socio" en la pantalla (las llamadas de datos ya daban 403).
 - Alcance: 39 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -125,7 +126,7 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Nivel | Endpoints |
 |---|---|
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
-| Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
+| Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
 | `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
 
@@ -306,7 +307,7 @@ Los servicios devuelven el registro de Prisma tal cual, sin capa de DTO de respu
 <a id="mod-auth"></a>
 ## 2. Auth
 
-Dos endpoints: el login de la **cuenta** (público) y el cambio de la contraseña propia (con sesión). Una cuenta puede ser **compartida** por la tablet del negocio (la del socio fundador y las de antes de BE-12: cualquiera elige su nombre en el selector) o estar **atada a una persona** (las que crea `POST /members`: solo pueden actuar como esa persona, ver [1.3](#f-auth)). El login solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas se crean fuera de banda o por otros endpoints: el seed en el negocio de desarrollo, la **aprobación** de una solicitud de registro (la cuenta del socio fundador llega por correo con una contraseña temporal, ver [Business Registration](#mod-business-registration)) y, desde BE-12, un socio con [`POST /members`](#ep-members-create); **no existe endpoint de registro libre de cuentas**. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el login responde exactamente igual (no revela si el usuario existe).
+Tres endpoints: el login de la **cuenta** (público), `GET /auth/me` (a qué persona está atada la cuenta) y el cambio de la contraseña propia (con sesión). Una cuenta puede ser **compartida** por la tablet del negocio (la del socio fundador y las de antes de BE-12: cualquiera elige su nombre en el selector) o estar **atada a una persona** (las que crea `POST /members`: solo pueden actuar como esa persona, ver [1.3](#f-auth)). El login solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas se crean fuera de banda o por otros endpoints: el seed en el negocio de desarrollo, la **aprobación** de una solicitud de registro (la cuenta del socio fundador llega por correo con una contraseña temporal, ver [Business Registration](#mod-business-registration)) y, desde BE-12, un socio con [`POST /members`](#ep-members-create); **no existe endpoint de registro libre de cuentas**. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el login responde exactamente igual (no revela si el usuario existe).
 
 <a id="ep-auth-login"></a>
 ### `POST /api/v1/auth/login`
@@ -350,6 +351,47 @@ Dos endpoints: el login de la **cuenta** (público) y el cambio de la contraseñ
 ```
 
 Fuente: `src/auth/auth.controller.ts:14-38` (DTO `LoginDto` L14-17, `@HttpCode(200)` L25), `src/auth/auth.service.ts:40-58`, `src/auth/jwt.constants.ts:7`, `test/auth.e2e-spec.ts:150-186`.
+
+<a id="ep-auth-me"></a>
+### `GET /api/v1/auth/me`
+
+Dice **quién** inició sesión y a **qué persona está atada** la cuenta. Se llama justo después del login, antes de elegir dispositivo o persona, por eso solo pide el token (no `x-member-id` ni `x-device-id`; si se mandan se ignoran).
+
+| | |
+|---|---|
+| Audiencia | Cuenta autenticada (solo `AuthGuard`) |
+| Headers | `Authorization`. `x-member-id`/`x-device-id` **no** requeridos |
+| Éxito | **200** |
+
+**Respuesta 200** (exactamente estas claves; nunca el contexto, el id de la cuenta ni ninguna credencial):
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `username` | string | el usuario con el que se inició sesión |
+| `memberId` | string (uuid) \| `null` | la persona a la que está atada la cuenta; `null` en la **cuenta compartida** del negocio |
+| `member` | objeto \| `null` | `{ id, name, role: "socio" \| "colaborador", active }` de esa persona; `null` si la cuenta no está atada |
+
+**Qué debe hacer la UI**: si `memberId` **no** es `null`, **no mostrar el selector de persona**: guardar ese `member` como la persona activa y seguir (a identificar el dispositivo si hace falta, o directo a la app si ya está identificado). Una cuenta atada **solo puede actuar como esa persona**; cualquier otro `x-member-id` recibe 403 (`"Selection is not authorized for this context"`), así que el selector nunca puede ofrecerle a otra. El selector es solo para la cuenta compartida (`memberId: null`). Si `member.active` es `false` la persona fue desactivada: explicarlo y no dejar operar (el backend ya la rechaza).
+
+**Errores**
+
+| HTTP | Situación | `message` |
+|---|---|---|
+| 401 | Sin token, token inválido/caducado o cuenta desactivada | `"Unauthorized"` |
+
+**Ejemplos**
+
+```json
+{ "username": "carlos@example.com", "memberId": "0d6f3a52-2b7e-4b0e-8f7a-5f3a9b1c2d4e", "member": { "id": "0d6f3a52-2b7e-4b0e-8f7a-5f3a9b1c2d4e", "name": "Carlos", "role": "colaborador", "active": true } }
+```
+
+Cuenta compartida:
+
+```json
+{ "username": "alberto", "memberId": null, "member": null }
+```
+
+Fuente: `src/auth/auth.controller.ts` (`me`, `AuthGuard`), `src/auth/auth.service.ts` (`me`), `test/auth-me.e2e-spec.ts`, `test/impersonation-matrix.e2e-spec.ts`.
 
 <a id="ep-auth-change-password"></a>
 ### `POST /api/v1/auth/change-password`
@@ -878,6 +920,7 @@ Lo que el frontend debe cambiar para operar con dispositivos activados con el fl
 5. **Un dispositivo revocado o reemitido recibe 403 en todo** (`"Selection is not authorized for this context"`) y hoy **no hay una ruta de recuperación implementada**: habría que limpiar la identificación guardada y volver a la pantalla de identificar. Ojo: ese mismo 403 también aparece por otras causas (p. ej. un colaborador en una ruta de socio), así que no basta un manejador global de 403.
 6. **Mostrar el código una sola vez** al socio que registra o reemite un dispositivo (o decir que se envió por correo) y avisar que dejará de servir al activarse.
 7. **Contraseña propia**: usar `POST /auth/change-password` y tratar su 403 como error del campo, **no** como sesión caducada (ver [2](#ep-auth-change-password)).
+8. **Saltar el selector de persona para una cuenta atada**: tras el login llamar a [`GET /auth/me`](#ep-auth-me); si `memberId` no es `null`, usar ese `member` como persona activa y **no mostrar el selector** (una cuenta atada solo puede actuar como esa persona; el selector solo es para la cuenta compartida, `memberId: null`).
 8. **Personas nuevas** (`POST /members`): mostrar `username` y decir adónde fueron las credenciales según `credentialsEmail`; nunca esperar ni mostrar una contraseña.
 
 ---
@@ -2195,12 +2238,13 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 <a id="apendice-a-indice-de-rutas"></a>
 ## Apéndice A: índice de rutas
 
-39 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
+40 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
 
 | Método | Ruta | Audiencia | Sección |
 |---|---|---|---|
 | `GET` | `/api/v1` | Pública | [Hello World](#f-montajes) |
 | `POST` | `/api/v1/auth/login` | Pública | [Auth](#ep-auth-login) |
+| `GET` | `/api/v1/auth/me` | Cuenta | [Auth](#ep-auth-me) |
 | `POST` | `/api/v1/auth/change-password` | Cuenta | [Auth](#ep-auth-change-password) |
 | `GET` | `/api/v1/members` | Cuenta | [Members](#ep-members-list) |
 | `POST` | `/api/v1/members` | Socio | [Members](#ep-members-create) |
