@@ -12,7 +12,12 @@ import { setActiveContextId } from '../database/tenant-context.js';
 import { isUUID } from 'class-validator';
 
 export interface AuthenticatedRequest extends Request {
-  account: { id: string; contextId: string };
+  /**
+   * `memberId` is the Member this login is bound to (BE-12), or `null` for
+   * the shared business login every business has today, which may act as any
+   * Member of its context. See {@link ContextGuard}.
+   */
+  account: { id: string; contextId: string; memberId: string | null };
   selection?: { memberId: string; deviceId: string };
 }
 
@@ -68,7 +73,7 @@ export class AuthGuard implements CanActivate {
     }
     const account = await this.prisma.account.findFirst({
       where: { id: subject, active: true },
-      select: { id: true, contextId: true },
+      select: { id: true, contextId: true, memberId: true },
     });
     if (!account) throw new UnauthorizedException();
     request.account = account;

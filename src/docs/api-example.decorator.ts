@@ -80,6 +80,13 @@ export function ApiExample(name: OperationName) {
         description:
           'Authorized same-context deviceId returned by POST /devices/identify.',
       }),
+      ApiHeader({
+        name: 'x-device-token',
+        required: false,
+        schema: { type: 'string' },
+        description:
+          'Required only for a device activated through the one-time activation flow, which receives this secret once; ignored for a legacy device.',
+      }),
     );
   }
   if (operation.id)

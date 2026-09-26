@@ -68,8 +68,10 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
  * from a visitor's browser.
  *
  * Only the headers the API actually reads are allowed (`Authorization`,
- * `Content-Type`, `x-member-id`, `x-device-id`). Credentials/cookies are not
- * used (the session travels in `Authorization`), so they stay off.
+ * `Content-Type`, `x-member-id`, `x-device-id` and, BE-12, `x-device-token`,
+ * the secret a device activated through the one-time flow presents on every
+ * request). Credentials/cookies are not used (the session travels in
+ * `Authorization`), so they stay off.
  *
  * @throws Error at startup if an entry contains `*`, is not a valid http(s)
  * URL, or is not an exact origin (path, upper-case letters, explicit default
@@ -89,6 +91,7 @@ export function configureCors(app: NestExpressApplication): void {
       'Content-Type',
       'x-member-id',
       'x-device-id',
+      'x-device-token',
     ],
     credentials: false,
     maxAge: 600,

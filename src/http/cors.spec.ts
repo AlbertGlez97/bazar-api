@@ -17,7 +17,8 @@ class PingController {
   }
 }
 
-const PREFLIGHT_HEADERS = 'authorization,content-type,x-member-id,x-device-id';
+const PREFLIGHT_HEADERS =
+  'authorization,content-type,x-member-id,x-device-id,x-device-token';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -82,7 +83,7 @@ describe('configureCors', () => {
     });
   });
 
-  it('answers the preflight of an allowed origin with 204 and the four API headers', async () => {
+  it('answers the preflight of an allowed origin with 204 and the five API headers', async () => {
     app = await createApp('https://site.netlify.app');
     const res = await preflight(app, 'https://site.netlify.app');
     expect(res.status).toBe(204);
@@ -99,6 +100,7 @@ describe('configureCors', () => {
         'content-type',
         'x-member-id',
         'x-device-id',
+        'x-device-token',
       ]),
     );
     expect(String(res.headers['access-control-allow-methods'])).toContain(

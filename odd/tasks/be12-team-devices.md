@@ -44,7 +44,7 @@ Route per task: delegated direct writer (one writer at a time). Trigger evidence
 
 - [x] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
 - [x] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
-- [ ] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
+- [x] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
 - [ ] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
 - [ ] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
 - [ ] **T6 Change password.** `POST /auth/change-password`.
@@ -67,6 +67,11 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
 - **T2 (this commit).** `src/common/password.ts` (`hashPassword`, `verifyPassword`) is now the single place that picks Argon2id and its parameters (library defaults, unchanged); `auth.service.ts`, `prisma/seed-data.ts` and `business-registration.service.ts` use it. `src/common/device-secret.ts` (`generateDeviceToken`, `hashDeviceToken`, `verifyDeviceToken`) is self-contained: 32 random bytes in base64url, sha256 hex, constant-time compare that never throws.
   - Deliberate behavior: `argon2.verify` throws a `TypeError` on a malformed hash (`garbage`, empty, truncated). `verifyPassword` returns `false` instead, so a corrupt stored hash fails closed as a 401 rather than a 500. Hashing parameters and the login timing behavior (always verify, dummy hash for an unknown user) are unchanged.
   - RED -> GREEN: the two new specs failed on the missing modules, then 29/29 passed. `generateTemporaryPassword` stays in `initial-credentials.ts`.
+- **T3 (this commit).** `AuthGuard` now loads `Account.memberId` onto `request.account`. `ContextGuard` refuses (same generic 403, `Selection is not authorized for this context`) when the login is bound to a Member and `x-member-id` is a different one, and when the selected device has a `tokenHash` but the request carries no matching single `x-device-token` (checked with `verifyDeviceToken`). A device with no `tokenHash` is LEGACY and keeps working with `x-device-id` alone; the shared login (no bound Member) keeps choosing any Member of its context. `x-device-token` is allowed by CORS and described in the Swagger header docs.
+  - Every reader of `x-member-id` was checked. Covered: `ContextGuard` (the binding); `isRequestingSocio` in `src/auth/socio-check.util.ts`, which now takes the account's bound Member and refuses any other candidate, and its two callers `MembersService.list` (`GET /members?includeInactive=true`) and `ProductsService.list` (`GET /products?includeInactive=true`), fed from their controllers with `request.account.memberId`. Left as they are on purpose, because they only run after `ContextGuard` and read `request.selection.memberId`, which is already bound: `SocioGuard`, and the members, products, sales and deudas services (`sales.service.ts` also compares the body `memberId` against that selection).
+  - The four services that re-check the device inside their transactions (members, products, sales, deudas) still require `authorized: true`; no token logic was added there, the guard owns it.
+  - A repeated `x-device-token` header reaches Node as one comma-joined string, never as an array, so it simply fails the hash comparison (403). The test pins it.
+  - RED -> GREEN: `test/context-guard-binding.e2e-spec.ts` 10 failed / 9 passed before the guard change (the 9 are positive controls: legacy device, shared login, right token), 19/19 after; `src/http/cors.spec.ts` 1 failed before, 32/32 after.
 
 ## Review notes
 
@@ -82,4 +87,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T3 (ContextGuard).
+T4 (device management).

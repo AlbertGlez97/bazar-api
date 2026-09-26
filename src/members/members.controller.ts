@@ -67,6 +67,7 @@ export class MembersController {
       request.account.contextId,
       query,
       requestingMemberId,
+      request.account.memberId,
     );
   }
 

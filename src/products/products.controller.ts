@@ -80,7 +80,12 @@ export class ProductsController {
     @Query(validate(ProductListDto)) query: ProductListDto,
     @Headers('x-member-id') requestingMemberId?: string,
   ) {
-    return this.products.list(req.account.contextId, query, requestingMemberId);
+    return this.products.list(
+      req.account.contextId,
+      query,
+      requestingMemberId,
+      req.account.memberId,
+    );
   }
   @Get(':id')
   @ApiOperation({

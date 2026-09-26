@@ -15,8 +15,16 @@ import type { PrismaService } from '../database/prisma.service.js';
  * device, so requiring a full device selection for it would be
  * disproportionate.
  *
+ * BE-12: when the login is bound to a Member (`accountMemberId` not null) it
+ * may only act as that Member, exactly as {@link ContextGuard} enforces. A
+ * candidate that differs from the bound Member is not honored, so a
+ * colaborador's own login cannot name a socio's id to list inactive rows.
+ * The shared business login (`accountMemberId` null or omitted) keeps
+ * choosing any Member of its context.
+ *
  * @returns `false` (never throws) for a missing, malformed, foreign-
- * context, non-socio or deactivated candidate — the caller is expected to
+ * context, non-socio or deactivated candidate, or one that differs from the
+ * account's bound Member — the caller is expected to
  * silently fall back to the safe default rather than surface an error for
  * what is usually just a stale or accidental query parameter, not a
  * malicious request.
@@ -25,8 +33,10 @@ export async function isRequestingSocio(
   prisma: PrismaService,
   contextId: string,
   candidateMemberId: string | undefined,
+  accountMemberId?: string | null,
 ): Promise<boolean> {
   if (!candidateMemberId || !isUUID(candidateMemberId)) return false;
+  if (accountMemberId && accountMemberId !== candidateMemberId) return false;
   const member = await prisma.member.findFirst({
     where: {
       id: candidateMemberId,

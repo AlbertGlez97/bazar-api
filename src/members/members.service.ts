@@ -90,10 +90,16 @@ export class MembersService {
     contextId: string,
     query: MemberListDto,
     requestingMemberId?: string,
+    accountMemberId?: string | null,
   ) {
     const includeInactive =
       query.includeInactive &&
-      (await isRequestingSocio(this.prisma, contextId, requestingMemberId));
+      (await isRequestingSocio(
+        this.prisma,
+        contextId,
+        requestingMemberId,
+        accountMemberId,
+      ));
     return this.prisma.member.findMany({
       where: {
         contextId,

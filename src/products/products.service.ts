@@ -243,10 +243,16 @@ export class ProductsService {
     contextId: string,
     query: ProductListDto,
     requestingMemberId?: string,
+    accountMemberId?: string | null,
   ) {
     const includeInactive =
       query.includeInactive &&
-      (await isRequestingSocio(this.prisma, contextId, requestingMemberId));
+      (await isRequestingSocio(
+        this.prisma,
+        contextId,
+        requestingMemberId,
+        accountMemberId,
+      ));
     const where = {
       contextId,
       ...(includeInactive ? {} : { active: true }),
