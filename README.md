@@ -1,4 +1,4 @@
-﻿# Bazar API — BE-02 through BE-11
+﻿# Bazar API — BE-02 through BE-12
 
 NestJS 12 / PostgreSQL 16 backend for shared-device bazaar-style point-of-sale
 businesses: products, cash sales, incident review, commission calculations,
@@ -42,7 +42,7 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
    the first migration and whenever the password changes). The app refuses to
    start on a superuser or BYPASSRLS connection.
 
-   The committed migrations cover BE-02–BE-11. Do not reset a database to resolve
+   The committed migrations cover BE-02–BE-12. Do not reset a database to resolve
    drift; inspect the migration history and back up its data first.
 
 3. Set `SEED_CONTEXT_ID`, `SEED_USERNAME`, and a `SEED_PASSWORD` of at least
@@ -58,7 +58,9 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
    identities: repeating it does not duplicate rows, reset passwords, or
    reauthorize revoked devices. It fails closed on missing credentials or
    conflicting context ownership. This is one installation, not a tenant
-   provisioning API. Colaborador creation has no public endpoint yet.
+   provisioning API. The seeded devices are *legacy* devices (they work with
+   `x-device-id` alone, see below). More socios and colaboradores are added by a
+   socio with `POST /members` (BE-12), and more devices with `POST /devices`.
 
 For compiled execution: `npm run build`, then `npm run start:prod`.
 The API base URL is `http://localhost:3000/api/v1`. All controller paths below
@@ -134,21 +136,34 @@ rules from BE-05 onward. Verification evidence and known gaps are recorded in
 
 `POST /auth/login` accepts `username` and `password`, verifies Argon2id hashes,
 and returns a JWT. Protected routes require `Authorization: Bearer <token>`.
+`POST /auth/change-password` lets any logged-in person change their own
+password (BE-12; a wrong current password is a 403, not a 401).
 `GET /members` lists same-context socios and colaboradores.
-`POST /devices/identify` accepts a known device identifier/name and rejects
-unknown, unauthorized, or cross-context devices.
+`POST /devices/identify` takes a device identifier and its exact name and
+rejects unknown or cross-context devices (403). A device a socio registered
+with `POST /devices` is activated once with its one-time identifier and answers
+`{ deviceId, deviceToken }` (the token is shown only then); an identifier that
+was already used, or a revoked device, answers 409. A *legacy* device (created
+before BE-12, including the initial device of an approved business) still
+answers `{ deviceId }` with no token.
 
 Context-protected operations additionally require `x-member-id` and
-`x-device-id` UUID headers. The account, selected member, and authorized device
-must belong to the same context. Socio-only operations check the stored role.
-**This is shared-tablet selection, not personal authentication**: a logged-in
-account can select a same-context socio without a PIN. Do not present this as
-proof of the individual operator's identity.
+`x-device-id` UUID headers, plus `x-device-token` for a device activated
+through the one-time flow (a legacy device sends none). The account, selected
+member, and authorized device must belong to the same context. Socio-only
+operations check the stored role.
+**The shared business login is shared-tablet selection, not personal
+authentication**: a logged-in shared account can select a same-context socio
+without a PIN. Do not present this as proof of the individual operator's
+identity. Accounts created by `POST /members` (BE-12) are the exception: each is
+bound to its own member and can only act as that person.
 
 ## Modules and routes
 
 | Module      | Routes and permissions                                                                                                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Team        | Selected socio: `POST /members` (adds a socio or colaborador with their own login, credentials by email). JWT: `POST /auth/change-password`.   |
+| Devices     | Selected socio: `POST /devices`, `GET /devices`, `PATCH /devices/:id/revoke`, `PATCH /devices/:id/reissue`. JWT: `POST /devices/identify`.     |
 | Products    | JWT: `GET /products`, `GET /products/:id/audit`. Selected socio: `POST /products`, `PATCH /products/:id`, `POST /products/:id/image`. |
 | Sales       | Selected member/device: `POST /sales`. JWT: `GET /sales/:id`. Selected socio: `GET /sales`.                                           |
 | Incidents   | Selected socio: `GET /incidencias`, `GET /incidencias/:id`, `PATCH /incidencias/:id/resolver`.                                        |

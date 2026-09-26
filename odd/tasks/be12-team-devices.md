@@ -48,7 +48,7 @@ Route per task: delegated direct writer (one writer at a time). Trigger evidence
 - [x] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
 - [x] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
 - [x] **T6 Change password.** `POST /auth/change-password`.
-- [ ] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file.
+- [x] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file. (bazar-api part done; the frontend copy of `api-contract-for-frontend.md` is synced from this one by the parent.)
 
 ## Acceptance
 
@@ -102,6 +102,12 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - RED -> GREEN: the DTO spec failed on the missing module, 8 service tests failed on the missing method and the new e2e file was fully red before the implementation; after it `src/auth/dto/change-password.dto.spec.ts` + `src/auth/auth.service.spec.ts` 33/33 and `test/change-password.e2e-spec.ts` 27/27. (One e2e fixture bug found on the way: `Account.memberId` is UNIQUE, so every bound test account needs its own Member.)
   - Full suite after T6: unit 24 files / 349 tests; e2e 23 files / 301 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
   - Swagger: `changePassword` added to `src/docs/operation-examples.ts` (T7 writes the prose docs).
+- **T7 (commit `docs(be-12): document team and device management for the business and the frontend`).** Documentation only; every statement was checked against the code (`src/devices`, `src/members`, `src/auth`, `src/http/cors.ts`, `src/email`, `src/business-registration/business-registration.service.ts`) and the e2e specs (`test/devices.e2e-spec.ts`, `test/members-create.e2e-spec.ts`, `test/change-password.e2e-spec.ts`).
+  - `doc/reglas-de-negocio.md`: header to BE-12, new section "Gestión de equipo y dispositivos (BE-12)" (who adds people, the two roles and commission rule, temporary password and credentials email with the honest approver fallback, the login-to-member binding and why the shared login is left alone, own-password change with the 403-not-401 rule, the device lifecycle, legacy devices, known limitations), and the statements that became false fixed (devices "vía seed" only, "no login per Member", "no password-change flow", CORS headers, JWT justification).
+  - `doc/api-contract-for-frontend.md`: change log, §1.3 flow and guard tables (`x-device-token`, member binding, the shared generic 403), §1.10 CORS header, new `POST /auth/change-password` and `POST /members` sections, §4 rewritten (status table, identify's three outcomes with the exact 409 texts, `POST /devices`, `GET /devices`, revoke, reissue, the device shape, the frontend migration checklist 4.6), §11 initial device stays legacy, Appendix A (39 routes, counted), Appendix B (limitations and resolved items). New `Fuente:` lines point to files and functions, not line numbers.
+  - `README.md`: endpoint table and the authentication section. `src/docs/*` prose was already updated by T3-T6.
+  - Things deliberately NOT documented because they are not in the code: a way to resend credentials, password recovery, a session-revocation mechanism.
+  - Statement checks worth remembering: `POST /devices` and `reissue` answer `deliveredTo: 'recipient' | 'approver-fallback'` (device email) while `POST /members` answers `credentialsEmail: 'member' | 'approver-fallback'`; `commissionRateBps: null` for a socio is rejected too (the service tests `!== undefined`); a repeated `x-device-token` reaches Node as one comma-joined string and gets the same generic 403.
 
 ## Review notes
 
@@ -132,4 +138,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T7 (documentation in both repos).
+Sync the frontend copy of `doc/api-contract-for-frontend.md`, then the closing steps: migrate the dev database, restart the API, and decide what to push.

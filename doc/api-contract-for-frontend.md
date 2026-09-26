@@ -5,7 +5,8 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - Fecha del documento: 2026-09-24.
 - Base de código: rama `feat/backend-e0-be11-multitenancy`, commit `1b1e449` ("fix(api): address the two advisory findings of the prefix review"), árbol de trabajo limpio.
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
-- Alcance: 33 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
+- Alcance: 39 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
 - **Verificación en vivo (2026-09-24):** además de contrastar con el código, el comportamiento se ejecutó contra un servidor real (`npm run start:dev`, base de desarrollo, en un contexto temporal con cuenta, socio, colaborador y dispositivo propios, borrado después): autenticación y guards, paginación y sus límites, altas, ediciones y borrados lógicos, subida de imágenes, ventas (incluida una carrera real de stock que devolvió `201` con `rechazada_por_conflicto`), incidencias, comisiones, reportes, deudas y las páginas de business-registration. El resultado está en el [Apéndice B](#apendice-b-aclaraciones). No se envió un `POST /business-registration` válido para no disparar un correo real.
@@ -89,11 +90,12 @@ Fuente: `src/app.controller.ts:9-13`, `src/app.service.ts:5-7`, `src/docs/swagge
 
 1. `POST /api/v1/auth/login` con `{ username, password }` -> `{ accessToken, tokenType, expiresIn }`. Guardar el token.
 2. `GET /api/v1/members` (con `Authorization`) -> lista de personas; la persona que atiende se elige en un selector (sin PIN). Guardar el `id` elegido.
-3. `POST /api/v1/devices/identify` con `{ identifier, name }` (ambos deben coincidir exactamente con un dispositivo ya autorizado: el de un negocio nuevo lo crea la aprobación y su `identifier` llega por correo, ver [Business Registration](#mod-business-registration); los del negocio de desarrollo los siembra el seed) -> `{ deviceId }`. Guardar el `deviceId`.
+3. `POST /api/v1/devices/identify` con `{ identifier, name }` (ambos deben coincidir exactamente con un dispositivo del negocio; ver [4](#mod-devices) para los tres resultados posibles). Un dispositivo **nuevo** (lo registró un socio con `POST /devices`, `pendiente_activacion`) se **activa** y responde `{ deviceId, deviceToken }`: el `deviceToken` se muestra **una sola vez**, hay que guardarlo, y el `identifier` queda quemado (no se reutiliza). Un dispositivo **heredado** (el "Dispositivo principal" de la aprobación de un negocio, el seed, todo lo anterior a BE-12) responde `{ deviceId }` sin token, como siempre. Guardar el `deviceId` y, si llegó, el `deviceToken`.
 4. En **cada** petición protegida enviar:
    - `Authorization: Bearer <accessToken>`
    - `x-member-id: <id del member elegido>`
    - `x-device-id: <deviceId>`
+   - `x-device-token: <deviceToken>` **solo si el paso 3 devolvió un token** (un dispositivo heredado no lo envía; si lo envía, se ignora).
 
 Ejemplo de un paso 4 (construido a partir de los guards):
 
@@ -112,8 +114,8 @@ Content-Type: application/json
 | Guard | Qué comprueba | Cuándo rechaza | HTTP | `message` |
 |---|---|---|---|---|
 | `AuthGuard` | Header `Authorization: Bearer <jwt>` (el esquema `Bearer` no distingue mayúsculas); el JWT (HS256, `iss=bazar-api`, `aud=bazar-client`, sin expirar) y que `sub` sea un UUID; que la cuenta exista **y esté activa** (se relee de la base en cada petición). Fija además el `contextId` del negocio para la petición. | Header ausente o mal formado, token inválido/expirado/firmado por otro emisor o audiencia, `sub` no UUID, cuenta inexistente o desactivada. Todos los casos son indistinguibles. | **401** | `"Unauthorized"` (sin campo `error`) |
-| `ContextGuard` | Ejecuta primero `AuthGuard`. Luego exige `x-member-id` y `x-device-id` (cada uno un solo valor, UUID) y que el **Member** exista en el mismo `contextId` de la cuenta **y esté `active`**, y que el **Device** exista en ese `contextId` **y esté `authorized`**. | Headers ausentes, repetidos o que no sean UUID. | **403** | `"Valid member and device selection required"` |
-| | | Member/Device inexistente, de otro negocio, Member desactivado o Device no autorizado. | **403** | `"Selection is not authorized for this context"` |
+| `ContextGuard` | Ejecuta primero `AuthGuard`. Luego exige `x-member-id` y `x-device-id` (cada uno un solo valor, UUID) y que el **Member** exista en el mismo `contextId` de la cuenta **y esté `active`**, y que el **Device** exista en ese `contextId` **y esté `authorized`**. Desde BE-12 además: (a) si la cuenta está **atada a una persona** (`Account.memberId`, las cuentas que crea `POST /members`), `x-member-id` debe ser exactamente esa persona; (b) si el dispositivo tiene **token** (se activó con el flujo nuevo), la petición debe llevar el `x-device-token` que le corresponde. | Headers ausentes, repetidos o que no sean UUID. | **403** | `"Valid member and device selection required"` |
+| | | Member/Device inexistente, de otro negocio, Member desactivado o Device no autorizado (incluye `pendiente_activacion` y `revocado`); cuenta atada que nombra a otra persona; dispositivo con token sin `x-device-token`, con uno equivocado, con uno que pertenece a otro dispositivo o con el header repetido. **Todos comparten el mismo mensaje**: el cliente no puede saber cuál de las partes falló. | **403** | `"Selection is not authorized for this context"` |
 | `SocioGuard` | Ejecuta `ContextGuard` (y por tanto `AuthGuard`). Luego exige que el Member elegido tenga `role: "socio"` y esté activo. | El Member elegido es `colaborador`. | **403** | `"Only socios may access this resource"` |
 
 Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (rol). Los servicios de escritura vuelven a validar la selección dentro de la transacción; si el dispositivo se revoca o el Member se desactiva justo entre el guard y el commit, la respuesta es 403 con `message: "Forbidden"`.
@@ -123,9 +125,9 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Nivel | Endpoints |
 |---|---|
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
-| Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
+| Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
-| `SocioGuard` (token + member socio + device) | `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
+| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
 
 Matiz sobre los endpoints "solo `AuthGuard`": únicamente `GET /members` y `GET /products` leen `x-member-id` de forma **opcional** (para decidir si se respeta `includeInactive`, ver sus secciones); ninguno de los endpoints de este grupo exige ni lee `x-device-id`.
 
@@ -135,7 +137,7 @@ Respuesta de login: `{ "accessToken": "eyJ...", "tokenType": "Bearer", "expiresI
 
 - `expiresIn` está en **segundos**: 43200 = 12 horas (`12 * 60 * 60`). Es la vida real del JWT (`exp - iat = 43200`, lo verifica `test/auth.e2e-spec.ts:150-163`).
 - **No hay refresh token ni endpoint de logout.** Al expirar (o si la cuenta se desactiva o cambia de negocio) cualquier endpoint protegido responde 401 y hay que volver a hacer login. Cerrar sesión = descartar el token en el cliente.
-- El token solo lleva la cuenta (`sub`); **no** lleva member ni device. La desactivación de una cuenta o de un dispositivo surte efecto de inmediato aunque el token siga vigente.
+- El token solo lleva la cuenta (`sub`); **no** lleva member ni device. La desactivación de una cuenta o de un dispositivo surte efecto de inmediato aunque el token siga vigente. **Cambiar la contraseña no invalida los tokens ya emitidos**: siguen valiendo hasta que expiren (12 h); ver [B.4](#b-conocidos).
 - Diseño offline: el token de 12 h cubre una jornada completa; un dispositivo que hizo login por la mañana puede seguir encolando ventas.
 
 Fuente: `src/auth/auth.guard.ts:52-77`, `src/auth/context.guard.ts:47-77`, `src/auth/socio.guard.ts:32-46`, `src/auth/jwt.constants.ts:7`, `src/auth/auth.module.ts:20-45`, `src/auth/auth.service.ts:40-58`, `test/auth.e2e-spec.ts:150-333`.
@@ -281,8 +283,8 @@ Fuente: `src/common/server-id.ts:10-12`, `src/common/business-time.ts:19-100`, `
 Hechos verificados en el código (`src/http/cors.ts`, invocado desde `src/main.ts` justo después de `setGlobalPrefix`):
 
 - El backend habilita CORS **solo si** la variable `ALLOWED_ORIGIN` está definida: lista de orígenes exactos separados por coma, sin ruta ni barra final (por ejemplo `https://tu-sitio.netlify.app`). Un `*` se rechaza al arrancar. **Por defecto (vacía o ausente) no habilita CORS**: no envía ningún header `Access-Control-*` y no responde a preflight (`OPTIONS`). Verificado en vivo con ese valor por defecto: `OPTIONS /api/v1/auth/login` con `Origin: http://localhost:5173` y `Access-Control-Request-Method: POST` da `404 { "message": "Cannot OPTIONS /api/v1/auth/login", "error": "Not Found", "statusCode": 404 }` y ningún header `Access-Control-*`.
-- Con `ALLOWED_ORIGIN` definida, el preflight de un origen listado responde `204` con `Access-Control-Allow-Origin` igual a ese origen, métodos `GET, POST, PUT, PATCH, DELETE, OPTIONS`, headers permitidos `Authorization`, `Content-Type`, `x-member-id` y `x-device-id`, `Access-Control-Max-Age: 600` y sin credenciales (no se envía `Access-Control-Allow-Credentials`; la sesión viaja en `Authorization`). Un origen no listado no recibe `Access-Control-Allow-Origin` y el navegador lo bloquea. La API no envía headers de respuesta propios que el frontend deba leer, así que no hay `Access-Control-Expose-Headers`.
-- Por tanto, sin `ALLOWED_ORIGIN` una llamada desde el navegador a un origen distinto del de la API (por ejemplo `http://localhost:5173` -> `http://localhost:3000`) **queda bloqueada por el navegador**. Esto vale tanto para peticiones "simples" como para las que llevan `Authorization`, `x-member-id`, `x-device-id` o `Content-Type: application/json` (todas provocan preflight).
+- Con `ALLOWED_ORIGIN` definida, el preflight de un origen listado responde `204` con `Access-Control-Allow-Origin` igual a ese origen, métodos `GET, POST, PUT, PATCH, DELETE, OPTIONS`, headers permitidos `Authorization`, `Content-Type`, `x-member-id`, `x-device-id` y `x-device-token` (este último desde BE-12; sin él en la lista el preflight de un dispositivo con token quedaría bloqueado por el navegador), `Access-Control-Max-Age: 600` y sin credenciales (no se envía `Access-Control-Allow-Credentials`; la sesión viaja en `Authorization`). Un origen no listado no recibe `Access-Control-Allow-Origin` y el navegador lo bloquea. La API no envía headers de respuesta propios que el frontend deba leer, así que no hay `Access-Control-Expose-Headers`.
+- Por tanto, sin `ALLOWED_ORIGIN` una llamada desde el navegador a un origen distinto del de la API (por ejemplo `http://localhost:5173` -> `http://localhost:3000`) **queda bloqueada por el navegador**. Esto vale tanto para peticiones "simples" como para las que llevan `Authorization`, `x-member-id`, `x-device-id`, `x-device-token` o `Content-Type: application/json` (todas provocan preflight).
 - **Desarrollo**: usar el proxy de Vite. `bazar-frontend/vite.config.ts` ya proxea `/api` a `http://localhost:3000` (`changeOrigin: true`). Para que funcione, `VITE_API_URL` debe ser **relativa** (`/api/v1`); en `src/services/api.ts` el valor por defecto ya es `'/api/v1'`. Ojo: `bazar-frontend/.env.example` (2026-09-24) propone `VITE_API_URL=http://localhost:3000/api/v1`, un valor **absoluto** que saltaría el proxy y sería bloqueado por CORS; no lo copies tal cual a `.env`.
 - **Imágenes en desarrollo**: el proxy de Vite solo cubre `/api`, pero las imágenes de producto se sirven desde `/uploads/products/...` (fuera del prefijo). Hay que añadir también un proxy para `/uploads` en `vite.config.ts` (no está configurado hoy).
 - **Producción**: o se sirven frontend y API bajo el **mismo origen** (por ejemplo un reverse proxy que enruta `/api` y `/uploads` al backend y el resto a los estáticos del frontend), o se define `ALLOWED_ORIGIN` en el backend con el origen exacto del frontend (ver arriba). Las imágenes siguen siendo rutas relativas (`/uploads/products/...`): con otro origen el frontend debe anteponer el origen de la API (pendiente, ver `doc/reglas-de-negocio.md`).
@@ -304,7 +306,7 @@ Los servicios devuelven el registro de Prisma tal cual, sin capa de DTO de respu
 <a id="mod-auth"></a>
 ## 2. Auth
 
-Un único endpoint público: el login de la **cuenta** del negocio (una cuenta compartida por la tablet, no un login por persona). Solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas se crean fuera de banda: por el seed en el negocio de desarrollo y, para un negocio nuevo, al **aprobar** su solicitud de registro (la cuenta del socio fundador llega por correo con una contraseña temporal, ver [Business Registration](#mod-business-registration)); **no existe endpoint de registro de cuentas** ni de cambio de contraseña. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el backend responde exactamente igual (no revela si el usuario existe).
+Dos endpoints: el login de la **cuenta** (público) y el cambio de la contraseña propia (con sesión). Una cuenta puede ser **compartida** por la tablet del negocio (la del socio fundador y las de antes de BE-12: cualquiera elige su nombre en el selector) o estar **atada a una persona** (las que crea `POST /members`: solo pueden actuar como esa persona, ver [1.3](#f-auth)). El login solo emite el JWT; elegir quién atiende y desde qué dispositivo es un paso aparte (ver [1.3](#f-auth)). Las cuentas se crean fuera de banda o por otros endpoints: el seed en el negocio de desarrollo, la **aprobación** de una solicitud de registro (la cuenta del socio fundador llega por correo con una contraseña temporal, ver [Business Registration](#mod-business-registration)) y, desde BE-12, un socio con [`POST /members`](#ep-members-create); **no existe endpoint de registro libre de cuentas**. Ante credenciales inválidas, cuenta desactivada o usuario inexistente el login responde exactamente igual (no revela si el usuario existe).
 
 <a id="ep-auth-login"></a>
 ### `POST /api/v1/auth/login`
@@ -349,6 +351,58 @@ Un único endpoint público: el login de la **cuenta** del negocio (una cuenta c
 
 Fuente: `src/auth/auth.controller.ts:14-38` (DTO `LoginDto` L14-17, `@HttpCode(200)` L25), `src/auth/auth.service.ts:40-58`, `src/auth/jwt.constants.ts:7`, `test/auth.e2e-spec.ts:150-186`.
 
+<a id="ep-auth-change-password"></a>
+### `POST /api/v1/auth/change-password`
+
+Cambia la contraseña de **la cuenta del token**. Sirve a cualquier persona con sesión (socio, colaborador o la cuenta compartida) y **no** pide `x-member-id` ni `x-device-id`, así que se puede usar justo después del primer login con la contraseña temporal.
+
+| | |
+|---|---|
+| Audiencia | Cuenta autenticada (solo `AuthGuard`) |
+| Headers | `Authorization`, `Content-Type: application/json`. `x-member-id`/`x-device-id` **no** requeridos |
+| Éxito | **204**, sin cuerpo |
+
+**Body** (JSON, propiedades desconocidas = 400; la cuenta es siempre la del token, un `accountId` o `username` en el body es 400):
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `currentPassword` | string | requerido, 1..128 caracteres |
+| `newPassword` | string | requerido, 10..128 caracteres y **distinta** de `currentPassword` |
+
+Las contraseñas se usan **exactamente como se envían** (no se recortan espacios).
+
+**Errores**
+
+| HTTP | Situación | `message` |
+|---|---|---|
+| 400 | Falta un campo, no es string, longitud fuera de rango, `newPassword` igual a `currentPassword` o campo desconocido | array de validación (nunca incluye los valores de las contraseñas), p. ej. `["newPassword must differ from currentPassword"]` |
+| 401 | Token ausente/inválido/expirado, o cuenta desactivada | `"Unauthorized"` |
+| **403** | La contraseña actual **no es correcta** (o el hash guardado es inutilizable). No cambia nada | `"Current password is incorrect"` |
+| 409 | Otro cambio de contraseña de la misma cuenta ganó una carrera simultánea; reintenta con la contraseña vigente | `"The password was changed by another request; try again with the latest password"` |
+
+> **Por qué la contraseña incorrecta es 403 y no 401**: el frontend trata todo 401 como "sesión caducada" y cierra la sesión. Un simple error de dedo al escribir la contraseña actual no debe sacar a la persona: **muestra el error en el campo, no hagas logout**. En una carrera de dos cambios simultáneos, el que pierde recibe 409 (ambos verificaron la misma contraseña) o 403 (leyó la cuenta cuando el otro ya había escrito y su contraseña "actual" ya no coincide): en ambos casos reintenta con la contraseña vigente.
+
+> **Los tokens ya emitidos siguen valiendo** hasta que expiren (12 h) después de cambiar la contraseña, y no hay límite de intentos con contraseña actual incorrecta (ver [B.4](#b-conocidos)).
+
+**Ejemplo** (valores ficticios)
+
+```http
+POST /api/v1/auth/change-password HTTP/1.1
+Authorization: Bearer eyJ...
+Content-Type: application/json
+```
+```json
+{ "currentPassword": "REPLACE_WITH_YOUR_CURRENT_PASSWORD", "newPassword": "REPLACE_WITH_A_NEW_PASSWORD" }
+```
+```http
+HTTP/1.1 204 No Content
+```
+```json
+{ "message": "Current password is incorrect", "error": "Forbidden", "statusCode": 403 }
+```
+
+Fuente: `src/auth/auth.controller.ts` (`changePassword`, `@HttpCode(204)`, `AuthGuard`), `src/auth/auth.service.ts` (`changePassword`), `src/auth/dto/change-password.dto.ts`, `test/change-password.e2e-spec.ts`, `src/auth/auth.service.spec.ts`.
+
 ---
 
 <a id="mod-members"></a>
@@ -357,7 +411,7 @@ Fuente: `src/auth/auth.controller.ts:14-38` (DTO `LoginDto` L14-17, `@HttpCode(2
 Los Members son las personas del negocio: `socio` (administra todo) y `colaborador` (vende y consulta el catálogo). Reglas que importan al frontend:
 
 - Un Member pertenece a un solo negocio (`contextId`); nunca se ven Members de otro negocio.
-- **No hay endpoint para crear Members** (se siembran o nacen al aprobar un negocio nuevo). Solo se listan, se renombran, se ajusta su comisión y se (des)activan.
+- **Alta de personas (BE-12)**: un socio agrega socios y colaboradores con [`POST /members`](#ep-members-create); cada persona nueva recibe su propio login (una cuenta **atada** a ella) por correo. Los Members de antes de BE-12 (sembrados, o el socio fundador de un negocio aprobado) siguen usando la cuenta compartida del negocio. Después del alta se listan, se renombran, se ajusta su comisión y se (des)activan.
 - El selector de persona usa `GET /members` **antes** de tener member/device elegidos, por eso solo exige token.
 - **Borrado lógico**: `DELETE /members/:id` no borra, pone `active: false`. Un colaborador inactivo desaparece del listado por defecto y ya no puede ser elegido como quien atiende (`ContextGuard` lo rechaza con 403), pero su historial (ventas, comisiones, incidencias, deudas, abonos) queda intacto. Un **socio no se puede desactivar** (400). Se puede reactivar.
 - `includeInactive=true` solo se respeta cuando el request lleva `x-member-id` de un **socio activo del mismo negocio**; en cualquier otro caso se **ignora en silencio** (no da error).
@@ -415,6 +469,80 @@ Authorization: Bearer eyJ...
 ```
 
 Fuente: `src/members/members.controller.ts:58-71`, `src/members/members.service.ts:89-105`, `src/members/dto/member.dto.ts:48-65`, `src/auth/socio-check.util.ts:24-39`, `test/auth.e2e-spec.ts:212-224`, `test/soft-delete.e2e-spec.ts:512-560`.
+
+Desde BE-12, si la cuenta está **atada a una persona**, `includeInactive=true` solo se respeta cuando `x-member-id` es **esa misma persona** y es un socio activo (una cuenta atada no puede nombrar a otro socio para ver lo desactivado). El resto de la regla no cambia. Lo mismo vale para `GET /products?includeInactive=true`.
+
+<a id="ep-members-create"></a>
+### `POST /api/v1/members`
+
+Un socio agrega a una persona a **su propio negocio**. Crea, en **una sola transacción**, el Member y su **propio login** (una cuenta atada a ese Member) y envía por correo el usuario y una contraseña temporal aleatoria.
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` (+ `x-device-token` si el dispositivo lo tiene) |
+| Éxito | **201** |
+
+**Body** (JSON, propiedades desconocidas = **400**; el `id`, el `contextId`, el usuario y la contraseña los pone siempre el servidor):
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `nombre` | string | requerido, se recorta, 1..100 y con algún carácter no blanco |
+| `apellidos` | string | requerido, se recorta, 1..100 y con algún carácter no blanco |
+| `correo` | string | requerido, se recorta, dirección válida (`@IsEmail`) **y** aceptable para el envío (una sola dirección simple; p. ej. una con apóstrofo se rechaza). **Se usa solo para mandar las credenciales; no se guarda** |
+| `role` | `"socio"` \| `"colaborador"` | requerido |
+| `commissionRateBps` | integer \| null | opcional, solo para un colaborador: 0..10000 puntos base; omitido o `null` = usa la tasa global. **Para un socio se rechaza (400) cualquier valor, incluso `null`**: omite el campo |
+
+El nombre del Member queda como `nombre apellidos`. El **usuario** de la cuenta es el `correo` en minúsculas si mide 100 caracteres o menos y nadie lo usa; si no, `<nombre-en-minúsculas-sin-acentos>-<6 hex aleatorios>`. La **contraseña temporal** (24 caracteres aleatorios) solo viaja por correo: **nunca** se devuelve por la API. El alta queda registrada (`createdByMemberId` = el socio que la hizo).
+
+**Respuesta 201**:
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | string (UUID) | del Member nuevo |
+| `name` | string | `nombre apellidos` |
+| `role` | `"socio"` \| `"colaborador"` | |
+| `active` | boolean | siempre `true` al nacer |
+| `commissionRateBps` | integer \| null | |
+| `createdByMemberId` | string (UUID) | el socio que dio de alta |
+| `username` | string | el usuario con el que la persona inicia sesión (se puede mostrar; **la contraseña no**) |
+| `credentialsEmail` | `"member"` \| `"approver-fallback"` | adónde fueron las credenciales: `member` = al correo de la persona; `approver-fallback` = Resend (en modo de prueba) solo entrega al correo de su dueño, así que las **mismas credenciales se reenviaron al aprobador**, que debe hacérselas llegar. **Muéstralo con honestidad**: no digas "se envió a la persona" cuando es `approver-fallback` |
+
+**Errores**
+
+| HTTP | Situación | `message` |
+|---|---|---|
+| 400 | Campo faltante, tipo o longitud inválidos, `role` distinto de `socio`/`colaborador`, `commissionRateBps` fuera de 0..10000 o no entero, campo desconocido | array de validación |
+| 400 | `correo` que `@IsEmail` acepta pero el envío no | `"Escribe un correo válido, por ejemplo nombre@dominio.com"` |
+| 400 | `commissionRateBps` enviado para un `socio` | `"commissionRateBps does not apply to a socio"` |
+| 401 | Token ausente/inválido/expirado | `"Unauthorized"` |
+| 403 | Los del guard (ver [1.3](#f-auth)); un colaborador recibe | `"Only socios may access this resource"` |
+| 409 | Perdió la carrera por el nombre de usuario tras 3 intentos; reintenta | `"No se pudo asignar un usuario a la persona nueva. Inténtalo de nuevo."` |
+| 502 | El correo con las credenciales no se pudo enviar. **No se creó nada** (ni la persona ni su cuenta); reintenta | `"No se pudo enviar el correo con las credenciales. No se creó a la persona: inténtalo de nuevo."` |
+| 502 | La transacción se agotó. **No se creó nada**; reintenta | `"No se pudo agregar a la persona a tiempo. No se creó nada: inténtalo de nuevo."` |
+
+**Qué implica una cuenta atada**: la persona nueva inicia sesión con su `username` y la contraseña temporal (`POST /auth/login`), debería cambiarla de inmediato ([`POST /auth/change-password`](#ep-auth-change-password)), y **solo puede actuar como ella misma**: cualquier petición con el `x-member-id` de otra persona (un socio, por ejemplo) recibe 403 `"Selection is not authorized for this context"`. La cuenta compartida del negocio no cambia.
+
+**Ejemplo** (valores ficticios)
+
+```json
+{ "nombre": "Ana", "apellidos": "López", "correo": "ana@example.test", "role": "colaborador", "commissionRateBps": 500 }
+```
+
+```json
+{
+  "id": "10000000-0000-4000-8000-000000000009",
+  "name": "Ana López",
+  "role": "colaborador",
+  "active": true,
+  "commissionRateBps": 500,
+  "createdByMemberId": "bf030001-0000-4000-8000-000000000001",
+  "username": "ana@example.test",
+  "credentialsEmail": "member"
+}
+```
+
+Fuente: `src/members/members.controller.ts` (`create`, `SocioGuard`), `src/members/members.service.ts` (`create`, `createInTransaction`, `CreatedMember`), `src/members/dto/member.dto.ts` (`CreateMemberDto`), `src/business-registration/initial-credentials.ts` (`deriveUniqueUsername`), `src/email/email.service.ts` (`sendMemberCredentialsEmail`), `test/members-create.e2e-spec.ts`.
 
 <a id="ep-members-patch"></a>
 ### `PATCH /api/v1/members/:id`
@@ -531,11 +659,24 @@ Fuente: `src/members/members.controller.ts:123-134`, `src/members/members.servic
 <a id="mod-devices"></a>
 ## 4. Devices
 
-Los dispositivos son las tablets/teléfonos autorizados. **No se auto-registran**: existen previamente y deben estar `authorized`. Los crea el seed (negocio de desarrollo) o la aprobación de un negocio nuevo, que crea un dispositivo `"Dispositivo principal"` autorizado con un `identifier` aleatorio que se entrega en el correo de credenciales (el cliente debe guardarlo: no hay endpoint para consultarlo después). Este endpoint solo traduce el `identifier` estable del dispositivo a su `id` interno, que luego se envía como `x-device-id`. Un dispositivo revocado deja de servir de inmediato (el `ContextGuard` lo rechaza con 403). No hay endpoint para listar ni crear dispositivos.
+Los dispositivos son las tablets/teléfonos autorizados. Desde BE-12 **un socio los registra** y la persona los **activa una sola vez** con un código; antes existían solo por seed o por la aprobación de un negocio. Un dispositivo tiene un `status`:
 
-> **El identificador del dispositivo es un secreto compartido del negocio, no una atadura a un navegador ni a un aparato físico.** Quien conozca el `identifier` y su `name` exacto puede identificarse como ese dispositivo desde cualquier navegador o teléfono, siempre que tenga una sesión válida de una cuenta del mismo negocio. Verificado en vivo: un segundo perfil de navegador nuevo, con el mismo `identifier` y `name`, recibió **200 con el mismo `deviceId`**; con otro `identifier` recibió **403**. Es una convención operativa (sirve para distinguir y revocar dispositivos por negocio), **no un mecanismo de seguridad fuerte**. Qué implica para el frontend: guardar el `identifier` (p. ej. en el almacenamiento local del navegador o del dispositivo) y el `deviceId` devuelto; tratarlo como dato sensible (no mostrarlo en pantalla salvo al configurarlo, no ponerlo en URLs, no enviarlo a terceros) y **no escribirlo en logs, analítica ni reportes de error**; y no presentarlo al usuario como una garantía de que "solo este aparato" puede operar. Un negocio recién aprobado tiene **exactamente un Member (el socio fundador) y un Device (`"Dispositivo principal"`)**, y hoy **no existe ningún endpoint para añadir Members ni Devices** (ver [B.4](#b-conocidos)): para operar desde más de un aparato hoy hay que reutilizar ese mismo `identifier`.
+| `status` | Qué es | ¿Puede operar? |
+|---|---|---|
+| `pendiente_activacion` | Lo registró un socio y espera su activación con un **código de un solo uso** (`identifier`), o lo reemitió un socio | **No** |
+| `activo` | Activado (con token) o **heredado** (sin token, ver abajo) | Sí |
+| `revocado` | Un socio lo revocó | **No** |
 
-Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo: `identifier: "shared-tablet"` (`name: "Shared tablet"`), `"alberto-backup-phone"` (`"Alberto backup phone"`) y `"adid-backup-phone"` (`"Adid backup phone"`).
+Ciclo: `POST /devices` (socio) -> `pendiente_activacion` -> `POST /devices/identify` (la persona, con el código y el nombre exacto) -> `activo` **con un `deviceToken` que se entrega una sola vez** -> `PATCH /devices/:id/revoke` -> `revocado`. `PATCH /devices/:id/reissue` devuelve cualquier dispositivo a `pendiente_activacion` con un identificador nuevo.
+
+**Dos clases de dispositivo activo**:
+
+- **Con token** (activado con el flujo nuevo): cada petición protegida lleva `x-device-id` **y** `x-device-token`. Solo se guarda el hash del token; si se pierde no se recupera, hay que reemitir. El `identifier` original queda **quemado** para siempre: no vuelve a servir para activar (409).
+- **Heredado** (`legacy: true` en el listado): todo dispositivo anterior a BE-12, incluido el `"Dispositivo principal"` que sigue creando la aprobación de un negocio y los sembrados. Funciona **sin token**, con `x-device-id` solo, exactamente como antes (un `x-device-token` enviado por uno de ellos se ignora). Un socio lo pasa al modelo con token reemitiéndolo. El camino heredado está previsto para retirarse cuando el frontend ya envíe el token en todos los aparatos.
+
+> **Lo que implica cada identificador.** El `identifier` de un dispositivo **nuevo** es un código de un solo uso: cuando se activa deja de servir. El `identifier` de un dispositivo **heredado** sigue siendo un secreto compartido del negocio, no una atadura a un aparato: quien conozca ese `identifier` y su `name` exacto puede identificarse como ese dispositivo desde cualquier navegador con una sesión válida del negocio (verificado en vivo antes de BE-12: otro perfil de navegador con el mismo par obtuvo 200 y el mismo `deviceId`). Trata ambos como dato sensible: no los muestres salvo al configurarlos, no los pongas en URLs, no los envíes a terceros y **no los escribas en logs, analítica ni reportes de error**; con el `deviceToken`, igual. Ninguno es una garantía de que "solo este aparato" puede operar.
+
+Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo (heredados): `identifier: "shared-tablet"` (`name: "Shared tablet"`), `"alberto-backup-phone"` (`"Alberto backup phone"`) y `"adid-backup-phone"` (`"Adid backup phone"`).
 
 <a id="ep-devices-identify"></a>
 ### `POST /api/v1/devices/identify`
@@ -550,10 +691,20 @@ Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo: 
 
 | Campo | Tipo | Reglas |
 |---|---|---|
-| `identifier` | string | requerido, 1..100. Identificador estable asignado fuera de banda (no el `id` interno) |
-| `name` | string | requerido, 1..100. Debe coincidir **exactamente** con el nombre registrado |
+| `identifier` | string | requerido, 1..100. El código de activación de un dispositivo nuevo (un solo uso) o el identificador estable de un dispositivo heredado. No es el `id` interno |
+| `name` | string | requerido, 1..100. Debe coincidir **exactamente** (sin recortar espacios) con el nombre con que el socio registró el dispositivo |
 
-**Respuesta 200**: `{ "deviceId": "<uuid>" }`.
+**Resultados** (la búsqueda es por `identifier` + `name` exactos **dentro del negocio de la cuenta**):
+
+| Situación del dispositivo | HTTP | Respuesta |
+|---|---|---|
+| `pendiente_activacion` (código sin usar) | **200** | **Se activa** (atómico: con dos llamadas simultáneas solo una gana): `{ "deviceId": "<uuid>", "deviceToken": "<secreto>" }`. **El `deviceToken` solo viene en esta respuesta**; el `identifier` queda quemado |
+| Heredado: `activo`, sin token, autorizado | **200** | Como siempre: `{ "deviceId": "<uuid>" }` (sin token) |
+| `activo` **con token** (ya activado con el flujo nuevo) | **409** | `"Este identificador ya fue usado. Pide a un socio que te genere uno nuevo."` |
+| `revocado` | **409** | `"Este dispositivo fue revocado. Pide a un socio que te genere un identificador nuevo."` |
+| Ningún dispositivo del negocio con ese `identifier`+`name` (identificador o nombre equivocados, o de otro negocio); o un heredado no autorizado | **403** | `"Device is unknown or unauthorized"` |
+
+El **409** (identificador ya usado o revocado) y el **403** (credenciales equivocadas) son casos distintos a propósito: el frontend debe mostrar **mensajes diferentes** (el 409 pide un identificador nuevo a un socio; el 403 pide revisar lo escrito). Ambos mensajes del 409 ya vienen en español y se pueden mostrar tal cual.
 
 **Errores**
 
@@ -561,9 +712,22 @@ Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo: 
 |---|---|---|
 | 400 | Campo faltante, vacío, demasiado largo o desconocido | array de validación |
 | 401 | Token ausente/inválido/expirado | `"Unauthorized"` |
-| 403 | No existe un dispositivo con ese `identifier`+`name` en el negocio de la cuenta, o existe pero no está autorizado, o pertenece a otro negocio | `"Device is unknown or unauthorized"` |
+| 403 | Ver la tabla de resultados | `"Device is unknown or unauthorized"` |
+| 409 | Identificador ya usado o dispositivo revocado (ver la tabla) | los textos de arriba |
 
-**Ejemplo** (`test/auth.e2e-spec.ts:225-251`)
+**Ejemplos**
+
+Dispositivo nuevo (activación):
+
+```json
+{ "identifier": "018f0000-0000-7000-8000-000000000011", "name": "Tablet mostrador" }
+```
+
+```json
+{ "deviceId": "018f0000-0000-7000-8000-000000000012", "deviceToken": "<secreto-largo-que-solo-se-muestra-una-vez>" }
+```
+
+Dispositivo heredado (`test/auth.e2e-spec.ts:225-251`):
 
 ```json
 { "identifier": "shared-tablet", "name": "Shared tablet" }
@@ -573,7 +737,148 @@ Dispositivos sembrados por `prisma/seed-data.ts` para el negocio de desarrollo: 
 { "deviceId": "20000000-0000-4000-8000-000000000001" }
 ```
 
-Fuente: `src/devices/devices.controller.ts:18-72` (guard L42, `@HttpCode(200)` L47), `prisma/seed-data.ts:185-207`, `test/auth.e2e-spec.ts:225-251`.
+Identificador ya usado (409):
+
+```json
+{ "message": "Este identificador ya fue usado. Pide a un socio que te genere uno nuevo.", "error": "Conflict", "statusCode": 409 }
+```
+
+Fuente: `src/devices/devices.controller.ts` (`identify`, `@HttpCode(200)`, `AuthGuard`), `src/devices/devices.service.ts` (`identify`, `ACTIVATION_CODE_USED_MESSAGE`, `DEVICE_REVOKED_MESSAGE`), `src/devices/dto/device.dto.ts` (`IdentifyDeviceDto`), `prisma/seed-data.ts:185-207`, `test/devices.e2e-spec.ts`, `test/auth.e2e-spec.ts:225-251`.
+
+<a id="dev-forma"></a>
+### Forma de un dispositivo (`POST /devices`, `GET /devices`, `revoke`, `reissue`)
+
+Todas estas respuestas usan la misma forma; **nunca** incluyen el hash del token ni el token:
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | string (UUID) | el que después se envía como `x-device-id` |
+| `name` | string | el nombre que el socio le puso (y que la persona debe escribir al activar) |
+| `status` | `"pendiente_activacion"` \| `"activo"` \| `"revocado"` | |
+| `legacy` | boolean | `true` = activo y **sin token** (sigue con `x-device-id` solo): candidato a `reissue` |
+| `createdAt` | string (ISO 8601) | |
+| `activatedAt` | string (ISO 8601) \| null | |
+| `revokedAt` | string (ISO 8601) \| null | |
+| `identifier` | string | **solo mientras el dispositivo está `pendiente_activacion`** y solo en las respuestas que lo revelan (ver cada endpoint): es el código de un solo uso. Nunca aparece en un dispositivo activo ni revocado |
+| `deliveredTo` | `"recipient"` \| `"approver-fallback"` | **solo** en `POST /devices` y `reissue` cuando se envió `correoEnvio`: adónde fue el código (`approver-fallback` = Resend en modo de prueba lo reenvió al aprobador, ver [Business Registration](#mod-business-registration)) |
+
+<a id="ep-devices-create"></a>
+### `POST /api/v1/devices`
+
+Un socio registra un dispositivo nuevo. Nace `pendiente_activacion` con un **código de un solo uso** generado por el servidor.
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` (+ `x-device-token` si el dispositivo lo tiene) |
+| Éxito | **201** |
+
+**Body** (propiedades desconocidas = 400; el cliente nunca elige el identificador ni el estado):
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `name` | string | requerido, se recorta, 1..100 y con algún carácter no blanco. Es lo que la persona deberá escribir **exactamente** al activar |
+| `correoEnvio` | string | opcional, dirección válida. Si se da, el código se **envía por correo** a esa dirección y **no se devuelve** en la respuesta; si no, la respuesta lo trae para que el socio lo copie y lo comparta |
+
+**Respuesta 201**: la [forma de un dispositivo](#dev-forma) con `status: "pendiente_activacion"`, `legacy: false`. **Sin `correoEnvio`** incluye `identifier`; **con `correoEnvio`** no lo incluye y agrega `deliveredTo`.
+
+**Errores**
+
+| HTTP | Situación | `message` |
+|---|---|---|
+| 400 | `name` faltante/vacío/largo, `correoEnvio` inválido o campo desconocido | array de validación; para `correoEnvio` inválido: `"Escribe un correo válido, por ejemplo nombre@dominio.com"` |
+| 401 | Token ausente/inválido/expirado | `"Unauthorized"` |
+| 403 | Los del guard (ver [1.3](#f-auth)); un colaborador recibe | `"Only socios may access this resource"` |
+| 502 | Se pidió `correoEnvio` y el correo no se pudo enviar. **No se creó el dispositivo**; reintenta, o hazlo sin correo | `"No se pudo enviar el correo con el código de activación, así que no se hizo ningún cambio. Intenta de nuevo, o hazlo sin correo y comparte el código tú mismo."` |
+
+**Ejemplos**
+
+```json
+{ "name": "Tablet mostrador" }
+```
+
+```json
+{
+  "id": "018f0000-0000-7000-8000-000000000012",
+  "name": "Tablet mostrador",
+  "status": "pendiente_activacion",
+  "legacy": false,
+  "createdAt": "2026-09-25T18:00:00.000Z",
+  "activatedAt": null,
+  "revokedAt": null,
+  "identifier": "018f0000-0000-7000-8000-000000000011"
+}
+```
+
+Con `{ "name": "Telefono de Ana", "correoEnvio": "ana@example.test" }` la respuesta es la misma forma **sin** `identifier` y con `"deliveredTo": "recipient"`.
+
+Fuente: `src/devices/devices.controller.ts` (`create`), `src/devices/devices.service.ts` (`create`, `deliverOrReveal`), `src/devices/dto/device.dto.ts` (`CreateDeviceDto`), `test/devices.e2e-spec.ts` (`POST /devices`).
+
+<a id="ep-devices-list"></a>
+### `GET /api/v1/devices`
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` (+ `x-device-token` si aplica) |
+| Éxito | **200**, **array plano** (sin paginación) de la [forma de un dispositivo](#dev-forma), ordenado por `createdAt` asc y luego `id` |
+
+Solo los dispositivos del negocio de la cuenta. El `identifier` aparece **únicamente** en los `pendiente_activacion` (un código sin usar; así el socio puede volver a copiarlo); un dispositivo activo o revocado **nunca** lo muestra, y ninguno muestra token ni hash. Errores: 401 y 403 como en `POST /devices`.
+
+```json
+[
+  { "id": "20000000-0000-4000-8000-000000000001", "name": "Shared tablet", "status": "activo", "legacy": true, "createdAt": "2026-09-23T15:00:00.000Z", "activatedAt": null, "revokedAt": null },
+  { "id": "018f0000-0000-7000-8000-000000000012", "name": "Tablet mostrador", "status": "pendiente_activacion", "legacy": false, "createdAt": "2026-09-25T18:00:00.000Z", "activatedAt": null, "revokedAt": null, "identifier": "018f0000-0000-7000-8000-000000000011" }
+]
+```
+
+Fuente: `src/devices/devices.controller.ts` (`list`), `src/devices/devices.service.ts` (`list`, `summarize`), `test/devices.e2e-spec.ts`.
+
+<a id="ep-devices-revoke"></a>
+### `PATCH /api/v1/devices/:id/revoke`
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` (+ `x-device-token` si aplica) |
+| Éxito | **200**, la [forma de un dispositivo](#dev-forma) con `status: "revocado"`, `revokedAt` fijado y **sin** `identifier` |
+
+Sin body. **Idempotente** (revocar uno ya revocado responde 200 con el mismo estado). El dispositivo **deja de operar en su siguiente petición** (el `ContextGuard` lo rechaza con 403 aunque conserve su token). Revocar un dispositivo pendiente anula su código: activarlo después da 409. **Un socio puede revocar el dispositivo que está usando** y quedarse sin acceso desde él (no se impide).
+
+**Errores**: 400 (`:id` no es UUID: `"Validation failed (uuid is expected)"`), 401/403 (ver [1.3](#f-auth)), 404 `"Not Found"` si el dispositivo no existe **en este negocio** (uno de otro negocio da 404, no 403).
+
+Fuente: `src/devices/devices.controller.ts` (`revoke`), `src/devices/devices.service.ts` (`revoke`; conserva `tokenHash` a propósito: uno vacío haría pasar al dispositivo por heredado), `test/devices.e2e-spec.ts`.
+
+<a id="ep-devices-reissue"></a>
+### `PATCH /api/v1/devices/:id/reissue`
+
+Devuelve un dispositivo a `pendiente_activacion` con un **identificador nuevo**. El token viejo y el identificador viejo dejan de servir **de inmediato**. Funciona con dispositivos activos con token, heredados (así pasan al modelo con token) y revocados.
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` (+ `x-device-token` si aplica) |
+| Éxito | **200**, la [forma de un dispositivo](#dev-forma) con `status: "pendiente_activacion"`, `legacy: false`, `activatedAt` y `revokedAt` en `null` |
+
+**Body** (opcional; propiedades desconocidas = 400): `{ "correoEnvio": "<correo>" }`, igual que en `POST /devices`: con él el identificador nuevo se envía por correo, **no** se devuelve y la respuesta trae `deliveredTo`; sin él, la respuesta trae `identifier`.
+
+**Errores**: 400 (`:id` no UUID, `correoEnvio` inválido o campo desconocido), 401/403 (ver [1.3](#f-auth)), 404 si el dispositivo no existe en este negocio, **502** con el mismo texto que `POST /devices` si el correo no se pudo enviar (en ese caso **no cambia nada** y las credenciales viejas siguen sirviendo). **Un socio puede reemitir el dispositivo que está usando** y quedarse sin acceso desde él.
+
+Fuente: `src/devices/devices.controller.ts` (`reissue`), `src/devices/devices.service.ts` (`reissue`), `src/devices/dto/device.dto.ts` (`ReissueDeviceDto`), `test/devices.e2e-spec.ts`.
+
+<a id="dev-migracion"></a>
+### 4.6 Migración del frontend (lista de verificación)
+
+Lo que el frontend debe cambiar para operar con dispositivos activados con el flujo nuevo. Un dispositivo **heredado** no necesita nada de esto, y por eso el cambio no rompe las tablets en uso hoy.
+
+1. **Guardar el `deviceToken`**, no el `identifier`, tras un `POST /devices/identify` que lo devuelva (junto con el `deviceId` y el nombre). El token solo se entrega una vez y no se puede recuperar. No lo escribas en logs, analítica, URLs ni reportes de error.
+2. **Enviar `x-device-token`** en cada petición protegida de un dispositivo con token (además de `x-device-id`); no enviarlo si no hay token. Los sitios que arman headers: el interceptor de Axios y los envíos de ventas.
+3. **Distinguir 409 de 403** al identificar: 409 = "identificador ya usado o revocado" (pedir uno nuevo a un socio); 403 = "identificador o nombre equivocados". Mensajes distintos.
+4. **Los dispositivos ya guardados** (con `identifier` en el almacenamiento local) deben seguir funcionando: un dispositivo heredado no tiene token. Migra el valor guardado sin descartarlo.
+5. **Un dispositivo revocado o reemitido recibe 403 en todo** (`"Selection is not authorized for this context"`) y hoy **no hay una ruta de recuperación implementada**: habría que limpiar la identificación guardada y volver a la pantalla de identificar. Ojo: ese mismo 403 también aparece por otras causas (p. ej. un colaborador en una ruta de socio), así que no basta un manejador global de 403.
+6. **Mostrar el código una sola vez** al socio que registra o reemite un dispositivo (o decir que se envió por correo) y avisar que dejará de servir al activarse.
+7. **Contraseña propia**: usar `POST /auth/change-password` y tratar su 403 como error del campo, **no** como sesión caducada (ver [2](#ep-auth-change-password)).
+8. **Personas nuevas** (`POST /members`): mostrar `username` y decir adónde fueron las credenciales según `credentialsEmail`; nunca esperar ni mostrar una contraseña.
 
 ---
 
@@ -1758,12 +2063,12 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 1. Alguien envía el formulario (`POST /business-registration`). Se crea una solicitud `pendiente` y se envía un correo (vía Resend) al aprobador fijo del sistema (`APPROVAL_NOTIFICATION_EMAIL`) con el negocio, el nombre completo, el correo y el teléfono (si se dio) del socio, y dos enlaces: aprobar y rechazar.
 2. El aprobador abre uno de los enlaces (`GET .../approve?token=...` o `GET .../reject?token=...`) **desde su cliente de correo**. Ambos endpoints devuelven una **página HTML**, no JSON: no están pensados para llamarse desde el frontend con Axios. Los enlaces apuntan al origen de la API (`APP_BASE_URL` + `/api/v1/business-registration/...`), no al frontend.
 3. El token es de un solo uso y expira a los **30 días**; solo se guarda su hash. Nunca se devuelve por la API.
-4. Al **aprobar**, en **una sola transacción**, se crea: el `contextId` real del negocio; un Member fundador con `role: "socio"` (activo); la **cuenta (Account)** de ese socio, con una contraseña temporal aleatoria (solo se guarda su hash Argon2id); y un **dispositivo (Device)** `"Dispositivo principal"` ya `authorized`, con un `identifier` aleatorio (UUID). Al **rechazar** no se crea nada operativo.
+4. Al **aprobar**, en **una sola transacción**, se crea: el `contextId` real del negocio; un Member fundador con `role: "socio"` (activo); la **cuenta (Account)** de ese socio, con una contraseña temporal aleatoria (solo se guarda su hash Argon2id); y un **dispositivo (Device)** `"Dispositivo principal"` ya `authorized`, con un `identifier` aleatorio (UUID). Desde BE-12 ese dispositivo es **heredado** (`activo` y sin token): sigue funcionando con `x-device-id` solo y se identifica con `POST /devices/identify` como siempre (responde `{ deviceId }`, sin token); un socio puede reemitirlo después para pasarlo al modelo con token (ver [4](#mod-devices)). La cuenta del socio fundador sigue siendo la cuenta **compartida** del negocio (no atada a una persona). Al **rechazar** no se crea nada operativo.
 5. **Credenciales por correo.** Como último paso de esa transacción se envía un correo (Resend) con: usuario, contraseña temporal, nombre e identificador del dispositivo, y el aviso de que la contraseña es temporal. El destinatario es el `correo` del socio (una sola dirección simple `algo@dominio.tld`); si no hay un correo utilizable (solicitudes antiguas, anteriores a la separación de campos, con `correo` vacío, o una dirección que el formulario acepta pero que el patrón conservador de envío no acepta, p. ej. con un apóstrofo), va al aprobador (`APPROVAL_NOTIFICATION_EMAIL`) con una nota, con el nombre completo y el teléfono del socio, para que se las haga llegar. **Respaldo (Resend en modo de prueba):** mientras Resend no tenga un dominio verificado solo entrega al correo de su dueño y rechaza al socio con un `validation_error` ("You can only send testing emails to your own email address ..."); solo ante ese rechazo exacto las mismas credenciales se reenvían al aprobador como *reenvío de respaldo* (asunto `[RESPALDO] ...`, nota "Este correo era para <correo> ...; reenviarlo manualmente") y la aprobación **se completa** (200, con un texto propio en la página, ver abajo). Cualquier otro error, o un respaldo que también falle, da el 502 de siempre. Con un dominio verificado el envío directo es el normal. La contraseña **nunca** se muestra en la página de aprobación, no se registra en logs y no se guarda en claro.
    - **Usuario (`username`)**: el `correo` del socio normalizado (sin espacios y en minúsculas) si mide 100 caracteres o menos y no está tomado; si no, `<nombre-del-negocio-en-minúsculas-sin-acentos>-<6 hex aleatorios>` (p. ej. `bolsas-de-adid-3fa91c`). El `username` es único en todo el sistema.
    - **Contraseña temporal**: 24 caracteres URL-safe (`A-Z a-z 0-9 _ -`, 144 bits aleatorios), independiente de cualquier dato del formulario.
 6. **Si la aprobación no puede completarse, no ocurre**: la transacción se revierte (no queda Account, Device, Member ni contexto), la solicitud sigue `pendiente` y la página responde **502**. Tres causas dan esa misma respuesta: el correo de credenciales falla (incluido un respaldo al aprobador que también falla) o Resend no contesta dentro del plazo total de 10 s (compartido por el envío directo y el respaldo); la transacción agota su tiempo (15 s); o dos aprobaciones distintas compiten por el mismo nombre de usuario y la otra gana (el reintento deriva uno nuevo). El aprobador puede reintentar abriendo **el mismo enlace**. Caso límite aceptado: si el correo sale (o solo se agotó la espera, con la petición aún en vuelo) y la aprobación se revierte o el commit falla justo después, el destinatario tiene credenciales que nunca fueron válidas; el reintento envía un juego nuevo y válido.
-7. **Qué implica para el frontend**: el primer inicio de sesión de un negocio nuevo usa el `username` y la contraseña temporal del correo (`POST /auth/login`); después se identifica el dispositivo con `POST /devices/identify` usando el `identifier` del correo y el nombre `"Dispositivo principal"`. El cliente **debe guardar el `identifier`** (no hay endpoint para consultarlo de nuevo). **Todavía no existe un endpoint para cambiar la contraseña**: la contraseña temporal sigue siendo la contraseña vigente hasta que se construya ese flujo (brecha conocida, ver [B.4](#b-conocidos)).
+7. **Qué implica para el frontend**: el primer inicio de sesión de un negocio nuevo usa el `username` y la contraseña temporal del correo (`POST /auth/login`); después se identifica el dispositivo con `POST /devices/identify` usando el `identifier` del correo y el nombre `"Dispositivo principal"`. El cliente **debe guardar el `identifier`** (no hay endpoint para consultarlo de nuevo; un socio puede reemitirlo con `PATCH /devices/:id/reissue`). La contraseña temporal se cambia con [`POST /auth/change-password`](#ep-auth-change-password) (desde BE-12; el correo de credenciales lo pide).
 8. **No existe `GET /business-registration`** ni ningún endpoint para consultar el estado de una solicitud: el frontend no puede saber si fue aprobada. Las únicas rutas de este módulo son `POST /business-registration`, `GET /business-registration/approve` y `GET /business-registration/reject`.
 
 <a id="ep-br-create"></a>
@@ -1890,18 +2195,24 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 <a id="apendice-a-indice-de-rutas"></a>
 ## Apéndice A: índice de rutas
 
-33 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
+39 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
 
 | Método | Ruta | Audiencia | Sección |
 |---|---|---|---|
 | `GET` | `/api/v1` | Pública | [Hello World](#f-montajes) |
 | `POST` | `/api/v1/auth/login` | Pública | [Auth](#ep-auth-login) |
+| `POST` | `/api/v1/auth/change-password` | Cuenta | [Auth](#ep-auth-change-password) |
 | `GET` | `/api/v1/members` | Cuenta | [Members](#ep-members-list) |
+| `POST` | `/api/v1/members` | Socio | [Members](#ep-members-create) |
 | `PATCH` | `/api/v1/members/:id` | Socio | [Members](#ep-members-patch) |
 | `DELETE` | `/api/v1/members/:id` | Socio | [Members](#ep-members-delete) |
 | `PATCH` | `/api/v1/members/:id/reactivate` | Socio | [Members](#ep-members-reactivate) |
 | `PATCH` | `/api/v1/members/:id/commission-rate` | Socio | [Commissions](#ep-members-commission-rate) |
+| `POST` | `/api/v1/devices` | Socio | [Devices](#ep-devices-create) |
+| `GET` | `/api/v1/devices` | Socio | [Devices](#ep-devices-list) |
 | `POST` | `/api/v1/devices/identify` | Cuenta | [Devices](#ep-devices-identify) |
+| `PATCH` | `/api/v1/devices/:id/revoke` | Socio | [Devices](#ep-devices-revoke) |
+| `PATCH` | `/api/v1/devices/:id/reissue` | Socio | [Devices](#ep-devices-reissue) |
 | `POST` | `/api/v1/products` | Socio | [Products](#ep-products-create) |
 | `GET` | `/api/v1/products` | Cuenta | [Products](#ep-products-list) |
 | `GET` | `/api/v1/products/:id` | Cuenta | [Products](#ep-products-get) |
@@ -1971,7 +2282,7 @@ Sin verificar aquí: que Axios con `FormData` mande el `boundary` correcto cuand
 - Un `GET` con parámetro de query no declarado es 400 (p. ej. `GET /members?foo=1`). Las rutas de `business-registration/approve|reject` son la excepción: leen `token` sin `ValidationPipe`.
 - Cabeceras HTTP no distinguen mayúsculas (`x-member-id` = `X-Member-Id`), pero cada una debe aparecer **una sola vez**.
 - `image` de producto y el resto de campos crudos: ver [1.11](#f-crudos).
-- No hay endpoints para: crear Members, crear/listar dispositivos, crear cuentas (salvo la que crea la aprobación de un negocio), cambiar la contraseña, cerrar sesión, refrescar token, editar/cancelar ventas o deudas, consultar el estado de un registro de negocio.
+- No hay endpoints para: crear cuentas libremente (solo las que crean la aprobación de un negocio y `POST /members`), **recuperar** una contraseña olvidada (solo existe el cambio de la propia con sesión), reenviar las credenciales de una persona ya dada de alta, cerrar sesión, refrescar token, editar/cancelar ventas o deudas, consultar el estado de un registro de negocio.
 
 <a id="b-conocidos"></a>
 ### B.4 Problemas conocidos del backend (verificados, no corregidos)
@@ -1985,15 +2296,24 @@ Esto no cambia el contrato de arriba, pero conviene saberlo al construir el fron
 - **El cliente Axios actual** (`bazar-frontend/src/services/api.ts`) solo envía `Authorization`; faltan `x-member-id` y `x-device-id`. Además menciona `/auth/register`, que no existe.
 - **`GET /sales/:id`** solo pide token: cualquier cuenta del negocio lee cualquier venta de su propio negocio si conoce el `id`.
 - **El 401 no distingue** token expirado, cuenta desactivada o token inválido; no hay refresh ni logout.
-- **No hay cambio de contraseña** (ni recuperación). La contraseña temporal que recibe el socio al aprobarse su negocio sigue siendo su contraseña vigente hasta que exista ese flujo; el correo de credenciales la pide cambiar, pero la API aún no lo permite. Tampoco hay ningún endpoint para consultar el estado de una solicitud de registro.
-- **Un negocio recién aprobado queda con un solo Member y un solo Device y no hay forma de añadir más.** No existen `POST /members` ni `POST /devices` (ni listado de dispositivos): el socio fundador y el `"Dispositivo principal"` son los únicos hasta que se construyan esos endpoints. Los dispositivos sembrados (p. ej. `shared-tablet`) solo existen en el negocio de desarrollo.
-- **El identificador del dispositivo es un secreto compartido**, no está atado a un navegador ni a un aparato: quien tenga `identifier` + `name` exacto (y una sesión del negocio) se identifica como ese dispositivo desde cualquier lugar (verificado en vivo: otro perfil de navegador con el mismo par obtuvo 200 y el mismo `deviceId`; otro `identifier`, 403). Es una convención operativa, no seguridad fuerte; ver [Devices](#mod-devices).
+- **No hay recuperación de contraseña** (olvidada) ni reenvío de credenciales: el cambio de contraseña (`POST /auth/change-password`) exige la contraseña actual, y el correo de una persona dada de alta no se guarda. Tampoco hay ningún endpoint para consultar el estado de una solicitud de registro.
+- **Los tokens JWT ya emitidos siguen valiendo hasta que expiren (12 h) aunque se cambie la contraseña** (no hay estado de sesión en el servidor): cambiarla no cierra una sesión robada. El arreglo sería una marca `passwordChangedAt` verificada en `AuthGuard`; no está implementado.
+- **No hay limitación de tasa (*rate limiting*) en ningún endpoint de la API**, incluido `POST /auth/change-password` (un token robado podría usarse para adivinar la contraseña actual) y `POST /auth/login`.
+- **Un dispositivo activado con el flujo nuevo solo funciona si el cliente envía `x-device-token`**; el frontend anterior a BE-12 no lo hace y recibiría 403 en todo con un dispositivo así. Ver la lista de migración en [4.6](#dev-migracion). Un dispositivo revocado o reemitido recibe 403 en todo y no hay ruta de recuperación en el frontend.
+- **Un socio puede revocar o reemitir el dispositivo que está usando** y quedarse sin acceso desde él; no se impide.
+- **El correo con las credenciales (persona nueva, activación de dispositivo, aprobación de negocio) se envía antes de confirmar la transacción.** Si la confirmación falla justo después de un envío exitoso, o Resend entrega tras agotarse la espera, quien lo recibe tiene credenciales de una cuenta que se revirtió: no sirven para entrar, y el reintento envía un juego nuevo.
+- **Los dispositivos heredados siguen siendo un secreto compartido**, no atados a un navegador ni a un aparato: quien tenga su `identifier` + `name` exacto (y una sesión del negocio) se identifica como ese dispositivo desde cualquier lugar (verificado en vivo antes de BE-12: otro perfil de navegador con el mismo par obtuvo 200 y el mismo `deviceId`; otro `identifier`, 403). Es una convención operativa, no seguridad fuerte; los dispositivos con token sí son un secreto por aparato, una vez activados. El camino heredado está previsto para retirarse; ver [Devices](#mod-devices).
 - **Resend sigue en modo de prueba** (sin dominio verificado, remitente `onboarding@resend.dev`): solo entrega al correo de su dueño. Las credenciales de un socio con otro correo llegan al aprobador como reenvío de respaldo y este debe hacérselas llegar; ver [Business Registration](#mod-business-registration). La aprobación del `POST /business-registration` (correo al aprobador) no se ve afectada porque el aprobador es el dueño de la cuenta.
 
 <a id="b-resueltos"></a>
 ### B.5 Resueltos (corregidos en la rama)
 
 Antes figuraban en B.4 y ya no aplican:
+
+- **Un negocio aprobado quedaba con un solo Member y un solo Device sin forma de añadir más** (BE-12): ahora un socio agrega personas con [`POST /members`](#ep-members-create) y dispositivos con [`POST /devices`](#ep-devices-create) (más `GET /devices`, `revoke` y `reissue`), con activación de un solo uso.
+- **No había cambio de contraseña** (BE-12): [`POST /auth/change-password`](#ep-auth-change-password). La contraseña temporal ya se puede cambiar.
+- **El identificador del dispositivo era un secreto compartido reutilizable indefinidamente** (BE-12, para los dispositivos nuevos): ahora es un código de un solo uso y el dispositivo se autentica con un token propio que solo se entrega una vez. Sigue siendo así para los dispositivos heredados (ver B.4).
+- **Una cuenta de colaborador no podía distinguirse de la de un socio** (BE-12, para las cuentas que crea `POST /members`): la cuenta atada solo puede actuar como su propia persona.
 
 - **Un negocio aprobado no podía iniciar sesión** (commit `3399370`): la aprobación ahora crea, además del Member fundador, la cuenta del socio y un dispositivo autorizado, y envía las credenciales por correo; ver [Business Registration](#mod-business-registration). Consecuencia en el frontend: el primer login usa el usuario y la contraseña temporal del correo, y el dispositivo se identifica con el `identifier` del correo.
 - **HTML sin escapar en las páginas de aprobar/rechazar** (commit `73c7411`): `renderStatusPage` no escapaba ningún valor, lo que permitía un XSS almacenado vía `nombreNegocio`. Ahora escapa título y mensaje con un `escapeHtml` común (`src/common/escape-html.ts`), el mismo que usa el correo.
