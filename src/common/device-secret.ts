@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /** Length of a sha256 digest in lowercase hex. */
 const HASH_HEX_LENGTH = 64;
-const HASH_HEX_RE = /^[0-9a-f]{64}$/;
+const HASH_HEX_RE = new RegExp(`^[0-9a-f]{${HASH_HEX_LENGTH}}$`);
 
 /**
  * A new device secret: 32 random bytes in base64url (43 characters). It is
@@ -32,11 +32,7 @@ export function verifyDeviceToken(
   storedHash: string | null | undefined,
 ): boolean {
   if (typeof token !== 'string' || token === '') return false;
-  if (
-    typeof storedHash !== 'string' ||
-    storedHash.length !== HASH_HEX_LENGTH ||
-    !HASH_HEX_RE.test(storedHash)
-  ) {
+  if (typeof storedHash !== 'string' || !HASH_HEX_RE.test(storedHash)) {
     return false;
   }
   const presented = Buffer.from(hashDeviceToken(token), 'hex');

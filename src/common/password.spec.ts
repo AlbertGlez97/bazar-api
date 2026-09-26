@@ -1,5 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import * as argon2 from 'argon2';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hashPassword, verifyPassword } from './password.js';
+
+// Wraps the real `verify` so a single test can make the library fail with an
+// error that is not a malformed-hash TypeError.
+vi.mock('argon2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('argon2')>();
+  return { ...actual, verify: vi.fn(actual.verify) };
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('hashPassword / verifyPassword', () => {
   it('hashes with Argon2id in PHC string format', async () => {
@@ -37,12 +50,29 @@ describe('hashPassword / verifyPassword', () => {
     },
   );
 
-  it('returns false for a non-string hash (e.g. a null column)', async () => {
-    await expect(
-      verifyPassword(null as unknown as string, 'anything'),
-    ).resolves.toBe(false);
-    await expect(
-      verifyPassword(undefined as unknown as string, 'anything'),
-    ).resolves.toBe(false);
+  it('returns false for a missing hash (e.g. a null column)', async () => {
+    await expect(verifyPassword(null, 'anything')).resolves.toBe(false);
+    await expect(verifyPassword(undefined, 'anything')).resolves.toBe(false);
+  });
+
+  it('does not log a malformed hash: that is expected input, not a fault', async () => {
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await expect(verifyPassword('garbage', 'anything')).resolves.toBe(false);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('fails closed AND logs an unexpected library failure, without leaking the hash or the password', async () => {
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const stored = await hashPassword('s3cret-pass');
+    vi.mocked(argon2.verify).mockRejectedValueOnce(new Error('memory allocation failed'));
+
+    await expect(verifyPassword(stored, 'typed-password')).resolves.toBe(false);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    const logged = String(error.mock.calls[0][0]);
+    expect(logged).toContain('Error');
+    expect(logged).toContain('memory allocation failed');
+    expect(logged).not.toContain(stored);
+    expect(logged).not.toContain('typed-password');
   });
 });

@@ -74,6 +74,7 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - (a) The backfill test runs the `UPDATE` as the runtime role, not the `NO FORCE` / `FORCE ROW LEVEL SECURITY` lift as the migration owner, so the cross-tenant path of the migration is not proved by a test.
   - (b) `authorized = false` -> `revocado` is a deliberate fail-closed assumption: such a device could not operate before either, and a socio can reissue it.
   - (c) `status` and `authorized` can drift (no CHECK constraint): T4 must pin the allowed pairs with tests.
+- **T2 (commit `0ba1564`): native review approved (four lenses) and the receipt is burned.** Its six non-blocking advisories (a silent catch-all in `verifyPassword`, a `storedHash: string` signature that did not match the runtime null handling, a redundant hash length check, a pinned library version in a comment, and no test proving the malformed-hash 401 at login) are addressed in the commit `fix(auth): log unexpected password verification failures`.
 
 ## Engram mirror
 
