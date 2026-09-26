@@ -200,6 +200,62 @@ export const operations: Record<string, Operation> = {
     }),
     errors: [invalid, [401, 'Invalid credentials']],
   },
+  changePassword: {
+    summary: 'Change my own password',
+    description:
+      'Any logged-in person (socio or colaborador) changes the password of their own account; only the bearer token is needed, no x-member-id or x-device-id. newPassword must have 10 to 128 characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.',
+    access: 'jwt',
+    body: body(
+      {
+        currentPassword: {
+          ...string('REPLACE_WITH_YOUR_CURRENT_PASSWORD'),
+          format: 'password',
+          writeOnly: true,
+        },
+        newPassword: {
+          ...string('REPLACE_WITH_A_NEW_PASSWORD'),
+          format: 'password',
+          writeOnly: true,
+          minLength: 10,
+          maxLength: 128,
+        },
+      },
+      ['currentPassword', 'newPassword'],
+      {
+        currentPassword: 'REPLACE_WITH_YOUR_CURRENT_PASSWORD',
+        newPassword: 'REPLACE_WITH_A_NEW_PASSWORD',
+      },
+    ),
+    responses: [
+      {
+        status: 204,
+        description: 'Password changed. No response body.',
+        value: null,
+      },
+      {
+        status: 403,
+        description:
+          'The current password is incorrect (or the stored hash is unusable). Nothing changed.',
+        value: {
+          message: 'Current password is incorrect',
+          error: 'Forbidden',
+          statusCode: 403,
+        },
+      },
+      {
+        status: 409,
+        description:
+          'Another password change for the same account won a simultaneous race; retry with the latest password.',
+        value: {
+          message:
+            'The password was changed by another request; try again with the latest password',
+          error: 'Conflict',
+          statusCode: 409,
+        },
+      },
+    ],
+    errors: [invalid],
+  },
   members: {
     summary: 'List Alberto, Adid, Carlos and Javier for selection',
     description:

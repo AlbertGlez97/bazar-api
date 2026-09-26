@@ -47,7 +47,7 @@ Route per task: delegated direct writer (one writer at a time). Trigger evidence
 - [x] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
 - [x] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
 - [x] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
-- [ ] **T6 Change password.** `POST /auth/change-password`.
+- [x] **T6 Change password.** `POST /auth/change-password`.
 - [ ] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file.
 
 ## Acceptance
@@ -93,6 +93,15 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - RED -> GREEN: `test/members-create.e2e-spec.ts` 42 failed (all 404) before the endpoint, 42/42 after; `src/members/members.service.spec.ts` (transaction timeout relation and the failure handling: race retry and 409, 502 on expiry, no retry on other errors) 8/8; commit `11de709`: 13 new email tests failed on the missing method, 63/63 after.
   - Mutation check: dropping `memberId` from the `Account` insert made exactly the 3 tests that depend on the binding fail (the created row, and both end-to-end impersonation tests); reverted.
   - Full suite after T5: unit 23 files / 318 tests; e2e 22 files / 274 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
+- **T6 (two commits: `3f4c768` test hardening for the shared email deadline, and this one, the endpoint).**
+  - `POST /auth/change-password` (`AuthGuard` ONLY: a socio, a colaborador and the shared login can all use it, and it works right after a first login with a temporary password because no member/device selection is read). Body `{ currentPassword, newPassword }` (`whitelist` + `forbidNonWhitelisted`): both strings; `currentPassword` 1..128; `newPassword` 10..128 and different from `currentPassword` (custom `DiffersFrom` validator whose message names the fields, never the values). Passwords are never trimmed. It changes the Account of the JWT (`request.account.id`); an account id can never come from the body.
+  - Success: 204 with an empty body; the stored value is a fresh argon2id hash (`hashPassword`).
+  - **403, not 401, for a wrong current password** (`Current password is incorrect`): the frontend's Axios interceptor treats every 401 as an expired session and logs the person out, which would be wrong for a typo. A malformed stored hash behaves the same (403, never a 500), through `verifyPassword`. 401 stays for a missing/invalid token and for a deactivated account.
+  - **Concurrency**: the write is `updateMany({ where: { id, passwordHash: <the verified hash> } })`. Two simultaneous changes cannot both win: the loser finds no row and gets 409 (`The password was changed by another request; try again with the latest password`), and the account keeps exactly one of the two new passwords. Mutation check: an unconditional update makes the e2e concurrency test and the unit test fail; reverted.
+  - **Known follow-up (not implemented): existing JWTs stay valid until they expire (12 h, stateless) after a password change.** A `passwordChangedAt` claim check in `AuthGuard` would be the fix. Pinned by an e2e test so it is a decision, not an accident. There is also no rate limit on wrong current passwords (a stolen token could be used to guess the password); the whole API has no rate limiting today.
+  - RED -> GREEN: the DTO spec failed on the missing module, 8 service tests failed on the missing method and the new e2e file was fully red before the implementation; after it `src/auth/dto/change-password.dto.spec.ts` + `src/auth/auth.service.spec.ts` 33/33 and `test/change-password.e2e-spec.ts` 27/27. (One e2e fixture bug found on the way: `Account.memberId` is UNIQUE, so every bound test account needs its own Member.)
+  - Full suite after T6: unit 24 files / 349 tests; e2e 23 files / 301 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
+  - Swagger: `changePassword` added to `src/docs/operation-examples.ts` (T7 writes the prose docs).
 
 ## Review notes
 
@@ -118,4 +127,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T6 commit B (change password), then T7 (documentation).
+T7 (documentation in both repos).

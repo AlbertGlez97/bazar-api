@@ -1,4 +1,10 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes } from 'node:crypto';
 import { hashPassword, verifyPassword } from '../common/password.js';
@@ -53,5 +59,48 @@ export class AuthService {
       // can never silently drift from the token's real lifetime.
       expiresIn: JWT_EXPIRES_IN_SECONDS,
     };
+  }
+
+  /**
+   * Changes the password of the caller's own {@link Account}. The caller is
+   * identified by the bearer token only (`AuthGuard`), so it works for a
+   * socio, a colaborador and the shared business login alike, and right after
+   * a first login with a temporary password.
+   *
+   * A wrong current password is a 403, NOT a 401: the frontend treats 401 as
+   * an expired session and logs the person out. A stored hash that is
+   * corrupt fails the same way (a 403, never a 500). The write is conditional
+   * on the hash that was verified, so two simultaneous changes cannot both
+   * succeed: the second finds no row to update and gets a 409, and the account
+   * keeps exactly one of the two new passwords.
+   *
+   * Existing tokens stay valid until they expire (they are stateless); a
+   * `passwordChangedAt` check would be the fix and is a known follow-up.
+   * Neither the passwords nor the hashes are ever logged or returned.
+   *
+   * @throws UnauthorizedException when the account is missing or inactive.
+   * @throws ForbiddenException when the current password does not match.
+   * @throws ConflictException when another change won the race.
+   */
+  async changePassword(
+    accountId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const account = await this.prisma.account.findFirst({
+      where: { id: accountId, active: true },
+    });
+    if (!account) throw new UnauthorizedException();
+    if (!(await verifyPassword(account.passwordHash, currentPassword)))
+      throw new ForbiddenException('Current password is incorrect');
+    const passwordHash = await hashPassword(newPassword);
+    const { count } = await this.prisma.account.updateMany({
+      where: { id: account.id, passwordHash: account.passwordHash },
+      data: { passwordHash },
+    });
+    if (count === 0)
+      throw new ConflictException(
+        'The password was changed by another request; try again with the latest password',
+      );
   }
 }
