@@ -42,7 +42,7 @@ Deliver (1) team management (socios/colaboradores) and (2) device management wit
 
 Route per task: delegated direct writer (one writer at a time). Trigger evidence: each task touches 2+ non-trivial files.
 
-- [ ] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
+- [x] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
 - [ ] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
 - [ ] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
 - [ ] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
@@ -56,7 +56,14 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
 
 ## Progress and evidence
 
-(updated after each task)
+- **T1 (this commit).** Migration `20260925120000_be12_team_devices`, applied to the TEST database only (`npm run db:migrate:test`); the dev database is NOT migrated yet.
+  - Columns: `Account.memberId` (unique, FK `ON DELETE RESTRICT`), `Member.createdByMemberId` (indexed self-FK, `ON DELETE SET NULL`), `DeviceStatus` enum, `Device.status` (default `activo`), `tokenHash`, `activatedAt`, `revokedAt`. `authorized` and `Device_identifier_key` untouched; no RLS change needed.
+  - Backfill: unauthorized devices -> `revocado` + `revokedAt`; authorized devices stay `activo`; no token invented. The `UPDATE` runs between `NO FORCE` / `FORCE ROW LEVEL SECURITY` on `Device` so it is not a silent no-op when the migration owner is not a superuser.
+  - RESTRICT vs SET NULL: RESTRICT on `Account.memberId` because SET NULL would silently turn a bound colaborador login into an unbound shared one that may pick any Member; SET NULL on `createdByMemberId` because it is attribution only.
+  - Not enforced by the schema: an `Account` and its `Member` sharing the same `contextId` (Member has no `unique(id, contextId)`); T5 must create both inside the same tenant transaction.
+  - RED -> GREEN: `test/be12-schema.e2e-spec.ts` 14 failed / 2 passed before the migration; 16/16 after. The backfill test runs the exact SQL from the migration (marker comments) as the runtime role under RLS.
+  - Full suite after T1: unit 18 files / 250 tests; e2e 19 files / 170 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean; `prisma migrate diff` test DB vs schema: no difference.
+  - `src/generated/prisma` is gitignored, so the regenerated client is local only (`npm run prisma:generate`) and is not part of the commit.
 
 ## Engram mirror
 
@@ -64,4 +71,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T1.
+T2 (shared helpers), then T3 (ContextGuard).

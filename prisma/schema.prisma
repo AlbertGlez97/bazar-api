@@ -49,6 +49,18 @@ enum BusinessRegistrationStatus {
   rechazado
 }
 
+// BE-12: lifecycle of a Device. `pendiente_activacion` = registered by a
+// socio, waiting for someone to redeem its one-time identifier;
+// `activo` = in use; `revocado` = switched off. Devices that exist before
+// BE-12 are `activo` (or `revocado` when they were unauthorized). The
+// `authorized` boolean below stays the operating gate read by the guards;
+// the code that changes `status` keeps the two in sync.
+enum DeviceStatus {
+  pendiente_activacion
+  activo
+  revocado
+}
+
 model Account {
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
@@ -56,6 +68,20 @@ model Account {
   contextId    String
   active       Boolean  @default(true)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  // BE-12: the Member this login belongs to. Null = the shared login of a
+  // business (every account that exists before BE-12, including the founding
+  // socio's): whoever holds it may pick any active Member with x-member-id,
+  // which is the shared-tablet flow. Set = the account is bound to exactly
+  // that Member and ContextGuard must refuse any other x-member-id, so a
+  // colaborador's own login cannot act as a socio. Unique: one login per
+  // Member.
+  //
+  // ON DELETE RESTRICT (not SET NULL): if the Member row were ever hard
+  // deleted, SET NULL would silently turn a bound colaborador login into an
+  // unbound shared one that may select any Member, including a socio. Members
+  // are only ever deactivated (BE-10), so nothing legitimate needs the delete.
+  memberId     String?  @unique @db.Uuid
+  member       Member?  @relation(fields: [memberId], references: [id], onDelete: Restrict)
 }
 
 model Member {
@@ -92,15 +118,42 @@ model Member {
   // Abono.receivedByMember) without ever appearing here.
   deudasCreadas Deuda[] @relation("DeudaCreatedBy")
   abonosRecibidos Abono[] @relation("AbonoReceivedBy")
+  // BE-12: the login bound to this Member, when it has its own (created by
+  // POST /members). Null for members that share the business login.
+  account Account?
+  // BE-12: which Member (a socio) added this one. Null for the founding socio,
+  // the seed and every row that existed before BE-12. ON DELETE SET NULL:
+  // this is attribution, not integrity, and Members are only ever
+  // deactivated, so a hard delete of the creator must not be blocked (or
+  // fail a bulk delete of both rows) just to keep a pointer.
+  createdByMemberId String?  @db.Uuid
+  createdByMember   Member?  @relation("MemberCreatedBy", fields: [createdByMemberId], references: [id], onDelete: SetNull)
+  createdMembers    Member[] @relation("MemberCreatedBy")
+
+  @@index([createdByMemberId])
 }
 
 model Device {
-  id         String   @id @default(uuid()) @db.Uuid
+  id         String       @id @default(uuid()) @db.Uuid
   name       String
-  identifier String   @unique @default(uuid())
-  contextId  String   @default("legacy-unassigned")
-  authorized Boolean  @default(false)
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  // BE-12: for a device registered through POST /devices this is the
+  // ONE-TIME activation code (uuid v7): it is redeemed once at
+  // POST /devices/identify and is dead afterwards. It is not a credential.
+  // Devices that predate BE-12 keep the value they already have.
+  identifier String       @unique @default(uuid())
+  contextId  String       @default("legacy-unassigned")
+  authorized Boolean      @default(false)
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  // BE-12: see DeviceStatus. Default `activo` so every device created by the
+  // seed, by business approval and by the existing test fixtures stays usable.
+  status     DeviceStatus @default(activo)
+  // BE-12: sha256 (hex) of the device token issued at activation. Null =
+  // legacy device: it authenticates with x-device-id alone, exactly as before
+  // BE-12. Set = requests must also carry the matching x-device-token. The
+  // token itself is never stored.
+  tokenHash  String?
+  activatedAt DateTime?   @db.Timestamptz(3)
+  revokedAt   DateTime?   @db.Timestamptz(3)
   sales      Sale[]
 }
 
