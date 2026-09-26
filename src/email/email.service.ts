@@ -91,6 +91,33 @@ class ResendRejectionError extends Error {
 
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
+type EmailKind = 'approval' | 'credentials' | 'activation';
+
+interface EmailMessage {
+  to: string;
+  subject: string;
+  html: string;
+}
+
+export interface DeviceActivationEmailInput {
+  /** Who receives the code (the `correoEnvio` a socio typed). */
+  to: string;
+  /** The name the person must type, exactly, together with the code. */
+  deviceName: string;
+  /** The one-time activation code (`Device.identifier`). */
+  identifier: string;
+  businessName?: string;
+}
+
+/** Where the activation code actually went. */
+export interface DeviceActivationEmailResult {
+  /**
+   * `recipient`: the address the socio chose. `approver-fallback`: the
+   * approver, as a `[RESPALDO]` copy, because Resend test mode refused it.
+   */
+  deliveredTo: 'recipient' | 'approver-fallback';
+}
+
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
   nombre: string;
@@ -224,69 +251,139 @@ export class EmailService {
       return { deliveredTo: 'approver-no-socio-email' };
     }
 
-    try {
-      await this.deliver('credentials', {
+    const delivery = await this.deliverWithApproverFallback({
+      kind: 'credentials',
+      what: 'credentials',
+      recipientLabel: 'socio',
+      primary: {
         to: input.socioEmail,
         subject: `Acceso a Bazar: ${input.nombreNegocio}`,
         html: renderCredentialsEmailHtml(input, 'socio'),
-      });
-      return { deliveredTo: 'socio' };
+      },
+      backup: {
+        subject: `[RESPALDO] Credenciales para reenviar al socio: ${input.nombreNegocio}`,
+        html: renderCredentialsEmailHtml(input, 'backup'),
+      },
+      deadlinePassed,
+    });
+    return {
+      deliveredTo: delivery === 'direct' ? 'socio' : 'approver-fallback',
+    };
+  }
+
+  /**
+   * Sends the one-time activation code of a device to the address a socio
+   * chose (`POST /devices` and `reissue` with `correoEnvio`). It carries the
+   * identifier and the exact device name the person must type in the app, and
+   * says the code stops working once used. It never carries a password or a
+   * device token.
+   *
+   * Same delivery policy as {@link sendBusinessCredentialsEmail}: while Resend
+   * is in test mode and refuses the recipient, the exact same code is
+   * forwarded to `APPROVAL_NOTIFICATION_EMAIL` as an explicit `[RESPALDO]`
+   * backup, and the result says so; any other failure propagates. Both sends
+   * share ONE total deadline ({@link CREDENTIALS_EMAIL_TIMEOUT_MS}), so a
+   * caller that sends from inside a database transaction must keep that
+   * transaction's timeout well above it.
+   */
+  async sendDeviceActivationEmail(
+    input: DeviceActivationEmailInput,
+  ): Promise<DeviceActivationEmailResult> {
+    let deadlinePassed = false;
+    try {
+      const delivery = await withTimeout(
+        this.deliverWithApproverFallback({
+          kind: 'activation',
+          what: 'device activation',
+          recipientLabel: 'recipient',
+          primary: {
+            to: input.to,
+            subject: `Código para activar tu dispositivo: ${input.deviceName}`,
+            html: renderDeviceActivationEmailHtml(input, 'direct'),
+          },
+          backup: {
+            subject: `[RESPALDO] Código de activación para reenviar: ${input.deviceName}`,
+            html: renderDeviceActivationEmailHtml(input, 'backup'),
+          },
+          deadlinePassed: () => deadlinePassed,
+        }),
+        CREDENTIALS_EMAIL_TIMEOUT_MS,
+        'Resend device activation email',
+      );
+      return {
+        deliveredTo: delivery === 'direct' ? 'recipient' : 'approver-fallback',
+      };
+    } catch (error) {
+      if (error instanceof TimeoutError) deadlinePassed = true;
+      throw error;
+    }
+  }
+
+  /**
+   * Sends `primary`; when Resend test mode refuses that recipient (and ONLY
+   * for that exact rejection, {@link isResendTestModeRecipientError}) it
+   * forwards the same message to the approver with the `backup` subject and
+   * body. Returns which of the two sends went through.
+   *
+   * The backup is never started once the caller's deadline has passed: the
+   * operation may already have rolled back, and forwarding something that
+   * never became valid would only mislead the approver. If the backup fails
+   * too, the thrown error names both failures; neither the message nor the
+   * logs ever carry a secret.
+   */
+  private async deliverWithApproverFallback(spec: {
+    kind: EmailKind;
+    /** What is being sent, for the log line and the error text. */
+    what: string;
+    /** Who the primary recipient is, for the log line. */
+    recipientLabel: string;
+    primary: EmailMessage;
+    backup: { subject: string; html: string };
+    deadlinePassed: () => boolean;
+  }): Promise<'direct' | 'approver-fallback'> {
+    const approver = process.env.APPROVAL_NOTIFICATION_EMAIL;
+    try {
+      await this.deliver(spec.kind, spec.primary);
+      return 'direct';
     } catch (error) {
       if (
         !(error instanceof ResendRejectionError) ||
         !isResendTestModeRecipientError(error.resendError)
       )
         throw error;
-      // The approval may already have rolled back (deadline passed while the
-      // rejection was in flight): forwarding credentials that never became
-      // valid would only mislead the approver.
-      if (deadlinePassed()) throw error;
-      return this.forwardCredentialsToApprover(input, error, approver);
-    }
-  }
-
-  /** Backup forward to the approver after Resend test mode refused the socio. */
-  private async forwardCredentialsToApprover(
-    input: BusinessCredentialsEmailInput,
-    original: Error,
-    approver: string | undefined,
-  ): Promise<CredentialsEmailResult> {
-    this.logger.warn(
-      'Resend test mode rejected the credentials email to the socio; forwarding it to the approver as a backup',
-    );
-    try {
-      if (!approver)
-        throw new Error(
-          'APPROVAL_NOTIFICATION_EMAIL is required to forward the credentials',
-        );
-      await this.deliver('credentials', {
-        to: approver,
-        subject: `[RESPALDO] Credenciales para reenviar al socio: ${input.nombreNegocio}`,
-        html: renderCredentialsEmailHtml(input, 'backup'),
-      });
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(
-        `${original.message}; the fallback to the approver also failed: ${reason}`,
+      // The operation may already have rolled back (deadline passed while the
+      // rejection was in flight).
+      if (spec.deadlinePassed()) throw error;
+      this.logger.warn(
+        `Resend test mode rejected the ${spec.what} email to the ${spec.recipientLabel}; forwarding it to the approver as a backup`,
       );
+      try {
+        if (!approver)
+          throw new Error(
+            `APPROVAL_NOTIFICATION_EMAIL is required to forward the ${spec.what}`,
+          );
+        await this.deliver(spec.kind, { to: approver, ...spec.backup });
+      } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(
+          `${error.message}; the fallback to the approver also failed: ${reason}`,
+        );
+      }
+      return 'approver-fallback';
     }
-    return { deliveredTo: 'approver-fallback' };
   }
 
-  private async deliver(
-    kind: 'approval' | 'credentials',
-    message: { to: string; subject: string; html: string },
-  ): Promise<void> {
+  private async deliver(kind: EmailKind, message: EmailMessage): Promise<void> {
     // The Resend SDK does not throw on API errors (invalid key, unverified
     // domain, testing-recipient restriction, rate limit...): it resolves to
     // `{ data, error }`. Ignoring that result made a rejected email look
     // like a successful one (the endpoint answered 201, nothing was sent
     // and nothing was logged), so the error is surfaced here. The message
     // carries only Resend's error name/message, never the API key.
-    const label = kind === 'approval' ? 'approval' : 'credentials';
-    // Only the credentials email is time-bounded, as a whole (see
-    // CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps waiting
-    // for Resend as before.
+    const label = kind;
+    // Only the credentials and activation emails are time-bounded, as a whole
+    // (see CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps
+    // waiting for Resend as before.
     const { data, error } = await this.getClient().emails.send({
       from: 'onboarding@resend.dev',
       ...message,
@@ -337,6 +434,36 @@ function renderCredentialsEmailHtml(
     <p><strong>Dispositivo:</strong> ${deviceName}<br /><strong>Identificador del dispositivo:</strong> <code>${deviceIdentifier}</code></p>
     <p>Inicia sesión con el usuario y la contraseña temporal. Después, la aplicación necesita el identificador del dispositivo para reconocer este dispositivo: consérvalo junto con este mensaje.</p>
     <p>Es una contraseña temporal: cámbiala en cuanto la aplicación lo permita y no la compartas.</p>
+  </body>
+</html>`;
+}
+
+function renderDeviceActivationEmailHtml(
+  input: DeviceActivationEmailInput,
+  mode: 'direct' | 'backup',
+): string {
+  const deviceName = escapeHtml(input.deviceName);
+  const identifier = escapeHtml(input.identifier);
+  const businessNote = input.businessName
+    ? ` del negocio <strong>${escapeHtml(input.businessName)}</strong>`
+    : '';
+  const backupNote =
+    mode === 'backup'
+      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien administra:</strong> Este correo era para ${escapeHtml(input.to)} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente a la persona que usará el dispositivo por otro medio.</p>`
+      : '';
+  const heading =
+    mode === 'backup'
+      ? 'Reenvío de respaldo: código de activación de un dispositivo'
+      : 'Activa tu dispositivo';
+  return `<!doctype html>
+<html lang="es">
+  <body style="font-family: sans-serif; line-height: 1.5;">
+    <h1>${heading}</h1>
+    ${backupNote}
+    <p>Se registró el dispositivo <strong>${deviceName}</strong>${businessNote}. Para activarlo, escribe en la aplicación este código y el nombre exacto del dispositivo:</p>
+    <p><strong>Código de activación:</strong> <code>${identifier}</code></p>
+    <p><strong>Nombre del dispositivo:</strong> <code>${deviceName}</code></p>
+    <p>Es un código de un solo uso: deja de funcionar en cuanto se usa. Si lo pierdes o ya se usó, pide a un socio que te genere uno nuevo.</p>
   </body>
 </html>`;
 }

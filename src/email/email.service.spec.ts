@@ -702,3 +702,171 @@ describe('EmailService.sendBusinessCredentialsEmail shared deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('EmailService.sendDeviceActivationEmail', () => {
+  const activation = {
+    to: 'persona@example.test',
+    deviceName: 'Tablet del mostrador',
+    identifier: '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
+    businessName: 'Bolsas de prueba',
+  };
+  const rejected = (error: { name: string; message: string }) => ({
+    data: null,
+    error,
+  });
+  const payload = (call: number) =>
+    send.mock.calls[call][0] as { to: string; subject: string; html: string };
+
+  beforeEach(() => {
+    vi.stubEnv('RESEND_API_KEY', API_KEY);
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', 'approver@example.test');
+    send.mockReset();
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('sends the one-time code and the exact device name to the recipient', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_act' }, error: null });
+
+    const result = await new EmailService().sendDeviceActivationEmail(activation);
+
+    expect(result).toEqual({ deliveredTo: 'recipient' });
+    expect(send).toHaveBeenCalledTimes(1);
+    const { to, subject, html } = payload(0);
+    expect(to).toBe('persona@example.test');
+    expect(subject).toBe('Código para activar tu dispositivo: Tablet del mostrador');
+    expect(html).toContain(activation.identifier);
+    expect(html).toContain('Tablet del mostrador');
+    expect(html).toContain('Bolsas de prueba');
+    expect(html).toMatch(/un solo uso/i);
+    expect(html).toMatch(/deja de funcionar en cuanto se usa/i);
+    expect(html).toMatch(/pide a un socio/i);
+    expect(html).not.toMatch(/reenv[ií]o de respaldo/i);
+  });
+
+  it('carries no password and no token', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_act' }, error: null });
+
+    await new EmailService().sendDeviceActivationEmail(activation);
+
+    const { html } = payload(0);
+    expect(html).not.toMatch(/contrase/i);
+    expect(html).not.toMatch(/token/i);
+    expect(html).not.toContain(API_KEY);
+  });
+
+  it('forwards the same code to the approver as an explicit backup when Resend test mode refuses the recipient', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce({ data: { id: 'msg_backup' }, error: null });
+
+    const result = await new EmailService().sendDeviceActivationEmail(activation);
+
+    expect(result).toEqual({ deliveredTo: 'approver-fallback' });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(payload(0).to).toBe('persona@example.test');
+    const { to, subject, html } = payload(1);
+    expect(to).toBe('approver@example.test');
+    expect(subject).toMatch(/^\[RESPALDO\]/);
+    expect(html).toMatch(/reenv[ií]o de respaldo/i);
+    expect(html).toContain('Este correo era para persona@example.test');
+    expect(html).toContain(activation.identifier);
+  });
+
+  it('does not fall back on any other Resend error: it throws the rejection', async () => {
+    send.mockResolvedValue(
+      rejected({ name: 'invalid_api_key', message: 'API key is invalid' }),
+    );
+
+    const failure = await new EmailService()
+      .sendDeviceActivationEmail(activation)
+      .catch((e: Error) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    // The message names the kind of email and Resend's error, never the key.
+    expect((failure as Error).message).toMatch(
+      /Resend rejected the activation email.*invalid_api_key/,
+    );
+    expect((failure as Error).message).not.toContain(API_KEY);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fall back on a network error', async () => {
+    send.mockRejectedValue(new Error('network down'));
+
+    await expect(
+      new EmailService().sendDeviceActivationEmail(activation),
+    ).rejects.toThrow('network down');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws mentioning both failures when the backup is rejected too, without secrets', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce(
+        rejected({ name: 'rate_limit_exceeded', message: 'Too many requests' }),
+      );
+
+    const failure = await new EmailService()
+      .sendDeviceActivationEmail(activation)
+      .catch((e: Error) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    const { message } = failure as Error;
+    expect(message).toMatch(/fallback/i);
+    expect(message).toContain('validation_error');
+    expect(message).toContain('rate_limit_exceeded');
+    expect(message).not.toContain(API_KEY);
+    expect(message).not.toContain(activation.identifier);
+  });
+
+  it('throws when there is no approver address to fall back to', async () => {
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', '');
+    send.mockResolvedValue(rejected(TEST_MODE_ERROR));
+
+    await expect(
+      new EmailService().sendDeviceActivationEmail(activation),
+    ).rejects.toThrow(/fallback.*APPROVAL_NOTIFICATION_EMAIL.*device activation/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes a hostile device name, business name and recipient everywhere', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce({ data: { id: 'msg_backup' }, error: null });
+
+    await new EmailService().sendDeviceActivationEmail({
+      to: '<b>persona</b>@example.test',
+      deviceName: '<script>alert(1)</script>',
+      identifier: activation.identifier,
+      businessName: `"><img src=x onerror='a&b'>`,
+    });
+
+    for (const call of [0, 1]) {
+      const { html } = payload(call);
+      expect(html).not.toContain('<script>');
+      expect(html).not.toContain('<img');
+      expect(html).not.toContain('<b>');
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(html).toContain('&quot;&gt;&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;');
+    }
+    expect(payload(1).html).toContain('&lt;b&gt;persona&lt;/b&gt;@example.test');
+  });
+
+  it('omits the business sentence when no business name is given', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_act' }, error: null });
+
+    await new EmailService().sendDeviceActivationEmail({
+      to: activation.to,
+      deviceName: activation.deviceName,
+      identifier: activation.identifier,
+    });
+
+    expect(payload(0).html).not.toContain('del negocio');
+  });
+});
