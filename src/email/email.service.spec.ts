@@ -1089,9 +1089,20 @@ describe('EmailService.sendMemberCredentialsEmail', () => {
     expect(payload(1).html).toContain('&lt;b&gt;persona&lt;/b&gt;@example.test');
   });
 
-  it('shares ONE deadline between the direct send and the backup', async () => {
-    vi.useFakeTimers();
-    try {
+  describe('shared deadline', () => {
+    const after = (ms: number, value: unknown) =>
+      new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    const timedOut = `Resend member credentials email timed out after ${CREDENTIALS_EMAIL_TIMEOUT_MS} ms`;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('times out when the direct send never settles, without trying the backup', async () => {
       send.mockImplementation(() => new Promise(() => undefined));
 
       const pending = new EmailService()
@@ -1101,10 +1112,81 @@ describe('EmailService.sendMemberCredentialsEmail', () => {
 
       const failure = await pending;
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toMatch(/timed out/i);
+      expect((failure as Error).message).toBe(timedOut);
       expect(send).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
+
+    it('ends at the SAME total deadline when the direct send is refused and the backup never settles', async () => {
+      // The refusal arrives well inside the deadline, so the backup IS started;
+      // it then hangs. The call must still end at the original deadline, not
+      // at "refusal time + another full deadline".
+      const refusalAfter = 4_000;
+      send
+        .mockImplementationOnce(() =>
+          after(refusalAfter, rejected(TEST_MODE_ERROR)),
+        )
+        .mockImplementationOnce(() => new Promise(() => undefined));
+
+      let settled = false;
+      const outcome = new EmailService()
+        .sendMemberCredentialsEmail(member)
+        .catch((e: Error) => e)
+        .finally(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(refusalAfter);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(payload(1).to).toBe('approver@example.test');
+
+      // One millisecond before the original deadline it is still waiting...
+      await vi.advanceTimersByTimeAsync(
+        CREDENTIALS_EMAIL_TIMEOUT_MS - refusalAfter - 1,
+      );
+      expect(settled).toBe(false);
+      // ...and it ends exactly at the deadline, measured from the start.
+      await vi.advanceTimersByTimeAsync(1);
+      const failure = await outcome;
+      expect(settled).toBe(true);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(timedOut);
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not send the backup when the refusal arrives after the deadline has passed', async () => {
+      send.mockImplementationOnce(() =>
+        after(CREDENTIALS_EMAIL_TIMEOUT_MS + 500, rejected(TEST_MODE_ERROR)),
+      );
+
+      const outcome = new EmailService()
+        .sendMemberCredentialsEmail(member)
+        .catch((e: Error) => e);
+      await vi.advanceTimersByTimeAsync(CREDENTIALS_EMAIL_TIMEOUT_MS + 1_000);
+
+      const failure = await outcome;
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(timedOut);
+      // The caller already rolled back: forwarding credentials that never
+      // became valid would only mislead the approver.
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('delivers through the backup when both sends are reasonably fast', async () => {
+      send
+        .mockImplementationOnce(() =>
+          after(2_000, rejected(TEST_MODE_ERROR)),
+        )
+        .mockImplementationOnce(() =>
+          after(2_000, { data: { id: 'msg_backup' }, error: null }),
+        );
+
+      const outcome = new EmailService().sendMemberCredentialsEmail(member);
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      await expect(outcome).resolves.toEqual({
+        deliveredTo: 'approver-fallback',
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });

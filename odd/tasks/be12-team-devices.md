@@ -108,6 +108,9 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - Every `TypeError` from `argon2.verify` is treated as a malformed hash and stays silent: documented as a known limit in `verifyPassword`.
 
 - **T4 (commits `61f4af7`, `92d7cc5`, `942d5ba`): the native review was offered and the user declined it for this candidate.** Nothing was reviewed natively; the functional checks above are the only proof.
+- **T5 (commits `11de709` + `0631ca3`): native review approved (one lens) and the receipt is burned.** Two non-blocking advisories:
+  - `R3-shared-deadline-test-weak`: the test that claimed to prove a shared deadline never entered the fallback path. Addressed in `test(email): prove the shared deadline also covers the backup send`: the member-credentials email now has cases for a refusal followed by a backup that never settles (it ends exactly at the original deadline, not at refusal time plus another deadline) and for a refusal arriving after the deadline (no backup is sent). Mutation check: removing the `deadlinePassed` guard makes exactly the two "already passed" tests fail (the existing business-credentials one and the new member one); reverted.
+  - `R3-email-before-commit` (decision, no code change): the credentials email is sent from inside the transaction as its LAST step, the same policy as the business approval. If the commit fails after a successful send, or Resend delivers after the timeout, the person may hold credentials for an Account that was rolled back. That is harmless (those credentials cannot log in) and a retry issues a fresh set. Accepted limitation; revisit if an outbox is ever introduced.
 
 ## Engram mirror
 
@@ -115,4 +118,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T6 (change password).
+T6 commit B (change password), then T7 (documentation).
