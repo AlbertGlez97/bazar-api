@@ -2,72 +2,125 @@ import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
-  ForbiddenException,
+  Get,
   HttpCode,
   Inject,
+  Param,
+  ParseUUIDPipe,
+  Patch,
   Post,
   Req,
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
-import { IsString, Length } from 'class-validator';
-import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard.js';
-import { PrismaService } from '../database/prisma.service.js';
+import { SocioGuard } from '../auth/socio.guard.js';
+import { DevicesService } from './devices.service.js';
+import {
+  CreateDeviceDto,
+  IdentifyDeviceDto,
+  ReissueDeviceDto,
+} from './dto/device.dto.js';
 
-export class IdentifyDeviceDto {
-  // The stable identifier assigned out-of-band (currently via seed), not
-  // the internal database id; this call resolves one to the other.
-  @ApiProperty({
-    description:
-      'Stable device identifier assigned out-of-band (e.g. via seed), not the internal device id',
-  })
-  @IsString()
-  @Length(1, 100)
-  identifier!: string;
-  @IsString() @Length(1, 100) name!: string;
-}
+const validate = (expectedType: new () => object) =>
+  new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    expectedType,
+  });
 
 /**
- * Resolves a device's stable `identifier` (assigned out-of-band, currently
- * via seed) to its internal id, so the frontend can then send that id as
- * `x-device-id` on every request. Devices are never self-registered here:
- * a device must already exist and be `authorized` in this context, so lost
- * or compromised devices can be revoked centrally without depending on the
- * device itself to stop presenting its old credentials.
+ * Device management with one-time activation (BE-12).
+ *
+ * `identify` is the only route open to any authenticated account (a person
+ * activating a new device is not a socio yet on that device): it needs the
+ * login for the tenant context, not a member/device selection. Creating,
+ * listing, revoking and reissuing devices are socio-only ({@link SocioGuard}).
+ * Devices are never self-registered: a socio creates them first.
  */
 @ApiTags('devices')
 @ApiBearerAuth()
 @Controller('devices')
-@UseGuards(AuthGuard)
 export class DevicesController {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(DevicesService) private readonly devices: DevicesService,
+  ) {}
+
+  @Post()
+  @ApiOperation({
+    summary: 'Create a device with a one-time activation identifier',
+    description:
+      'Socio only. The device starts as pendiente_activacion with a fresh ' +
+      'one-time identifier. With correoEnvio the identifier is emailed and ' +
+      'NOT returned (deliveredTo says where it went); without it the ' +
+      'response carries the identifier to copy and share. 502 (and nothing ' +
+      'created) when the email cannot be delivered.',
+  })
+  @UseGuards(SocioGuard)
+  create(
+    @Req() request: AuthenticatedRequest,
+    @Body(validate(CreateDeviceDto)) dto: CreateDeviceDto,
+  ) {
+    return this.devices.create(request, dto);
+  }
+
+  @Get()
+  @ApiOperation({
+    summary: 'List the devices of the business',
+    description:
+      'Socio only. Status pendiente_activacion | activo | revocado, and ' +
+      'legacy=true for an active device that still authenticates with ' +
+      'x-device-id alone. The identifier appears only while it is an ' +
+      'unconsumed activation code; no token or hash is ever returned.',
+  })
+  @UseGuards(SocioGuard)
+  list(@Req() request: AuthenticatedRequest) {
+    return this.devices.list(request.account.contextId);
+  }
+
   @Post('identify')
   @ApiExample('device')
   @HttpCode(200)
-  async identify(
+  @UseGuards(AuthGuard)
+  identify(
     @Req() request: AuthenticatedRequest,
-    @Body(
-      new ValidationPipe({
-        transform: true,
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        expectedType: IdentifyDeviceDto,
-      }),
-    )
-    body: IdentifyDeviceDto,
+    @Body(validate(IdentifyDeviceDto)) body: IdentifyDeviceDto,
   ) {
-    const device = await this.prisma.device.findFirst({
-      where: {
-        identifier: body.identifier,
-        name: body.name,
-        contextId: request.account.contextId,
-        authorized: true,
-      },
-      select: { id: true },
-    });
-    if (!device)
-      throw new ForbiddenException('Device is unknown or unauthorized');
-    return { deviceId: device.id };
+    return this.devices.identify(request, body);
+  }
+
+  @Patch(':id/revoke')
+  @ApiOperation({
+    summary: 'Revoke a device',
+    description:
+      'Socio only. The device stops operating on its very next request. ' +
+      'Idempotent. 404 for a device of another business.',
+  })
+  @UseGuards(SocioGuard)
+  revoke(
+    @Req() request: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.devices.revoke(request, id);
+  }
+
+  @Patch(':id/reissue')
+  @ApiOperation({
+    summary: 'Reissue a one-time activation identifier for a device',
+    description:
+      'Socio only. Back to pendiente_activacion with a NEW identifier; the ' +
+      'old token and identifier stop working immediately. Works on active, ' +
+      'legacy and revoked devices. Optional correoEnvio, as in POST /devices. ' +
+      '404 for a device of another business.',
+  })
+  @UseGuards(SocioGuard)
+  reissue(
+    @Req() request: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(ReissueDeviceDto)) dto: ReissueDeviceDto,
+  ) {
+    return this.devices.reissue(request, id, dto);
   }
 }

@@ -220,9 +220,9 @@ export const operations: Record<string, Operation> = {
     errors: [invalid, forbidden, missing],
   },
   device: {
-    summary: 'Identify the authorized shared tablet',
+    summary: 'Identify or activate a device',
     description:
-      'Both identifier and name must match an already-authorized same-context device. Does not register a new device.',
+      'Identifier and exact name must match a same-context device. A pending device (POST /devices) is activated ONCE and answers { deviceId, deviceToken }; the token is shown only in that response and must be sent as x-device-token from then on. A used identifier or a revoked device answers 409, wrong credentials 403. A legacy device (created before BE-12) still answers { deviceId } with no token. Does not register a new device.',
     access: 'jwt',
     body: body(
       { identifier: string('shared-tablet'), name: string('Shared tablet') },
@@ -230,7 +230,14 @@ export const operations: Record<string, Operation> = {
       { identifier: 'shared-tablet', name: 'Shared tablet' },
     ),
     responses: ok({ deviceId: e.ids.device }),
-    errors: [invalid, [403, 'Device is unknown or unauthorized']],
+    errors: [
+      invalid,
+      [403, 'Device is unknown or unauthorized'],
+      [
+        409,
+        'Este identificador ya fue usado. Pide a un socio que te genere uno nuevo.',
+      ],
+    ],
   },
   productCreate: {
     summary: 'Add a PS5 game to the catalog',

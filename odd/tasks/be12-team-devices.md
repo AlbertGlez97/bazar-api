@@ -45,7 +45,7 @@ Route per task: delegated direct writer (one writer at a time). Trigger evidence
 - [x] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
 - [x] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
 - [x] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
-- [ ] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
+- [x] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
 - [ ] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
 - [ ] **T6 Change password.** `POST /auth/change-password`.
 - [ ] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file.
@@ -72,6 +72,18 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - The four services that re-check the device inside their transactions (members, products, sales, deudas) still require `authorized: true`; no token logic was added there, the guard owns it.
   - A repeated `x-device-token` header reaches Node as one comma-joined string, never as an array, so it simply fails the hash comparison (403). The test pins it.
   - RED -> GREEN: `test/context-guard-binding.e2e-spec.ts` 10 failed / 9 passed before the guard change (the 9 are positive controls: legacy device, shared login, right token), 19/19 after; `src/http/cors.spec.ts` 1 failed before, 32/32 after.
+- **T4 (three commits: `61f4af7` explicit member binding, `92d7cc5` activation email + generalized Resend fallback, and this one, the device endpoints).**
+  - Endpoints (`DevicesModule` / `DevicesService` / `DevicesController`; the controller moved out of `AppModule`): `POST /devices`, `GET /devices`, `POST /devices/identify` (adjusted), `PATCH /devices/:id/revoke`, `PATCH /devices/:id/reissue`. All management routes use `SocioGuard`; `identify` keeps `AuthGuard` only because it needs the tenant context and a person activating a new device is not a socio on it yet.
+  - Activation is race-safe: a conditional `updateMany ... WHERE status = 'pendiente_activacion'` (the loser matches nothing and gets the 409); three concurrent calls yield exactly one 200. The token (`generateDeviceToken`) is returned only in that response; only its sha256 is stored.
+  - Wording: a used identifier answers **409** `Este identificador ya fue usado. Pide a un socio que te genere uno nuevo.`; a revoked device answers 409 `Este dispositivo fue revocado. ...`; wrong name/identifier or another business identifier stays the plain **403** `Device is unknown or unauthorized`, so the three cases are distinguishable.
+  - **Legacy path of `identify` is unchanged**: an `activo` device with no `tokenHash` answers `200 { deviceId }` (no token) if it is authorized, else the plain 403. The identify tests in `test/auth.e2e-spec.ts` and `test/business-registration.e2e-spec.ts` pass without a single change.
+  - **Revoke keeps `tokenHash`**: nulling it would make the device look legacy and reopen the `x-device-id`-only path. Revoke is idempotent and also cancels a pending code. **Reissue** issues a new identifier, clears token and timestamps, works on active, legacy and revoked devices (this is how a legacy device moves to the token model), and leaves everything untouched if the email fails.
+  - `correoEnvio` (create and reissue): the email is sent as the LAST step inside the transaction; on failure the change rolls back and the API answers 502. The identifier is NOT in the response when emailed (`deliveredTo` says whether it went to the recipient or, in Resend test mode, to the approver as a backup). Transaction timeout 15 s vs the 10 s email deadline (unit test pins the 5 s margin).
+  - The identifier is listed by `GET /devices` only while `pendiente_activacion`; `legacy` = `activo` + no `tokenHash`; no token, hash or `authorized` is ever returned.
+  - Advisory (c) of T1's review is pinned by tests: after every endpoint the pair is exactly (`pendiente_activacion`, false), (`activo`, true) or (`revocado`, false), and `ContextGuard` rejects any device with `authorized = false` whatever its status or token hash.
+  - RED -> GREEN: `test/devices.e2e-spec.ts` 35 failed / 8 passed before the implementation (mostly 404), 43/43 after; `src/devices/devices.service.spec.ts` failed on the missing module, 2/2 after. Commit `92d7cc5`: 9 new email tests (the credentials tests are untouched and green), and a mutation check (dropping the device-name escaping made exactly the escaping test fail).
+  - Full suite after T4: unit 22 files / 297 tests; e2e 21 files / 232 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean.
+  - Not decided by the request, left as is: a socio may revoke or reissue the very device they are using (they lose access from it until it is reactivated).
 
 ## Review notes
 
@@ -92,4 +104,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T4 (device management).
+T5 (team management).

@@ -5,7 +5,7 @@ import { DatabaseModule } from './database/database.module.js';
 import { TenantContextMiddleware } from './database/tenant-context.middleware.js';
 import { AuthModule } from './auth/auth.module.js';
 import { MembersModule } from './members/members.module.js';
-import { DevicesController } from './devices/devices.controller.js';
+import { DevicesModule } from './devices/devices.module.js';
 import { ProductsModule } from './products/products.module.js';
 import { SalesModule } from './sales/sales.module.js';
 import { IncidenciasModule } from './incidencias/incidencias.module.js';
@@ -19,6 +19,7 @@ import { BusinessRegistrationModule } from './business-registration/business-reg
     DatabaseModule,
     AuthModule,
     MembersModule,
+    DevicesModule,
     ProductsModule,
     SalesModule,
     IncidenciasModule,
@@ -27,7 +28,7 @@ import { BusinessRegistrationModule } from './business-registration/business-reg
     DeudasModule,
     BusinessRegistrationModule,
   ],
-  controllers: [AppController, DevicesController],
+  controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule implements NestModule {
