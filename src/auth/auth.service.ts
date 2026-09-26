@@ -1,7 +1,7 @@
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { argon2id, hash, verify } from 'argon2';
 import { randomBytes } from 'node:crypto';
+import { hashPassword, verifyPassword } from '../common/password.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { JWT_EXPIRES_IN_SECONDS } from './jwt.constants.js';
 
@@ -12,9 +12,7 @@ export class AuthService {
   // fresh dummy hash per-request would still leak via not doing any hashing
   // at all when the username doesn't exist, letting an attacker distinguish
   // "unknown user" from "wrong password" through response timing.
-  private readonly dummyHash = hash(randomBytes(32).toString('hex'), {
-    type: argon2id,
-  });
+  private readonly dummyHash = hashPassword(randomBytes(32).toString('hex'));
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(JwtService) private readonly jwt: JwtService,
@@ -41,7 +39,7 @@ export class AuthService {
     const account = await this.prisma.account.findUnique({
       where: { username },
     });
-    const matches = await verify(
+    const matches = await verifyPassword(
       account?.passwordHash ?? (await this.dummyHash),
       password,
     );

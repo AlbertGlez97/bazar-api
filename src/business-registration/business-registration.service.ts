@@ -1,6 +1,5 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { argon2id, hash } from 'argon2';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import {
@@ -9,6 +8,7 @@ import {
 } from '../email/email.service.js';
 import { createServerId } from '../common/server-id.js';
 import { fullName } from '../common/full-name.js';
+import { hashPassword } from '../common/password.js';
 import {
   isAccountUsernameConflict,
   isTransactionExpired,
@@ -310,7 +310,7 @@ export class BusinessRegistrationService {
       data: {
         id: createServerId(),
         username,
-        passwordHash: await hash(temporaryPassword, { type: argon2id }),
+        passwordHash: await hashPassword(temporaryPassword),
         contextId,
       },
     });

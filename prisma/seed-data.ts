@@ -1,4 +1,4 @@
-import { argon2id, hash } from 'argon2';
+import { hashPassword } from '../src/common/password.js';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 
 interface DriverAdapterCause {
@@ -143,8 +143,7 @@ export async function seedContext(
     throw new Error('Seed username already belongs to another context');
   }
   const passwordHash =
-    existing?.passwordHash ??
-    (await hash(options.password, { type: argon2id }));
+    existing?.passwordHash ?? (await hashPassword(options.password));
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.context_id', ${options.contextId}, true)`;
     const account = await tx.account.upsert({

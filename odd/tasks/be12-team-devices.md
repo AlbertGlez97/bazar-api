@@ -43,7 +43,7 @@ Deliver (1) team management (socios/colaboradores) and (2) device management wit
 Route per task: delegated direct writer (one writer at a time). Trigger evidence: each task touches 2+ non-trivial files.
 
 - [x] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
-- [ ] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
+- [x] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
 - [ ] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
 - [ ] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
 - [ ] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
@@ -64,6 +64,16 @@ Each endpoint in the request is covered by tests including the 403 for a colabor
   - RED -> GREEN: `test/be12-schema.e2e-spec.ts` 14 failed / 2 passed before the migration; 16/16 after. The backfill test runs the exact SQL from the migration (marker comments) as the runtime role under RLS.
   - Full suite after T1: unit 18 files / 250 tests; e2e 19 files / 170 tests; `npm run lint` only the 2 known warnings; `npx tsc --noEmit -p tsconfig.build.json` clean; `prisma migrate diff` test DB vs schema: no difference.
   - `src/generated/prisma` is gitignored, so the regenerated client is local only (`npm run prisma:generate`) and is not part of the commit.
+- **T2 (this commit).** `src/common/password.ts` (`hashPassword`, `verifyPassword`) is now the single place that picks Argon2id and its parameters (library defaults, unchanged); `auth.service.ts`, `prisma/seed-data.ts` and `business-registration.service.ts` use it. `src/common/device-secret.ts` (`generateDeviceToken`, `hashDeviceToken`, `verifyDeviceToken`) is self-contained: 32 random bytes in base64url, sha256 hex, constant-time compare that never throws.
+  - Deliberate behavior: `argon2.verify` throws a `TypeError` on a malformed hash (`garbage`, empty, truncated). `verifyPassword` returns `false` instead, so a corrupt stored hash fails closed as a 401 rather than a 500. Hashing parameters and the login timing behavior (always verify, dummy hash for an unknown user) are unchanged.
+  - RED -> GREEN: the two new specs failed on the missing modules, then 29/29 passed. `generateTemporaryPassword` stays in `initial-credentials.ts`.
+
+## Review notes
+
+- **T1 (commit `c7e3979`): native review approved and the receipt is burned.** Three non-blocking advisories, recorded here and NOT to be re-reviewed:
+  - (a) The backfill test runs the `UPDATE` as the runtime role, not the `NO FORCE` / `FORCE ROW LEVEL SECURITY` lift as the migration owner, so the cross-tenant path of the migration is not proved by a test.
+  - (b) `authorized = false` -> `revocado` is a deliberate fail-closed assumption: such a device could not operate before either, and a socio can reissue it.
+  - (c) `status` and `authorized` can drift (no CHECK constraint): T4 must pin the allowed pairs with tests.
 
 ## Engram mirror
 
@@ -71,4 +81,4 @@ Pending: `mem_save` fails with `ambiguous_project` (the working directory holds 
 
 ## Next step
 
-T2 (shared helpers), then T3 (ContextGuard).
+T3 (ContextGuard).
