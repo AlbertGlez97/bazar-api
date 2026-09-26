@@ -91,7 +91,11 @@ class ResendRejectionError extends Error {
 
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
-type EmailKind = 'approval' | 'credentials' | 'activation';
+type EmailKind =
+  | 'approval'
+  | 'credentials'
+  | 'activation'
+  | 'member credentials';
 
 interface EmailMessage {
   to: string;
@@ -116,6 +120,28 @@ export interface DeviceActivationEmailResult {
    * approver, as a `[RESPALDO]` copy, because Resend test mode refused it.
    */
   deliveredTo: 'recipient' | 'approver-fallback';
+}
+
+export interface MemberCredentialsEmailInput {
+  /** The new member's own address (the `correo` a socio typed; not stored). */
+  to: string;
+  memberName: string;
+  username: string;
+  /** Shown only in the email body; never in the subject, the logs or errors. */
+  temporaryPassword: string;
+  role: 'socio' | 'colaborador';
+  businessName?: string;
+  /** The socio who added this person. */
+  addedByName?: string;
+}
+
+/** Where the new member's credentials actually went. */
+export interface MemberCredentialsEmailResult {
+  /**
+   * `member`: the address the socio typed. `approver-fallback`: the approver,
+   * as a `[RESPALDO]` copy, because Resend test mode refused it.
+   */
+  deliveredTo: 'member' | 'approver-fallback';
 }
 
 export interface BusinessRegistrationApprovalEmailInput {
@@ -320,6 +346,54 @@ export class EmailService {
   }
 
   /**
+   * Sends the login of a person a socio just added (`POST /members`): the
+   * username and a temporary password, with the reminder to change it through
+   * the in-app "Cambiar mi contraseña" option. It carries no device code.
+   *
+   * Same delivery policy as {@link sendBusinessCredentialsEmail}: while Resend
+   * is in test mode and refuses the recipient, the exact same credentials are
+   * forwarded to `APPROVAL_NOTIFICATION_EMAIL` as an explicit `[RESPALDO]`
+   * backup, and the result says so; any other failure propagates, and the
+   * caller relies on that to roll the member creation back. Both sends share
+   * ONE total deadline ({@link CREDENTIALS_EMAIL_TIMEOUT_MS}), so a caller
+   * that sends from inside a database transaction must keep that
+   * transaction's timeout well above it. Neither the thrown message nor the
+   * logs ever contain the password.
+   */
+  async sendMemberCredentialsEmail(
+    input: MemberCredentialsEmailInput,
+  ): Promise<MemberCredentialsEmailResult> {
+    let deadlinePassed = false;
+    try {
+      const delivery = await withTimeout(
+        this.deliverWithApproverFallback({
+          kind: 'member credentials',
+          what: 'member credentials',
+          recipientLabel: 'new member',
+          primary: {
+            to: input.to,
+            subject: `Tu acceso a Bazar${input.businessName ? `: ${input.businessName}` : ''}`,
+            html: renderMemberCredentialsEmailHtml(input, 'direct'),
+          },
+          backup: {
+            subject: `[RESPALDO] Credenciales para reenviar a ${input.memberName}`,
+            html: renderMemberCredentialsEmailHtml(input, 'backup'),
+          },
+          deadlinePassed: () => deadlinePassed,
+        }),
+        CREDENTIALS_EMAIL_TIMEOUT_MS,
+        'Resend member credentials email',
+      );
+      return {
+        deliveredTo: delivery === 'direct' ? 'member' : 'approver-fallback',
+      };
+    } catch (error) {
+      if (error instanceof TimeoutError) deadlinePassed = true;
+      throw error;
+    }
+  }
+
+  /**
    * Sends `primary`; when Resend test mode refuses that recipient (and ONLY
    * for that exact rejection, {@link isResendTestModeRecipientError}) it
    * forwards the same message to the approver with the `backup` subject and
@@ -464,6 +538,42 @@ function renderDeviceActivationEmailHtml(
     <p><strong>Código de activación:</strong> <code>${identifier}</code></p>
     <p><strong>Nombre del dispositivo:</strong> <code>${deviceName}</code></p>
     <p>Es un código de un solo uso: deja de funcionar en cuanto se usa. Si lo pierdes o ya se usó, pide a un socio que te genere uno nuevo.</p>
+  </body>
+</html>`;
+}
+
+function renderMemberCredentialsEmailHtml(
+  input: MemberCredentialsEmailInput,
+  mode: 'direct' | 'backup',
+): string {
+  const memberName = escapeHtml(input.memberName);
+  const username = escapeHtml(input.username);
+  const temporaryPassword = escapeHtml(input.temporaryPassword);
+  const role = escapeHtml(input.role);
+  const businessNote = input.businessName
+    ? ` del negocio <strong>${escapeHtml(input.businessName)}</strong>`
+    : '';
+  const addedByNote = input.addedByName
+    ? `<p>Te agregó ${escapeHtml(input.addedByName)}.</p>`
+    : '';
+  const backupNote =
+    mode === 'backup'
+      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien administra:</strong> Este correo era para ${escapeHtml(input.to)} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente a ${memberName} por otro medio.</p>`
+      : '';
+  const heading =
+    mode === 'backup'
+      ? 'Reenvío de respaldo: acceso de una persona nueva'
+      : 'Ya tienes acceso a Bazar';
+  return `<!doctype html>
+<html lang="es">
+  <body style="font-family: sans-serif; line-height: 1.5;">
+    <h1>${heading}</h1>
+    ${backupNote}
+    <p>Hola ${memberName}: ya puedes usar Bazar${businessNote} como <strong>${role}</strong>.</p>
+    ${addedByNote}
+    <p><strong>Usuario:</strong> <code>${username}</code></p>
+    <p><strong>Contraseña temporal:</strong> <code>${temporaryPassword}</code></p>
+    <p>Inicia sesión con el usuario y la contraseña temporal. Es una contraseña temporal: cámbiala lo antes posible con la opción <strong>Cambiar mi contraseña</strong> de la aplicación y no la compartas.</p>
   </body>
 </html>`;
 }

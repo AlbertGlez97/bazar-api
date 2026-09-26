@@ -870,3 +870,241 @@ describe('EmailService.sendDeviceActivationEmail', () => {
     expect(payload(0).html).not.toContain('del negocio');
   });
 });
+
+describe('EmailService.sendMemberCredentialsEmail', () => {
+  const member = {
+    to: 'nueva.persona@example.test',
+    memberName: 'Nueva Persona',
+    username: 'nueva.persona-a1b2c3',
+    temporaryPassword: 'Tmp-Pass_9x7Qk2LmZ4vB',
+    role: 'colaborador' as const,
+    businessName: 'Bolsas de prueba',
+    addedByName: 'Socio Fundador',
+  };
+  const rejected = (error: { name: string; message: string }) => ({
+    data: null,
+    error,
+  });
+  const payload = (call: number) =>
+    send.mock.calls[call][0] as { to: string; subject: string; html: string };
+
+  beforeEach(() => {
+    vi.stubEnv('RESEND_API_KEY', API_KEY);
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', 'approver@example.test');
+    send.mockReset();
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('sends the username and the temporary password to the new member', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_member' }, error: null });
+
+    const result = await new EmailService().sendMemberCredentialsEmail(member);
+
+    expect(result).toEqual({ deliveredTo: 'member' });
+    expect(send).toHaveBeenCalledTimes(1);
+    const { to, subject, html } = payload(0);
+    expect(to).toBe('nueva.persona@example.test');
+    expect(subject).toBe('Tu acceso a Bazar: Bolsas de prueba');
+    expect(html).toContain('Nueva Persona');
+    expect(html).toContain('nueva.persona-a1b2c3');
+    expect(html).toContain('Tmp-Pass_9x7Qk2LmZ4vB');
+    expect(html).toContain('Bolsas de prueba');
+    expect(html).toContain('Socio Fundador');
+    expect(html).toContain('colaborador');
+    expect(html).not.toMatch(/reenv[ií]o de respaldo/i);
+  });
+
+  it('tells the person to change the temporary password with the in-app option', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_member' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail(member);
+
+    const { html } = payload(0);
+    expect(html).toContain('Cambiar mi contraseña');
+    expect(html).toMatch(/contraseña temporal/i);
+  });
+
+  it('carries no device code and no API key', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_member' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail(member);
+
+    const { html } = payload(0);
+    expect(html).not.toMatch(/identificador del dispositivo/i);
+    expect(html).not.toMatch(/c[oó]digo de activaci[oó]n/i);
+    expect(html).not.toContain(API_KEY);
+  });
+
+  it('names the role of a socio', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_member' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail({ ...member, role: 'socio' });
+
+    expect(payload(0).html).toContain('socio');
+  });
+
+  it('omits the business and the adder sentences when they are not given', async () => {
+    send.mockResolvedValue({ data: { id: 'msg_member' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail({
+      to: member.to,
+      memberName: member.memberName,
+      username: member.username,
+      temporaryPassword: member.temporaryPassword,
+      role: 'colaborador',
+    });
+
+    const { subject, html } = payload(0);
+    expect(subject).toBe('Tu acceso a Bazar');
+    expect(html).not.toContain('del negocio');
+    expect(html).not.toContain('Te agregó');
+  });
+
+  it('keeps the temporary password out of the subject and out of every log line', async () => {
+    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce({ data: { id: 'msg_backup' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail(member);
+
+    for (const call of [0, 1]) {
+      expect(payload(call).subject).not.toContain(member.temporaryPassword);
+    }
+    const logged = [...log.mock.calls, ...warn.mock.calls].flat().join('\n');
+    expect(logged).not.toContain(member.temporaryPassword);
+    expect(logged).not.toContain(API_KEY);
+  });
+
+  it('forwards the same credentials to the approver as an explicit backup when Resend test mode refuses the recipient', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce({ data: { id: 'msg_backup' }, error: null });
+
+    const result = await new EmailService().sendMemberCredentialsEmail(member);
+
+    expect(result).toEqual({ deliveredTo: 'approver-fallback' });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(payload(0).to).toBe('nueva.persona@example.test');
+    const { to, subject, html } = payload(1);
+    expect(to).toBe('approver@example.test');
+    expect(subject).toMatch(/^\[RESPALDO\]/);
+    expect(subject).toContain('Nueva Persona');
+    expect(html).toMatch(/reenv[ií]o de respaldo/i);
+    expect(html).toContain('Este correo era para nueva.persona@example.test');
+    expect(html).toContain('nueva.persona-a1b2c3');
+    expect(html).toContain('Tmp-Pass_9x7Qk2LmZ4vB');
+  });
+
+  it('does not fall back on any other Resend error: it throws the rejection', async () => {
+    send.mockResolvedValue(
+      rejected({ name: 'invalid_api_key', message: 'API key is invalid' }),
+    );
+
+    const failure = await new EmailService()
+      .sendMemberCredentialsEmail(member)
+      .catch((e: Error) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    const { message } = failure as Error;
+    expect(message).toMatch(/Resend rejected the member credentials email.*invalid_api_key/);
+    expect(message).not.toContain(API_KEY);
+    expect(message).not.toContain(member.temporaryPassword);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fall back on a network error', async () => {
+    send.mockRejectedValue(new Error('network down'));
+
+    await expect(
+      new EmailService().sendMemberCredentialsEmail(member),
+    ).rejects.toThrow('network down');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws mentioning both failures, without secrets, when the backup is rejected too', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce(
+        rejected({ name: 'rate_limit_exceeded', message: 'Too many requests' }),
+      );
+
+    const failure = await new EmailService()
+      .sendMemberCredentialsEmail(member)
+      .catch((e: Error) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    const { message } = failure as Error;
+    expect(message).toMatch(/fallback/i);
+    expect(message).toContain('validation_error');
+    expect(message).toContain('rate_limit_exceeded');
+    expect(message).not.toContain(API_KEY);
+    expect(message).not.toContain(member.temporaryPassword);
+  });
+
+  it('throws when there is no approver address to fall back to', async () => {
+    vi.stubEnv('APPROVAL_NOTIFICATION_EMAIL', '');
+    send.mockResolvedValue(rejected(TEST_MODE_ERROR));
+
+    await expect(
+      new EmailService().sendMemberCredentialsEmail(member),
+    ).rejects.toThrow(/fallback.*APPROVAL_NOTIFICATION_EMAIL.*member credentials/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes every interpolated value, the password included, in both variants', async () => {
+    send
+      .mockResolvedValueOnce(rejected(TEST_MODE_ERROR))
+      .mockResolvedValueOnce({ data: { id: 'msg_backup' }, error: null });
+
+    await new EmailService().sendMemberCredentialsEmail({
+      to: '<b>persona</b>@example.test',
+      memberName: '<script>alert(1)</script>',
+      username: '<i>user</i>',
+      temporaryPassword: `"><img src=x onerror='a&b'>`,
+      role: 'colaborador',
+      businessName: '<u>negocio</u>',
+      addedByName: '<em>socio</em>',
+    });
+
+    for (const call of [0, 1]) {
+      const { html } = payload(call);
+      expect(html).not.toContain('<script>');
+      expect(html).not.toContain('<img');
+      expect(html).not.toContain('<b>');
+      expect(html).not.toContain('<i>');
+      expect(html).not.toContain('<u>');
+      expect(html).not.toContain('<em>');
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(html).toContain('&lt;i&gt;user&lt;/i&gt;');
+      expect(html).toContain('&quot;&gt;&lt;img src=x onerror=&#39;a&amp;b&#39;&gt;');
+    }
+    expect(payload(1).html).toContain('&lt;b&gt;persona&lt;/b&gt;@example.test');
+  });
+
+  it('shares ONE deadline between the direct send and the backup', async () => {
+    vi.useFakeTimers();
+    try {
+      send.mockImplementation(() => new Promise(() => undefined));
+
+      const pending = new EmailService()
+        .sendMemberCredentialsEmail(member)
+        .catch((e: Error) => e);
+      await vi.advanceTimersByTimeAsync(CREDENTIALS_EMAIL_TIMEOUT_MS);
+
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/timed out/i);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
