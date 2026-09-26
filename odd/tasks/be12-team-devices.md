@@ -1,0 +1,67 @@
+# BE-12 — Team management and device management with one-time activation
+
+Branch: `feat/backend-e0-be12-team-devices` (from `feat/backend-e0-be11-multitenancy` @ `dbfacee`).
+Status: in progress. No push until the user says so.
+
+## Objective
+
+Close the known blocker: an approved business has exactly one socio and one device, with no way to add more.
+Deliver (1) team management (socios/colaboradores) and (2) device management with a one-time activation code.
+
+## Approved decisions (from the request)
+
+- Role `socio` = full access: may add socios or colaboradores inside its own `contextId`.
+- `POST /members` (socio only): `nombre`, `apellidos`, `correo` (required, `@IsEmail`), `role`, optional `commissionRateBps` (rejected for a socio). Creates Member + Account in one transaction, emails a random temporary password (reuse `generateTemporaryPassword`, Resend fallback to `APPROVAL_NOTIFICATION_EMAIL`), records `createdByMemberId`.
+- `POST /auth/change-password` for any authenticated Member: `{ currentPassword, newPassword }`, verifies the current one, Argon2id.
+- `POST /devices` (socio only): `name`, optional `correoEnvio`; generates a one-time `identifier` (UUIDv7), device `status = pendiente_activacion`.
+- `POST /devices/identify`: activates a pending device (identifier + name match) and returns `{ deviceId, deviceToken }` once; the token is a long random secret stored hashed; the identifier is burned.
+- `PATCH /devices/:id/revoke`, `PATCH /devices/:id/reissue`, `GET /devices` (socio only; no identifier/token once consumed).
+- Colaborador on any management endpoint -> 403.
+
+## Decisions taken while mapping (the request left them open)
+
+1. **Account <-> Member link (user chose "Account.memberId + guard").** `Account` today is one shared login per business with no Member link, so a colaborador account could send a socio's `x-member-id` and pass `SocioGuard`. New nullable, unique `Account.memberId`. When set, `ContextGuard` requires `x-member-id` to equal it. When null (the shared login of every existing business, including the founding account created by business approval) behavior is unchanged: the shared-tablet flow where several people pick their name keeps working. Accounts created by `POST /members` are always bound.
+2. **Legacy devices (ContextGuard migration).** `x-device-id` is the internal `Device.id` and carries no secret today. New nullable `Device.tokenHash`. `tokenHash IS NULL` = legacy device: keeps working with `x-device-id` alone (all seeded devices, all e2e fixtures, every device already stored in a frontend, and the initial device created by business approval). `tokenHash` set = the request must also send `x-device-token`, compared through its sha256 hash. A socio moves a legacy device to the token model by `reissue`. The legacy path has an explicit sunset to be scheduled once the frontend sends the token.
+3. **Status vs `authorized`.** New enum `DeviceStatus { pendiente_activacion, activo, revocado }` with default `activo`. The existing `authorized` boolean stays the operating gate read by the guard and the four services; management code keeps it in sync (`activo` = true, otherwise false).
+4. **Burned identifier -> 409 Conflict** with a clear message, distinct from wrong credentials (403).
+5. **`/devices/identify` keeps requiring the JWT** (needs the tenant context for RLS).
+6. **New header `x-device-token`** must be added to the CORS allow-list and its spec.
+7. **`correo` of a new member is used only to send the credentials; it is not persisted** (Member has no such column and the request did not ask for one).
+8. **The initial device of a business approval stays legacy** (`activo`, no token) so onboarding through today's frontend keeps working.
+9. **Frontend follow-up (out of scope):** a device activated through the new flow gets a token the current frontend ignores, so it would receive 403. The frontend must send `x-device-token` before real use of `POST /devices`. Documented in both api-contract copies.
+
+## Delivery constraints
+
+- One atomic Conventional Commit per task, tests and docs alongside. No push.
+- TDD mode ON. Source: explicit user request. Runner: `npx vitest run <file>` (unit), `npm run test:e2e` (e2e, needs the `postgres-test` container on 5433; run `npm run db:migrate:test` after each migration).
+- Do NOT run `nest build` (it rewrites `dist/`, which the running dev server executes) and do NOT migrate the dev database: use `npx tsc --noEmit -p tsconfig.build.json` for type checks. The dev DB migration and API restart happen after review.
+- `.env*` files are permission-denied for the tools; never edit them.
+- Planning heuristic of ~400 authored changed lines per task is advisory only.
+
+## Tasks
+
+Route per task: delegated direct writer (one writer at a time). Trigger evidence: each task touches 2+ non-trivial files.
+
+- [ ] **T1 Schema and migrations.** `Account.memberId`, `Member.createdByMemberId`, `DeviceStatus`, `Device.status/tokenHash/activatedAt/revokedAt`; data migration for existing devices; regenerate client; seed and existing tests still green.
+- [ ] **T2 Shared helpers.** Extract the duplicated Argon2id hashing into one helper; add the device secret helper (random secret + sha256 hash + constant-time compare).
+- [ ] **T3 ContextGuard.** Member binding through `Account.memberId`; `x-device-token` verification with the legacy path; CORS allow-list update.
+- [ ] **T4 Device management.** `POST /devices`, `GET /devices`, `identify` activation, `revoke`, `reissue`; activation email.
+- [ ] **T5 Team management.** `POST /members` (transactional Member + Account, `createdByMemberId`), credentials email with the Resend fallback generalized.
+- [ ] **T6 Change password.** `POST /auth/change-password`.
+- [ ] **T7 Documentation.** `doc/reglas-de-negocio.md`, `doc/api-contract-for-frontend.md` in both repos, swagger examples, README, this file.
+
+## Acceptance
+
+Each endpoint in the request is covered by tests including the 403 for a colaborador; a revoked token fails on the very next request; a reissued identifier works and the old token stops working; the full unit and e2e suites are green; lint is clean apart from the two known warnings in `test/sales-conflict.e2e-spec.ts`.
+
+## Progress and evidence
+
+(updated after each task)
+
+## Engram mirror
+
+Pending: `mem_save` fails with `ambiguous_project` (the working directory holds two repos) and the user has not chosen a project. Local file is the record until then.
+
+## Next step
+
+T1.
