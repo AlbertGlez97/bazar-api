@@ -310,7 +310,15 @@ describe('auth: change own password (BE-12)', () => {
   });
 
   describe('concurrency', () => {
-    it('two simultaneous changes: exactly one wins (204), the other gets 409, and the account stays consistent', async () => {
+    // Promise.all does not fix the interleaving. If both requests verify the
+    // old hash before either writes, the loser's conditional write matches no
+    // row (409); if one finishes before the other has read the account, the
+    // loser verifies its OLD current password against the NEW hash (403). Both
+    // are correct, so the assertion is on the invariant, not on which one
+    // happens: exactly one 204, the loser is refused with a retryable status,
+    // and the account ends with exactly the winner's password. The 409 path
+    // itself is pinned deterministically in auth.service.spec.ts.
+    it('two simultaneous changes: exactly one wins (204), the other is refused (409 or 403), and the account stays consistent', async () => {
       const account = await makeAccount();
       const A = 'Concurrent-A_0123456789';
       const B = 'Concurrent-B_9876543210';
@@ -320,11 +328,15 @@ describe('auth: change own password (BE-12)', () => {
         change(account.token, { currentPassword: OLD, newPassword: B }),
       ]);
 
-      expect([first.status, second.status].sort((a, b) => a - b)).toEqual([
-        204, 409,
-      ]);
-      const loser = first.status === 409 ? first : second;
-      expect(loser.body.message).toMatch(/changed by another request/i);
+      const statuses = [first.status, second.status];
+      expect(statuses.filter((status) => status === 204)).toHaveLength(1);
+      const loser = first.status === 204 ? second : first;
+      expect([403, 409]).toContain(loser.status);
+      expect(loser.body.message).toMatch(
+        loser.status === 409
+          ? /changed by another request/i
+          : /current password is incorrect/i,
+      );
       const [winnerPassword, loserPassword] =
         first.status === 204 ? [A, B] : [B, A];
       await login(account.username, winnerPassword).expect(200);

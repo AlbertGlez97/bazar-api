@@ -1,5 +1,9 @@
 import type { ApiBodyOptions, ApiQueryOptions } from '@nestjs/swagger';
 import type { SchemaObject } from '@nestjs/swagger';
+import {
+  MAX_PASSWORD_LENGTH,
+  MIN_NEW_PASSWORD_LENGTH,
+} from '../auth/dto/change-password.dto.js';
 import * as e from './bazaar-examples.js';
 
 type Operation = {
@@ -202,8 +206,7 @@ export const operations: Record<string, Operation> = {
   },
   changePassword: {
     summary: 'Change my own password',
-    description:
-      'Any logged-in person (socio or colaborador) changes the password of their own account; only the bearer token is needed, no x-member-id or x-device-id. newPassword must have 10 to 128 characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.',
+    description: `Any logged-in person (a socio, a colaborador or the shared business login) changes the password of their own account; only the bearer token is needed, no x-member-id or x-device-id. newPassword must have ${MIN_NEW_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.`,
     access: 'jwt',
     body: body(
       {
@@ -216,8 +219,8 @@ export const operations: Record<string, Operation> = {
           ...string('REPLACE_WITH_A_NEW_PASSWORD'),
           format: 'password',
           writeOnly: true,
-          minLength: 10,
-          maxLength: 128,
+          minLength: MIN_NEW_PASSWORD_LENGTH,
+          maxLength: MAX_PASSWORD_LENGTH,
         },
       },
       ['currentPassword', 'newPassword'],
@@ -235,7 +238,7 @@ export const operations: Record<string, Operation> = {
       {
         status: 403,
         description:
-          'The current password is incorrect (or the stored hash is unusable). Nothing changed.',
+          'The current password is incorrect (or the stored hash is unusable). Nothing changed. A request that lost a simultaneous change may also get this, because the other change already replaced the password.',
         value: {
           message: 'Current password is incorrect',
           error: 'Forbidden',
@@ -245,7 +248,7 @@ export const operations: Record<string, Operation> = {
       {
         status: 409,
         description:
-          'Another password change for the same account won a simultaneous race; retry with the latest password.',
+          'Another password change for the same account won a simultaneous race while both verified the same current password; retry with the latest password.',
         value: {
           message:
             'The password was changed by another request; try again with the latest password',

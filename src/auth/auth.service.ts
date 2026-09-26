@@ -70,15 +70,25 @@ export class AuthService {
    * A wrong current password is a 403, NOT a 401: the frontend treats 401 as
    * an expired session and logs the person out. A stored hash that is
    * corrupt fails the same way (a 403, never a 500). The write is conditional
-   * on the hash that was verified, so two simultaneous changes cannot both
-   * succeed: the second finds no row to update and gets a 409, and the account
-   * keeps exactly one of the two new passwords.
+   * on the hash that was verified AND on the account still being active, so
+   * two simultaneous changes cannot both succeed and a deactivation between
+   * the read and the write is not overwritten. The account keeps exactly one
+   * of the two new passwords.
+   *
+   * The loser of a race gets a 409 when its write finds no row to update
+   * while the account is still active (both requests verified the same old
+   * hash), or a 403 when it only read the account after the winner had already
+   * written (its old current password no longer matches the new hash). Both
+   * are correct: the caller retries with the latest password. An account
+   * deactivated between the read and the write gets the same 401 as one that
+   * was inactive from the start.
    *
    * Existing tokens stay valid until they expire (they are stateless); a
    * `passwordChangedAt` check would be the fix and is a known follow-up.
    * Neither the passwords nor the hashes are ever logged or returned.
    *
-   * @throws UnauthorizedException when the account is missing or inactive.
+   * @throws UnauthorizedException when the account is missing or inactive
+   * (including a deactivation that happens before the write).
    * @throws ForbiddenException when the current password does not match.
    * @throws ConflictException when another change won the race.
    */
@@ -95,12 +105,24 @@ export class AuthService {
       throw new ForbiddenException('Current password is incorrect');
     const passwordHash = await hashPassword(newPassword);
     const { count } = await this.prisma.account.updateMany({
-      where: { id: account.id, passwordHash: account.passwordHash },
+      where: {
+        id: account.id,
+        passwordHash: account.passwordHash,
+        active: true,
+      },
       data: { passwordHash },
     });
-    if (count === 0)
+    if (count === 0) {
+      // No row matched: either the account was deactivated after the read
+      // (same 401 as an inactive account) or another change replaced the hash
+      // first (409).
+      const stillActive = await this.prisma.account.findFirst({
+        where: { id: account.id, active: true },
+      });
+      if (!stillActive) throw new UnauthorizedException();
       throw new ConflictException(
         'The password was changed by another request; try again with the latest password',
       );
+    }
   }
 }

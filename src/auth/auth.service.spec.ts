@@ -60,12 +60,18 @@ describe('AuthService.login', () => {
 
 // Stubbed Prisma: pins the change-password outcomes without a database. The
 // account is read with `findFirst({ id, active: true })` and written with a
-// conditional `updateMany` keyed on the previous hash.
+// conditional `updateMany` keyed on the previous hash AND `active: true`.
+// When the write matches no row, the account is read once more to tell a
+// deactivation apart from a lost race; `reread` is what that second read
+// returns (by default the same account, i.e. still active).
 function buildChange(
   account: Record<string, unknown> | null,
   updated = { count: 1 },
+  reread?: Record<string, unknown> | null,
 ) {
   const findFirst = vi.fn().mockResolvedValue(account);
+  if (reread !== undefined)
+    findFirst.mockResolvedValueOnce(account).mockResolvedValueOnce(reread);
   const updateMany = vi.fn().mockResolvedValue(updated);
   const service = new AuthService(
     { account: { findFirst, updateMany } } as unknown as PrismaService,
@@ -94,7 +100,9 @@ describe('AuthService.changePassword', () => {
     const [{ where, data }] = updateMany.mock.calls[0] as [
       { where: Record<string, unknown>; data: { passwordHash: string } },
     ];
-    expect(where).toEqual({ id: 'acc-1', passwordHash });
+    // `active: true` closes the window where the account is deactivated
+    // between the read and the write.
+    expect(where).toEqual({ id: 'acc-1', passwordHash, active: true });
     expect(data.passwordHash).toMatch(/^\$argon2id\$/);
     expect(data.passwordHash).not.toBe(passwordHash);
     await expect(
@@ -163,6 +171,47 @@ describe('AuthService.changePassword', () => {
     await expect(failure).rejects.toMatchObject({
       message: expect.stringMatching(/changed by another request/i),
     });
+  });
+
+  // Deterministic pin of the 409 path: the write matched no row and the
+  // account is still active on the re-read, so another change won the race.
+  it('re-reads the account after an empty write and answers 409 when it is still active', async () => {
+    const passwordHash = await hashPassword('current-secret-1');
+    const active = { id: 'acc-1', active: true, passwordHash };
+    const { service, findFirst } = buildChange(active, { count: 0 }, active);
+
+    await expect(
+      service.changePassword('acc-1', 'current-secret-1', 'brand-new-secret-2'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(findFirst).toHaveBeenCalledTimes(2);
+    expect(findFirst).toHaveBeenLastCalledWith({
+      where: { id: 'acc-1', active: true },
+    });
+  });
+
+  // The account is deactivated between the read and the write: the write
+  // must not change the password of a deactivated account, and the caller gets
+  // the same 401 as for an account that was inactive from the start.
+  it('answers 401 (not 409, not 204) when the account is deactivated between the read and the write', async () => {
+    const passwordHash = await hashPassword('current-secret-1');
+    const { service, updateMany, findFirst } = buildChange(
+      { id: 'acc-1', active: true, passwordHash },
+      { count: 0 },
+      null,
+    );
+
+    const failure = service.changePassword(
+      'acc-1',
+      'current-secret-1',
+      'brand-new-secret-2',
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: 'acc-1', passwordHash, active: true },
+    });
+    expect(findFirst).toHaveBeenCalledTimes(2);
   });
 
   it('never logs a password or a hash', async () => {
