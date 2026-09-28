@@ -263,6 +263,18 @@ describe('context-scoped products', () => {
       ).toBe(7500);
     });
   });
+  it('allows correcting an already-set purchaseCostMinor to a different non-null value', async () => {
+    const product = await create({ ...body(), purchaseCostMinor: 7500 });
+    await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
+      .send({ purchaseCostMinor: 8200 })
+      .expect(200);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .purchaseCostMinor,
+      ).toBe(8200);
+    });
+  });
   it('leaves an existing purchaseCostMinor unchanged when the patch omits it', async () => {
     const product = await create({ ...body(), purchaseCostMinor: 7500 });
     await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
