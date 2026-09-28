@@ -45,8 +45,13 @@ export class CreateProductDto extends ProductPriceDto {
   @Max(MAX_MINOR_UNITS)
   initialStock?: number;
   @IsOptional() @IsString() @Length(1, 100) category?: string | null;
-  @IsOptional() @IsInt() @Min(0) @Max(MAX_MINOR_UNITS) purchaseCostMinor?:
-    number | null;
+  // Mandatory on create (BE-13): the profit reports/dashboard can never
+  // estimate a missing cost, so every new product must carry one from the
+  // start. Editing an existing product still allows omitting the field
+  // (see PatchProductDto/ProductMetadataDto) or leaving it untouched;
+  // ProductsService.mutate() separately rejects clearing a cost that was
+  // already set.
+  @IsInt() @Min(0) @Max(MAX_MINOR_UNITS) purchaseCostMinor!: number;
   @IsOptional() @IsString() @Length(1, 200) supplier?: string | null;
   @IsOptional() @IsString() @Length(0, 2000) notes?: string | null;
 }

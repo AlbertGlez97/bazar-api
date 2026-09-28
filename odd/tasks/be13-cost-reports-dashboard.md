@@ -127,11 +127,21 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
 
 ## Checklist
 
-- [ ] **B1** Migration: `SaleItem.unitCostMinor Int?`. Apply it (`npm run db:migrate`... confirm exact script
-      name) and to the test DB (`npm run db:migrate:test`).
-- [ ] **B2** `CreateProductDto.purchaseCostMinor` required (`@IsInt() @Min(0) @Max(MAX_MINOR_UNITS)`, no
+- [x] **B1** Migration: `SaleItem.unitCostMinor Int?`. Applied to dev via
+      `npx prisma migrate dev --name be13_sale_item_unit_cost` (uses `DATABASE_URL_MIGRATE` per
+      `prisma.config.ts`) and to the test DB via `npm run db:migrate:test`. Commit `a3d536c`. Unit
+      351/351, e2e 477/477, lint clean, build ok. Reviewed by Gentle AI (medium risk, `review-reliability`
+      lens, approved, 2 non-blocking suggestions: confirm the migrate command in this doc — done here — and
+      an optional DB-level `CHECK (unitCostMinor IS NULL OR unitCostMinor >= 0)`, skipped: the only write
+      path copies an already-DTO-validated `Product.purchaseCostMinor`, matching how every other minor-unit
+      column in this schema relies on DTO validation alone, no CHECK constraints).
+- [x] **B2** `CreateProductDto.purchaseCostMinor` required (`@IsInt() @Min(0) @Max(MAX_MINOR_UNITS)`, no
       `@IsOptional()`). `ProductsService.mutate()`: reject clearing a set cost (400). Update Swagger examples.
-      TDD: RED first (create without cost → currently succeeds; must become 400).
+      TDD: RED observed (create-without-cost and clear-a-set-cost both failed against unmodified code), then
+      GREEN. Fixture fallout fixed: `test/products.e2e-spec.ts` and `test/multitenancy.e2e-spec.ts` were the
+      only specs creating products through the real DTO path and needed `purchaseCostMinor` added (every
+      other spec's Product fixture writes directly via Prisma, bypassing the DTO, unaffected). 482/482 e2e,
+      351/351 unit, lint clean, build ok.
 - [ ] **B3** `SalesService.create()`: snapshot `unitCostMinor` off the already-locked product row into each
       line. TDD: RED first (create a sale, assert the persisted `SaleItem.unitCostMinor`; assert changing the
       product's cost afterward does not change an old sale's stored value).

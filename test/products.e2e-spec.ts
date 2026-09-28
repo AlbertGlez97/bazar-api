@@ -37,6 +37,7 @@ describe('context-scoped products', () => {
     tipo: 'cantidad',
     unitPriceMinor: 12550,
     initialStock: 5,
+    purchaseCostMinor: 8000,
   });
   const actor = () => ({
     account: { id: accountId, contextId },
@@ -153,6 +154,7 @@ describe('context-scoped products', () => {
       name: 'Unique',
       tipo: 'unica',
       unitPriceMinor: 100,
+      purchaseCostMinor: 60,
     } as ReturnType<typeof body>);
     expect(product.initialStock).toBe(1);
     expect(product.stock).toBe(1);
@@ -238,6 +240,63 @@ describe('context-scoped products', () => {
         .send(change)
         .expect(400);
     }
+  });
+  it('rejects a product created without purchaseCostMinor', async () => {
+    const { purchaseCostMinor: _purchaseCostMinor, ...withoutCost } = body();
+    await write(request(app.getHttpServer()).post('/products'))
+      .send(withoutCost)
+      .expect(400);
+  });
+  it('creates a product with purchaseCostMinor and persists it', async () => {
+    const product = await create({ ...body(), purchaseCostMinor: 7500 });
+    expect(product.purchaseCostMinor).toBe(7500);
+  });
+  it('rejects clearing an already-set purchaseCostMinor on patch', async () => {
+    const product = await create({ ...body(), purchaseCostMinor: 7500 });
+    await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
+      .send({ purchaseCostMinor: null })
+      .expect(400);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .purchaseCostMinor,
+      ).toBe(7500);
+    });
+  });
+  it('leaves an existing purchaseCostMinor unchanged when the patch omits it', async () => {
+    const product = await create({ ...body(), purchaseCostMinor: 7500 });
+    await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
+      .send({ notes: 'Updated notes only' })
+      .expect(200);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+          .purchaseCostMinor,
+      ).toBe(7500);
+    });
+  });
+  it('allows patching a product that never had a purchaseCostMinor without requiring one', async () => {
+    const legacy = await withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: `Legacy product ${randomUUID()}`,
+          tipo: 'cantidad',
+          unitPriceMinor: 500,
+          initialStock: 3,
+          stock: 3,
+          contextId,
+        },
+      }),
+    );
+    await write(request(app.getHttpServer()).patch(`/products/${legacy.id}`))
+      .send({ notes: 'Still no cost tracked' })
+      .expect(200);
+    await withTestTenant(contextId, async () => {
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: legacy.id } }))
+          .purchaseCostMinor,
+      ).toBeNull();
+    });
   });
   it('serializes concurrent audit predecessors and leaves the last value persisted', async () => {
     const product = await create();

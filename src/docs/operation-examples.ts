@@ -317,7 +317,7 @@ export const operations: Record<string, Operation> = {
   productCreate: {
     summary: 'Add a PS5 game to the catalog',
     description:
-      'Socio only. unica always starts with stock 1. cantidad requires initialStock. Optional metadata can be omitted; image is uploaded separately. Create also writes an audit.',
+      'Socio only. unica always starts with stock 1. cantidad requires initialStock. purchaseCostMinor is mandatory; other metadata is optional and can be omitted. Image is uploaded separately. Create also writes an audit.',
     access: 'socio',
     body: body(
       {
@@ -332,7 +332,7 @@ export const operations: Record<string, Operation> = {
             'Required for cantidad; optional and forced to 1 for unica.',
         },
       },
-      ['name', 'tipo', 'unitPriceMinor'],
+      ['name', 'tipo', 'unitPriceMinor', 'purchaseCostMinor'],
       e.productInput,
     ),
     responses: ok(e.product, 201),
@@ -341,7 +341,7 @@ export const operations: Record<string, Operation> = {
   productPatch: {
     summary: 'Change Spider-Man 2 price to MXN $1,200.00',
     description:
-      'Socio only; at least one field. Cannot patch tipo, stock or initialStock. Nullable metadata may be cleared with null. Transactional audit records old/new values.',
+      'Socio only; at least one field. Cannot patch tipo, stock or initialStock. Nullable metadata may be cleared with null, except purchaseCostMinor: once set it can be corrected but never cleared back to null. Transactional audit records old/new values.',
     access: 'socio',
     id: e.ids.spiderMan,
     body: body(productFields, [], { unitPriceMinor: 120000 }),

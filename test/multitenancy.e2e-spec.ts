@@ -117,6 +117,7 @@ describe('multi-tenancy isolation (BE-11)', () => {
         name: 'Bonsái exclusivo de A',
         tipo: 'unica',
         unitPriceMinor: 50000,
+        purchaseCostMinor: 30000,
       })
       .expect(201);
     const productId = created.body.id as string;
@@ -156,6 +157,7 @@ describe('multi-tenancy isolation (BE-11)', () => {
         tipo: 'cantidad',
         unitPriceMinor: 1000,
         initialStock: 10,
+        purchaseCostMinor: 600,
       })
       .expect(201);
     const productId = created.body.id as string;

@@ -175,6 +175,13 @@ export class ProductsService {
    * @throws NotFoundException when the product does not exist in this
    * context (including a product belonging to another context, which must
    * be indistinguishable from nonexistent).
+   * @throws BadRequestException when `data.purchaseCostMinor` would clear
+   * (set to `null`) a cost the product already has (BE-13): once a
+   * product's cost is known, later profit reports must keep being able to
+   * rely on it, so it can only ever be corrected to another value, never
+   * blanked out again. A product that never had a cost is unaffected —
+   * `undefined` (field simply not present in the update) never triggers
+   * this check.
    */
   private async mutate(
     actor: Actor,
@@ -188,6 +195,10 @@ export class ProductsService {
         where: { id, contextId: actor.account.contextId },
       });
       if (!before) throw new NotFoundException();
+      if (before.purchaseCostMinor !== null && data.purchaseCostMinor === null)
+        throw new BadRequestException(
+          'purchaseCostMinor cannot be cleared once it has been set',
+        );
       const product = await tx.product.update({ where: { id }, data });
       await this.audit(tx, memberId, product, before);
       return this.response(product);
