@@ -594,6 +594,9 @@ describe('dashboard summary (BE-13)', () => {
   });
 
   it("isolates every field: another context's sale/incidencia/deuda/product never appear", async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary'),
+    ).expect(200);
     const otherContextId = `be13-dashboard-other-${randomUUID()}`;
     await prisma.account.create({
       data: {
@@ -684,6 +687,17 @@ describe('dashboard summary (BE-13)', () => {
       (i: { name: string }) => i.name,
     );
     expect(productNames).not.toContain('Producto de otro contexto');
+    // Exact-zero deltas on every remaining field: the other context's
+    // fixtures include a today sale (would move ventasHoy.count and, since
+    // its line has a cost, gananciaHoyMinor), a pendiente incidencia
+    // (incidenciasPendientes) and a pendiente deuda with its own deudor
+    // (deudasPendientes.personas) — none of this test's earlier assertions
+    // would catch any of those leaking, only these deltas do.
+    expect(res.body.ventasHoy.count - before.body.ventasHoy.count).toBe(0);
+    expect(res.body.gananciaHoyMinor - before.body.gananciaHoyMinor).toBe(0);
+    expect(res.body.lineasSinCostoHoy - before.body.lineasSinCostoHoy).toBe(0);
+    expect(res.body.incidenciasPendientes - before.body.incidenciasPendientes).toBe(0);
+    expect(res.body.deudasPendientes.personas - before.body.deudasPendientes.personas).toBe(0);
 
     await withTestTenant(otherContextId, async () => {
       await prisma.abono.deleteMany({ where: { contextId: otherContextId } });
