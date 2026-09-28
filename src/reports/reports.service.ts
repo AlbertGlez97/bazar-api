@@ -189,10 +189,16 @@ export class ReportsService {
         gananciaDisponible,
       };
     });
+    // Revenue desc, then product name — both can tie (two different
+    // products with the same name, or the same product sold by two
+    // members with identical revenue), and a paginated result must be
+    // stable across requests: productId/memberId break every remaining tie.
     rows.sort(
       (a, b) =>
         b.ingresoMinor - a.ingresoMinor ||
-        a.productName.localeCompare(b.productName),
+        a.productName.localeCompare(b.productName) ||
+        a.productId.localeCompare(b.productId) ||
+        a.memberId.localeCompare(b.memberId),
     );
 
     const total = rows.length;

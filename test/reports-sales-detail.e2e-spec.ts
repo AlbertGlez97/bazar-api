@@ -436,6 +436,74 @@ describe('reports sales-detail (BE-13)', () => {
     expect(page1Ids.some((id: string) => page2Ids.includes(id))).toBe(false);
   });
 
+  it('splits rows by member: the same product sold by two different members produces two rows, ordered by revenue descending', async () => {
+    const day = new Date('2025-06-07T12:00:00.000Z');
+    const product = await createProduct(`PS5 dos vendedores ${randomUUID()}`, 100);
+    const otherMemberId = await withTestTenant(contextId, async () =>
+      (
+        await prisma.member.create({
+          data: { name: 'Otro Socio', role: 'socio', contextId },
+        })
+      ).id,
+    );
+    await createSale({
+      memberId: socioMemberId,
+      receivedAt: day,
+      items: [{ productId: product.id, quantity: 1, unitPriceMinor: 2_000, unitCostMinor: 100 }],
+    });
+    await createSale({
+      memberId: otherMemberId,
+      receivedAt: day,
+      items: [{ productId: product.id, quantity: 1, unitPriceMinor: 3_000, unitCostMinor: 100 }],
+    });
+
+    const res = await asSocio(
+      request(app.getHttpServer()).get(
+        `/reports/sales-detail?from=2025-06-07&to=2025-06-07&limit=100`,
+      ),
+    ).expect(200);
+    const rows = res.body.items.filter((i: { productId: string }) => i.productId === product.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r: { memberId: string }) => r.memberId).sort()).toEqual(
+      [socioMemberId, otherMemberId].sort(),
+    );
+    // Revenue descending: the 3,000 row (otherMemberId) comes before the 2,000 row.
+    expect(rows[0].memberId).toBe(otherMemberId);
+    expect(rows[0].ingresoMinor).toBe(3_000);
+    expect(rows[1].ingresoMinor).toBe(2_000);
+  });
+
+  it('breaks a full tie (same revenue, same product name) deterministically across repeated requests', async () => {
+    const day = new Date('2025-06-08T12:00:00.000Z');
+    const sameName = `Empate ${randomUUID()}`;
+    const productA = await createProduct(sameName, 100);
+    const productB = await createProduct(sameName, 100);
+    for (const product of [productA, productB]) {
+      await createSale({
+        memberId: socioMemberId,
+        receivedAt: day,
+        items: [{ productId: product.id, quantity: 1, unitPriceMinor: 1_500, unitCostMinor: 100 }],
+      });
+    }
+
+    const first = await asSocio(
+      request(app.getHttpServer()).get(
+        `/reports/sales-detail?from=2025-06-08&to=2025-06-08&limit=100`,
+      ),
+    ).expect(200);
+    const second = await asSocio(
+      request(app.getHttpServer()).get(
+        `/reports/sales-detail?from=2025-06-08&to=2025-06-08&limit=100`,
+      ),
+    ).expect(200);
+    const ids = (body: { items: { productId: string }[] }) =>
+      body.items
+        .filter((i) => i.productId === productA.id || i.productId === productB.id)
+        .map((i) => i.productId);
+    expect(ids(first.body)).toEqual(ids(second.body));
+    expect(ids(first.body)).toEqual([productA.id, productB.id].sort());
+  });
+
   it('isolates contexts: another context\'s sale never appears', async () => {
     const otherContextId = `be13-sales-detail-other-${randomUUID()}`;
     await prisma.account.create({
