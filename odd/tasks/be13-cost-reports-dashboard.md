@@ -220,8 +220,11 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
       corrected (bazar-api 40→42, bazar-frontend 39→41 — the frontend copy was already one route behind
       before this change, a pre-existing discrepancy left untouched). Not run: build/lint/test (pure
       docs, no code touched).
-- [ ] **B7** Verify: `npm run build`, `npm run lint`, `npm test` (unit), `npm run test:e2e`. Record RED/GREEN
-      evidence per behavior above.
+- [x] **B7** Final verify on the whole branch: `npm run build` exit 0, `npm run lint` clean (same 2
+      pre-existing warnings in `test/sales-conflict.e2e-spec.ts`, unrelated to this feature), `npm test`
+      354/354, `npm run test:e2e` 520/520. RED/GREEN evidence per behavior recorded inline in B2-B5 above.
+      Reviewed by Gentle AI per commit throughout (B1-B5 and both hardening commits granted; the B6 docs
+      commit was skipped by explicit user choice, not blocking). Branch not pushed.
 
 ## Acceptance criteria
 
