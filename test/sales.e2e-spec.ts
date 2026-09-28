@@ -36,6 +36,7 @@ describe('multi-item cash sales', () => {
     tipo: 'unica' | 'cantidad';
     unitPriceMinor: number;
     stock: number;
+    purchaseCostMinor?: number | null;
   }) =>
     withTestTenant(contextId, () =>
       prisma.product.create({
@@ -46,6 +47,9 @@ describe('multi-item cash sales', () => {
           initialStock: data.stock,
           stock: data.stock,
           contextId,
+          ...(data.purchaseCostMinor !== undefined
+            ? { purchaseCostMinor: data.purchaseCostMinor }
+            : {}),
         },
       }),
     );
@@ -109,6 +113,9 @@ describe('multi-item cash sales', () => {
           where: { sale: { member: { contextId } } },
         });
         await prisma.sale.deleteMany({ where: { member: { contextId } } });
+        await prisma.productAudit.deleteMany({
+          where: { product: { contextId } },
+        });
         await prisma.product.deleteMany({ where: { contextId } });
         await prisma.device.deleteMany({ where: { contextId } });
         await prisma.member.deleteMany({ where: { contextId } });
@@ -432,6 +439,115 @@ describe('multi-item cash sales', () => {
     } finally {
       await prisma.account.delete({ where: { id: foreignAccount.id } });
     }
+  });
+
+  describe('BE-13: unitCostMinor snapshot on SaleItem', () => {
+    const findItem = (saleId: string, productId: string) =>
+      withTestTenant(contextId, () =>
+        prisma.saleItem.findFirstOrThrow({ where: { saleId, productId } }),
+      );
+
+    it('snapshots the product cost onto the persisted SaleItem', async () => {
+      const product = await createProduct({
+        name: 'Costed bonsai',
+        tipo: 'unica',
+        unitPriceMinor: 15000,
+        stock: 1,
+        purchaseCostMinor: 9000,
+      });
+      const res = await write(request(app.getHttpServer()).post('/sales'))
+        .send(
+          saleBody({
+            cashReceivedMinor: 15000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        )
+        .expect(201);
+      const item = await findItem(res.body.id, product.id);
+      expect(item.unitCostMinor).toBe(9000);
+    });
+
+    it('persists a null unitCostMinor when the product has no cost, without failing the sale', async () => {
+      const product = await createProduct({
+        name: 'Costless maceta',
+        tipo: 'cantidad',
+        unitPriceMinor: 5000,
+        stock: 10,
+      });
+      const res = await write(request(app.getHttpServer()).post('/sales'))
+        .send(
+          saleBody({
+            cashReceivedMinor: 5000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        )
+        .expect(201);
+      const item = await findItem(res.body.id, product.id);
+      expect(item.unitCostMinor).toBeNull();
+    });
+
+    it('keeps the original snapshot after the product cost is later changed (BE-13 D5)', async () => {
+      const product = await createProduct({
+        name: 'Snapshot bonsai',
+        tipo: 'unica',
+        unitPriceMinor: 15000,
+        stock: 2,
+        purchaseCostMinor: 9000,
+      });
+      const res = await write(request(app.getHttpServer()).post('/sales'))
+        .send(
+          saleBody({
+            cashReceivedMinor: 15000,
+            items: [{ productId: product.id, quantity: 1 }],
+          }),
+        )
+        .expect(201);
+      await write(request(app.getHttpServer()).patch(`/products/${product.id}`))
+        .send({ purchaseCostMinor: 12345 })
+        .expect(200);
+      const item = await findItem(res.body.id, product.id);
+      expect(item.unitCostMinor).toBe(9000);
+      await withTestTenant(contextId, async () => {
+        expect(
+          (
+            await prisma.product.findUniqueOrThrow({
+              where: { id: product.id },
+            })
+          ).purchaseCostMinor,
+        ).toBe(12345);
+      });
+    });
+
+    it('snapshots each line by its own product, mixing costed and cost-less lines in one sale', async () => {
+      const costed = await createProduct({
+        name: 'Costed maceta',
+        tipo: 'cantidad',
+        unitPriceMinor: 5000,
+        stock: 10,
+        purchaseCostMinor: 3000,
+      });
+      const costless = await createProduct({
+        name: 'Costless bonsai',
+        tipo: 'unica',
+        unitPriceMinor: 15000,
+        stock: 1,
+      });
+      const res = await write(request(app.getHttpServer()).post('/sales'))
+        .send(
+          saleBody({
+            cashReceivedMinor: 5000 * 2 + 15000,
+            items: [
+              { productId: costed.id, quantity: 2 },
+              { productId: costless.id, quantity: 1 },
+            ],
+          }),
+        )
+        .expect(201);
+      const costedItem = await findItem(res.body.id, costed.id);
+      const costlessItem = await findItem(res.body.id, costless.id);
+      expect(costedItem.unitCostMinor).toBe(3000);
+      expect(costlessItem.unitCostMinor).toBeNull();
+    });
   });
 
   it('rolls back stock and creation when persistence fails mid-transaction', async () => {

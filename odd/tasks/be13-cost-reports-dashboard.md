@@ -125,6 +125,11 @@ sale that day lacks a cost.
 `SaleItem.unitCostMinor Int?` — nullable, no default, no backfill (historical rows stay `null`, which is the
 whole point: changing a product's cost later must never rewrite a past sale's profit).
 
+## Minor follow-ups noted by review, not yet applied (non-blocking)
+- Assert the exact 400 message ("purchaseCostMinor cannot be cleared once it has been set") in the
+  clear-rejection test, not just the status code.
+- Add a create-with-explicit-`purchaseCostMinor: null` case (distinct from omitting the field), asserting 400.
+
 ## Checklist
 
 - [x] **B1** Migration: `SaleItem.unitCostMinor Int?`. Applied to dev via
@@ -142,9 +147,13 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
       only specs creating products through the real DTO path and needed `purchaseCostMinor` added (every
       other spec's Product fixture writes directly via Prisma, bypassing the DTO, unaffected). 482/482 e2e,
       351/351 unit, lint clean, build ok.
-- [ ] **B3** `SalesService.create()`: snapshot `unitCostMinor` off the already-locked product row into each
-      line. TDD: RED first (create a sale, assert the persisted `SaleItem.unitCostMinor`; assert changing the
-      product's cost afterward does not change an old sale's stored value).
+- [x] **B3** `SalesService.create()`: snapshot `unitCostMinor` off the already-locked product row into each
+      line. TDD: RED observed for all 4 behaviors (cost present, cost null, snapshot survives a later cost
+      change, mixed costed/cost-less lines in one sale), then GREEN. Discovery: the generated Prisma client
+      (`src/generated/prisma`, gitignored) was stale after B1's migration — `npm run prisma:generate` fixed
+      it; not a code bug, just a local regen step after any schema change. `unitCostMinor` intentionally not
+      exposed on `GET /sales`'s response shape (not requested, and that endpoint isn't socio-only). 487/487
+      e2e, 351/351 unit, lint clean, build ok.
 - [ ] **B4** `GET /reports/sales-detail`: aggregation (D1/D2), `SocioGuard`, pagination, UTC-6 cutoff via
       `parseRangeBoundary`. TDD: RED first for accumulation, the null-profit rule, partial totals, 403 for
       colaborador, context isolation.

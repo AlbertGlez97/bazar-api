@@ -311,6 +311,7 @@ export class SalesService {
           quantity: number;
           unitPriceMinor: number;
           subtotalMinor: number;
+          unitCostMinor: number | null;
         }[] = [];
         // Items are processed sequentially (not in parallel) so repeated
         // productIds within the same sale see each other's stock decrements.
@@ -371,6 +372,11 @@ export class SalesService {
             quantity: item.quantity,
             unitPriceMinor,
             subtotalMinor,
+            // Snapshotted off this same already-locked `product` row (BE-13
+            // D5) — no new query, no new lock. `null` when the product has
+            // no cost yet; never estimated, and never re-derived from a
+            // later cost change.
+            unitCostMinor: product.purchaseCostMinor,
           });
         }
         const totalMinor = toMinorUnits(totalDinero);
@@ -415,6 +421,7 @@ export class SalesService {
                 quantity: line.quantity,
                 unitPriceMinor: line.unitPriceMinor,
                 subtotalMinor: line.subtotalMinor,
+                unitCostMinor: line.unitCostMinor,
               })),
             },
             ...(dateIssue
