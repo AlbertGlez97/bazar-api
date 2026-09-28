@@ -496,6 +496,9 @@ describe('dashboard summary (BE-13)', () => {
   });
 
   it('deudasPendientes sums the remaining balance after partial abonos, and counts distinct deudores', async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary'),
+    ).expect(200);
     const product = await createProduct('BE13 dash deuda', 100);
     const deudorX = await createDeudor('Deudor X');
     const deudorY = await createDeudor('Deudor Y');
@@ -515,7 +518,8 @@ describe('dashboard summary (BE-13)', () => {
       deudorId: deudorY.id,
       totalMinor: 200,
     }); // remaining 200
-    // Fully paid: must be excluded (status saldada).
+    // Fully paid: must be excluded (status saldada). If it leaked in, the
+    // delta below would be off by 999,999 instead of matching exactly.
     await createDeuda({
       productId: product.id,
       deudorId: deudorY.id,
@@ -526,41 +530,67 @@ describe('dashboard summary (BE-13)', () => {
     const res = await asSocio(
       request(app.getHttpServer()).get('/dashboard/summary'),
     ).expect(200);
-    expect(res.body.deudasPendientes.totalMinor).toBeGreaterThanOrEqual(
-      700 + 500 + 200,
-    );
-    expect(res.body.deudasPendientes.personas).toBeGreaterThanOrEqual(2);
+    // Exact delta: 700 (deudaX1 after its abono) + 500 (deudaX2) + 200
+    // (deudaY) = 1,400, not the abonos being ignored (1,700) and not the
+    // saldada 999,999 leaking in. Two new deudores (X and Y), not one per
+    // deuda (deudorX has two pending deudas but is one persona).
+    expect(res.body.deudasPendientes.totalMinor - before.body.deudasPendientes.totalMinor).toBe(1_400);
+    expect(res.body.deudasPendientes.personas - before.body.deudasPendientes.personas).toBe(2);
     void deudaX2;
     void deudaY;
   });
 
-  it('productosPocaExistencia respects the umbral (default and custom), reports the real total, and orders deterministically', async () => {
+  it('productosPocaExistencia respects the umbral (default and custom), reports the real total, orders deterministically, and excludes inactive products', async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary?umbral=6'),
+    ).expect(200);
     const suffix = randomUUID();
+    const names: string[] = [];
     for (let stock = 0; stock <= 6; stock++) {
-      await createProduct(`BE13 dash stock ${stock} ${suffix}`, stock);
+      const p = await createProduct(`BE13 dash stock ${stock} ${suffix}`, stock);
+      names.push(p.name);
     }
+    // An inactive product with low stock must never count toward either
+    // umbral's total or appear in items — the active:true filter.
+    const inactive = await createProduct(`BE13 dash inactivo ${suffix}`, 0);
+    await withTestTenant(contextId, () =>
+      prisma.product.update({ where: { id: inactive.id }, data: { active: false } }),
+    );
 
     const defaultRes = await asSocio(
       request(app.getHttpServer()).get('/dashboard/summary'),
     ).expect(200);
     expect(defaultRes.body.productosPocaExistencia.umbral).toBe(2);
+    // Exactly the stock 0/1/2 fixtures from this test (3), by name — proves
+    // the umbral filter and that these specific rows are the ones returned,
+    // not just that *something* with low stock came back.
+    const defaultNames = defaultRes.body.productosPocaExistencia.items.map(
+      (i: { name: string }) => i.name,
+    );
+    expect(defaultNames).toEqual([names[0], names[1], names[2]]);
     expect(
-      defaultRes.body.productosPocaExistencia.items.length,
-    ).toBeLessThanOrEqual(5);
-    for (const item of defaultRes.body.productosPocaExistencia.items) {
-      expect(item.stock).toBeLessThanOrEqual(2);
-    }
+      defaultNames.some((n: string) => n === inactive.name),
+    ).toBe(false);
 
     const customRes = await asSocio(
       request(app.getHttpServer()).get('/dashboard/summary?umbral=6'),
     ).expect(200);
     expect(customRes.body.productosPocaExistencia.umbral).toBe(6);
-    expect(customRes.body.productosPocaExistencia.total).toBeGreaterThanOrEqual(7);
+    // Exact delta: 7 fixtures (stock 0..6) at umbral=6, the inactive one
+    // (stock 0) never counted despite being under the threshold too.
+    expect(
+      customRes.body.productosPocaExistencia.total - before.body.productosPocaExistencia.total,
+    ).toBe(7);
     expect(customRes.body.productosPocaExistencia.items.length).toBe(5);
     const stocks = customRes.body.productosPocaExistencia.items.map(
       (i: { stock: number }) => i.stock,
     );
     expect(stocks).toEqual([...stocks].sort((a, b) => a - b));
+    expect(
+      customRes.body.productosPocaExistencia.items.some(
+        (i: { name: string }) => i.name === inactive.name,
+      ),
+    ).toBe(false);
   });
 
   it("isolates every field: another context's sale/incidencia/deuda/product never appear", async () => {
