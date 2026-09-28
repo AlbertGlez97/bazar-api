@@ -65,6 +65,22 @@ export function currentWeekRange(instant: Date): { from: Date; to: Date } {
   };
 }
 
+/**
+ * Formats the business-timezone calendar day (`YYYY-MM-DD`, zero-padded)
+ * that `instant` falls on (BE-13 D3). Reuses {@link toLocalReadable} rather
+ * than re-deriving the UTC-6 shift by hand — the dashboard's "today"/
+ * "yesterday" concept is just this string fed back into
+ * {@link parseRangeBoundary} for the actual instant range, so the offset
+ * logic itself lives in exactly one place.
+ */
+export function currentBusinessDate(instant: Date): string {
+  const local = toLocalReadable(instant);
+  const year = local.getUTCFullYear();
+  const month = String(local.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(local.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 /**

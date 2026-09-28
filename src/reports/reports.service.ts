@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { add, multiply, subtract } from 'dinero.js';
 import { parseRangeBoundary } from '../common/business-time.js';
 import { toDinero, toMinorUnits } from '../common/money.js';
+import { computeProfitTotals } from '../common/profit-totals.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { DateRangeQueryDto } from './dto/date-range.dto.js';
 import type { SalesDetailQueryDto } from './dto/sales-detail-query.dto.js';
@@ -205,32 +206,14 @@ export class ReportsService {
     const start = (query.page - 1) * query.limit;
     const items = rows.slice(start, start + query.limit);
 
-    let totalIngreso = toDinero(0);
-    let totalGanancia = toDinero(0);
-    let lineasSinCosto = 0;
-    for (const item of saleItems) {
-      totalIngreso = add(totalIngreso, toDinero(item.subtotalMinor));
-      if (item.unitCostMinor === null) {
-        lineasSinCosto++;
-      } else {
-        const costoLinea = multiply(toDinero(item.unitCostMinor), item.quantity);
-        totalGanancia = add(
-          totalGanancia,
-          subtract(toDinero(item.subtotalMinor), costoLinea),
-        );
-      }
-    }
+    const totals = computeProfitTotals(saleItems);
 
     return {
       items,
       total,
       page: query.page,
       limit: query.limit,
-      totals: {
-        ingresoMinor: toMinorUnits(totalIngreso),
-        gananciaMinor: toMinorUnits(totalGanancia),
-        lineasSinCosto,
-      },
+      totals,
     };
   }
 }

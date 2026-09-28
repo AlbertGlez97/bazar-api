@@ -132,6 +132,13 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
 - Add a patch-with-explicit-`purchaseCostMinor: null` case on a legacy product that never had a cost
   (distinct from omitting the field), asserting 200 (the `before.purchaseCostMinor !== null` guard should
   not fire when it's already null).
+- `sales-detail`: pin down the all-cost-less-period case explicitly (`totals.gananciaMinor` comes back `0`,
+  not `null`, alongside a non-zero `lineasSinCosto` — intentional per D1, but not asserted by any test yet).
+- `sales-detail`: invalid pagination input (`page=0`, `limit=0`, `limit=101`, non-numeric) should each 400;
+  a page past the last row should return an empty `items` with the correct `total`. Not covered yet.
+- `test/reports-sales-detail.e2e-spec.ts`'s cross-context isolation test cleans up its other-context
+  fixtures inline instead of in `try/finally`/`afterEach` — a failed assertion mid-test would leak them into
+  the test DB. Low real risk (spec-local `contextId`, doesn't collide with other files) but worth tidying.
 
 ## Checklist
 
@@ -178,9 +185,14 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
       fails closed on any new SocioGuard route left out of it) — that describe.each added 5 more passing
       tests automatically. `sales-by-period`/`sales-by-member` re-run explicitly, still 3/3 green, untouched.
       502/502 e2e, 351/351 unit, lint clean (same 2 preexisting warnings), build ok.
-- [ ] **B5** `business-time.ts`: add `currentBusinessDate` (D3) + its own unit test. `GET /dashboard/summary`
-      (D4): today/yesterday sales, profit-with-gap, incidencias, deudas, poca existencia. TDD: RED first for
-      each field, the UTC-6 boundary (a sale at 23:59 local vs 00:01 local), 403 for colaborador, isolation.
+- [x] **B5** `business-time.ts`: added `currentBusinessDate` (D3) + 3 unit tests. `GET /dashboard/summary`
+      (D4, new `src/dashboard/` module): today/yesterday sales, profit-with-gap, incidencias, deudas, poca
+      existencia. TDD: RED observed for all 9 behaviors (module temporarily removed from `AppModule`, every
+      test 404'd, including the 403 check), then GREEN. Extracted `src/common/profit-totals.ts`
+      (`computeProfitTotals`) so the "sum revenue always, profit only over costed lines, count the rest"
+      logic isn't duplicated between `sales-detail`'s totals and the dashboard's `gananciaHoyMinor` —
+      `ReportsService.salesDetail()` refactored to call it too (response shape unchanged, re-verified green).
+      519/519 e2e, 354/354 unit, lint clean, build ok.
 - [ ] **B6** Docs: `doc/reglas-de-negocio.md` (mandatory cost, snapshot, profit + its limitation) in
       **bazar-api**; `doc/api-contract-for-frontend.md` in **both** `bazar-api` and
       `bazar-frontend/doc` (the two endpoints, request/response shapes, guard, error cases).

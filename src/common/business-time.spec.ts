@@ -1,4 +1,8 @@
-import { currentWeekRange, parseRangeBoundary } from './business-time.js';
+import {
+  currentBusinessDate,
+  currentWeekRange,
+  parseRangeBoundary,
+} from './business-time.js';
 
 // All fixed instants below are expressed as UTC ISO strings; the
 // business timezone is fixed at UTC-6 (see BUSINESS_TZ_OFFSET_MINUTES),
@@ -27,6 +31,39 @@ describe('currentWeekRange (domingo-sábado business week)', () => {
     // following week, not this one.
     const nextSunday = currentWeekRange(new Date(to.getTime() + 1));
     expect(nextSunday.from.toISOString()).toBe('2025-11-09T06:00:00.000Z');
+  });
+});
+
+// BE-13 D3: same fixed UTC-6 offset as the tests above (Local
+// 2025-01-01T00:00:00 == UTC 2025-01-01T06:00:00), so both cases below are
+// picked to line up exactly with parseRangeBoundary's own confirmed boundary
+// rather than a fresh, unverified offset assumption.
+describe('currentBusinessDate', () => {
+  it('matches the UTC calendar date when the instant is well inside the local day', () => {
+    // Local 2025-06-15T06:00:00 == UTC 2025-06-15T12:00:00 — both the UTC
+    // and the business-timezone calendar date read "2025-06-15".
+    const wellInsideLocalDay = new Date('2025-06-15T12:00:00.000Z');
+    expect(currentBusinessDate(wellInsideLocalDay)).toBe('2025-06-15');
+  });
+
+  it('falls on the PREVIOUS business day when UTC midnight has not reached local midnight yet', () => {
+    // UTC midnight of 2025-01-01 is still 2024-12-31T18:00:00 local (UTC-6):
+    // local midnight of 2025-01-01 does not arrive until UTC 06:00:00 (the
+    // exact instant parseRangeBoundary('2025-01-01', 'start') resolves to).
+    // The UTC calendar date ("2025-01-01") and the business date
+    // ("2024-12-31") therefore disagree.
+    const utcMidnight = new Date('2025-01-01T00:00:00.000Z');
+    expect(currentBusinessDate(utcMidnight)).toBe('2024-12-31');
+    expect(
+      parseRangeBoundary('2025-01-01', 'start').toISOString(),
+    ).toBe('2025-01-01T06:00:00.000Z');
+  });
+
+  it('zero-pads month and day', () => {
+    // Local 2025-03-05T00:00:00 == UTC 2025-03-05T06:00:00.
+    expect(
+      currentBusinessDate(new Date('2025-03-05T06:00:00.000Z')),
+    ).toBe('2025-03-05');
   });
 });
 

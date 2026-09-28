@@ -13,6 +13,7 @@ import { CommissionsModule } from './commissions/commissions.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { DeudasModule } from './deudas/deudas.module.js';
 import { BusinessRegistrationModule } from './business-registration/business-registration.module.js';
+import { DashboardModule } from './dashboard/dashboard.module.js';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { BusinessRegistrationModule } from './business-registration/business-reg
     ReportsModule,
     DeudasModule,
     BusinessRegistrationModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],
