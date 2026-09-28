@@ -265,6 +265,13 @@ model SaleItem {
   quantity       Int
   unitPriceMinor Int
   subtotalMinor  Int
+  // BE-13: snapshot of Product.purchaseCostMinor at the moment of the sale,
+  // never recomputed later. Nullable on purpose: every sale made before this
+  // column existed, and every sale of a product that still has no cost
+  // captured, stays null forever — profit for that line is "not available",
+  // never estimated or treated as zero. Changing a product's cost afterward
+  // must never rewrite what a past sale actually cost at the time.
+  unitCostMinor  Int?
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
   sale           Sale     @relation(fields: [saleId], references: [id])
   product        Product  @relation(fields: [productId], references: [id])
