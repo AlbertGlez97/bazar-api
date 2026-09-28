@@ -567,6 +567,33 @@ export const operations: Record<string, Operation> = {
     }),
     errors: [invalid, forbidden],
   },
+  reportSalesDetail: {
+    summary: 'Detailed sales-and-profit breakdown by product and member',
+    description:
+      'Socio only. One row per (product, member) pair for the period; a row carries a profit figure only when every underlying sale line has a recorded cost — never estimated. Paginated in-memory over the aggregated rows (see page/limit); totals cover the whole period regardless of the requested page.',
+    access: 'socio',
+    queries: [...dates(true), ...pagination],
+    responses: ok({
+      items: [
+        {
+          productId: e.ids.spiderMan,
+          productName: 'Marvel’s Spider-Man 2 — PS5',
+          memberId: e.ids.carlos,
+          memberName: 'Carlos',
+          units: 2,
+          ingresoMinor: 250000,
+          costoMinor: 180000,
+          gananciaMinor: 70000,
+          gananciaDisponible: true,
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      totals: { ingresoMinor: 250000, gananciaMinor: 70000, lineasSinCosto: 0 },
+    }),
+    errors: [invalid, forbidden],
+  },
   debtCreate: {
     summary: 'Alberto reserves Gran Turismo 7 as an apartado',
     description:

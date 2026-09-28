@@ -12,6 +12,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import { SocioGuard } from '../auth/socio.guard.js';
 import { DateRangeQueryDto } from './dto/date-range.dto.js';
+import { SalesDetailQueryDto } from './dto/sales-detail-query.dto.js';
 import { ReportsService } from './reports.service.js';
 
 const validate = (expectedType: new () => object) =>
@@ -52,5 +53,14 @@ export class ReportsController {
     @Query(validate(DateRangeQueryDto)) query: DateRangeQueryDto,
   ) {
     return this.reports.salesByMember(req.account.contextId, query);
+  }
+
+  @Get('sales-detail')
+  @ApiExample('reportSalesDetail')
+  salesDetail(
+    @Req() req: AuthenticatedRequest,
+    @Query(validate(SalesDetailQueryDto)) query: SalesDetailQueryDto,
+  ) {
+    return this.reports.salesDetail(req.account.contextId, query);
   }
 }

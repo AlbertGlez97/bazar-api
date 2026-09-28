@@ -129,6 +129,9 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
 - Assert the exact 400 message ("purchaseCostMinor cannot be cleared once it has been set") in the
   clear-rejection test, not just the status code.
 - Add a create-with-explicit-`purchaseCostMinor: null` case (distinct from omitting the field), asserting 400.
+- Add a patch-with-explicit-`purchaseCostMinor: null` case on a legacy product that never had a cost
+  (distinct from omitting the field), asserting 200 (the `before.purchaseCostMinor !== null` guard should
+  not fire when it's already null).
 
 ## Checklist
 
@@ -154,9 +157,27 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
       it; not a code bug, just a local regen step after any schema change. `unitCostMinor` intentionally not
       exposed on `GET /sales`'s response shape (not requested, and that endpoint isn't socio-only). 487/487
       e2e, 351/351 unit, lint clean, build ok.
-- [ ] **B4** `GET /reports/sales-detail`: aggregation (D1/D2), `SocioGuard`, pagination, UTC-6 cutoff via
-      `parseRangeBoundary`. TDD: RED first for accumulation, the null-profit rule, partial totals, 403 for
-      colaborador, context isolation.
+- [x] **B4** `GET /reports/sales-detail`: aggregation (D1/D2), `SocioGuard`, pagination, UTC-6 cutoff via
+      `parseRangeBoundary`. New `SalesDetailQueryDto` (extends `DateRangeQueryDto`) adds `page`/`limit` with
+      the exact `ProductListDto`/`SaleListDto`/`DeudaListDto` pattern (`@Type(() => Number) @IsInt() @Min(1)
+      @Max(1_000_000) page = 1` / `@Max(100) limit = 20`). `ReportsService.salesDetail()` fetches every
+      matching `SaleItem` unpaginated (`sale.status: 'completada'`, `receivedAt` via `this.range()` reusing
+      `parseRangeBoundary`, `sale.member: { contextId }`), reduces into a `Map<`${productId}:${memberId}`>`
+      in application code (no raw SQL), sums money via `add`/`subtract`/`multiply` from `dinero.js` +
+      `toDinero`/`toMinorUnits` from `src/common/money.ts` (the task brief's `sumMinor`/`addMinor` names don't
+      exist in this codebase — used the actual existing convention instead, same one `SalesService`/
+      `DeudasService` already use), sorts by `ingresoMinor` desc then `productName` asc, paginates in memory,
+      and computes period `totals` over the raw (unpaginated, ungrouped) SaleItems per D1's different rule.
+      Confirmed `Member.name` (not `nombre`) from `prisma/schema.prisma`. Added `@ApiExample('reportSalesDetail')`
+      + its `operations` entry in `src/docs/operation-examples.ts` (reusing the existing `pagination`
+      query-doc array). TDD: RED observed for all 9 e2e behaviors (costed row, cost-less row→null/false,
+      mixed-cost aggregation→false, period totals split, non-completada excluded, UTC-6 cutoff, pagination,
+      colaborador 403, cross-context isolation) against the unmodified code (404s), then GREEN
+      (`test/reports-sales-detail.e2e-spec.ts`). Also had to add `'GET /reports/sales-detail'` to
+      `SOCIO_ROUTES` in `test/impersonation-matrix.e2e-spec.ts` (a self-checking guard-metadata matrix that
+      fails closed on any new SocioGuard route left out of it) — that describe.each added 5 more passing
+      tests automatically. `sales-by-period`/`sales-by-member` re-run explicitly, still 3/3 green, untouched.
+      502/502 e2e, 351/351 unit, lint clean (same 2 preexisting warnings), build ok.
 - [ ] **B5** `business-time.ts`: add `currentBusinessDate` (D3) + its own unit test. `GET /dashboard/summary`
       (D4): today/yesterday sales, profit-with-gap, incidencias, deudas, poca existencia. TDD: RED first for
       each field, the UTC-6 boundary (a sale at 23:59 local vs 00:01 local), 403 for colaborador, isolation.

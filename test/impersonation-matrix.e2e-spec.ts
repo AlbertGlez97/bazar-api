@@ -35,6 +35,7 @@ const SOCIO_ROUTES = [
   'GET /commissions',
   'GET /reports/sales-by-period',
   'GET /reports/sales-by-member',
+  'GET /reports/sales-detail',
   'GET /incidencias',
   'GET /incidencias/:id',
   'PATCH /incidencias/:id/resolver',
