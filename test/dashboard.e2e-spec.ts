@@ -274,6 +274,9 @@ describe('dashboard summary (BE-13)', () => {
   });
 
   it("counts yesterday's sales separately, never mixed with today's", async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary'),
+    ).expect(200);
     const product = await createProduct('BE13 dash producto ayer', 100);
     await createSale({
       memberId: socioMemberId,
@@ -286,11 +289,18 @@ describe('dashboard summary (BE-13)', () => {
     const res = await asSocio(
       request(app.getHttpServer()).get('/dashboard/summary'),
     ).expect(200);
-    expect(res.body.ventasAyer.totalMinor).toBeGreaterThanOrEqual(700);
-    expect(res.body.ventasAyer.count).toBeGreaterThanOrEqual(1);
+    // Exact delta introduced by this test's own fixture, not a loose bound:
+    // if today's sale (from the previous test) ever leaked into ayer, this
+    // would fail by including its total/count too.
+    expect(res.body.ventasAyer.totalMinor - before.body.ventasAyer.totalMinor).toBe(700);
+    expect(res.body.ventasAyer.count - before.body.ventasAyer.count).toBe(1);
+    expect(res.body.ventasHoy).toEqual(before.body.ventasHoy);
   });
 
   it('UTC-6 cutoff: a sale just before local midnight lands in ayer, just after lands in hoy', async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary'),
+    ).expect(200);
     const product = await createProduct('BE13 dash corte utc6', 100);
     const justBeforeTodayStart = new Date(todayStart.getTime() - 1);
     const justAfterTodayStart = new Date(todayStart.getTime() + 1);
@@ -340,11 +350,17 @@ describe('dashboard summary (BE-13)', () => {
     expect(todayRangeSum._sum.totalMinor ?? 0).toBeGreaterThanOrEqual(222);
     // The 111 sale (just before todayStart) must be inside yesterday's sum.
     expect(yesterdayRangeSum._sum.totalMinor ?? 0).toBeGreaterThanOrEqual(111);
-    expect(res.body.ventasHoy.totalMinor).toBeGreaterThanOrEqual(222);
-    expect(res.body.ventasAyer.totalMinor).toBeGreaterThanOrEqual(111);
+    // Exact deltas from the endpoint itself, not loose bounds: proves the
+    // 222 sale landed in hoy (not ayer) and the 111 sale landed in ayer
+    // (not hoy) — a swapped or overlapping boundary would fail this.
+    expect(res.body.ventasHoy.totalMinor - before.body.ventasHoy.totalMinor).toBe(222);
+    expect(res.body.ventasAyer.totalMinor - before.body.ventasAyer.totalMinor).toBe(111);
   });
 
-  it("today's profit sums only costed lines; cost-less lines count toward lineasSinCostoHoy", async () => {
+  it("today's profit sums only costed lines; cost-less lines count toward lineasSinCostoHoy, never estimated", async () => {
+    const before = await asSocio(
+      request(app.getHttpServer()).get('/dashboard/summary'),
+    ).expect(200);
     const costed = await createProduct('BE13 dash costeado', 100, 600);
     const uncosted = await createProduct('BE13 dash sin costo', 100);
     await createSale({
@@ -357,6 +373,9 @@ describe('dashboard summary (BE-13)', () => {
     await createSale({
       memberId: socioMemberId,
       receivedAt: todayMid,
+      // The 500 cost-less line must NOT add its own 500 revenue as if it
+      // were 500 profit (the bug the never-estimate rule exists to catch):
+      // the exact delta below is 400 (1,000 - 600), not 900.
       items: [
         { productId: uncosted.id, quantity: 1, unitPriceMinor: 500, unitCostMinor: null },
       ],
@@ -365,8 +384,87 @@ describe('dashboard summary (BE-13)', () => {
     const res = await asSocio(
       request(app.getHttpServer()).get('/dashboard/summary'),
     ).expect(200);
-    expect(res.body.gananciaHoyMinor).toBeGreaterThanOrEqual(400);
-    expect(res.body.lineasSinCostoHoy).toBeGreaterThanOrEqual(1);
+    expect(res.body.gananciaHoyMinor - before.body.gananciaHoyMinor).toBe(400);
+    expect(res.body.lineasSinCostoHoy - before.body.lineasSinCostoHoy).toBe(1);
+  });
+
+  it('an all-cost-less day reports gananciaHoyMinor: 0 (a real, non-negative sum of zero costed lines), never a guessed profit', async () => {
+    // Fresh, isolated context so no other test's costed sale is on "today".
+    const isolatedContextId = `be13-dashboard-allcostless-${randomUUID()}`;
+    const account = await prisma.account.create({
+      data: { username: randomUUID(), passwordHash: 'x', contextId: isolatedContextId },
+    });
+    const jwt = app.get(JwtService);
+    const token = await jwt.signAsync({ sub: account.id });
+    const { memberId, deviceIdLocal } = await withTestTenant(isolatedContextId, async () => {
+      const member = await prisma.member.create({
+        data: { name: 'Socio Aislado', role: 'socio', contextId: isolatedContextId },
+      });
+      const device = await prisma.device.create({
+        data: {
+          name: 'Tablet aislada',
+          identifier: randomUUID(),
+          contextId: isolatedContextId,
+          authorized: true,
+        },
+      });
+      const product = await prisma.product.create({
+        data: {
+          name: 'Sin costo aislado',
+          tipo: 'cantidad',
+          unitPriceMinor: 300,
+          initialStock: 10,
+          stock: 10,
+          contextId: isolatedContextId,
+          purchaseCostMinor: null,
+        },
+      });
+      await prisma.sale.create({
+        data: {
+          id: randomUUID(),
+          memberId: member.id,
+          deviceId: device.id,
+          occurredAt: todayMid,
+          receivedAt: todayMid,
+          currency: 'MXN',
+          status: 'completada',
+          totalMinor: 300,
+          cashReceivedMinor: 300,
+          changeMinor: 0,
+          items: {
+            create: [
+              {
+                contextId: isolatedContextId,
+                productId: product.id,
+                quantity: 1,
+                unitPriceMinor: 300,
+                subtotalMinor: 300,
+                unitCostMinor: null,
+              },
+            ],
+          },
+        },
+      });
+      return { memberId: member.id, deviceIdLocal: device.id };
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/dashboard/summary')
+      .auth(token, { type: 'bearer' })
+      .set('x-member-id', memberId)
+      .set('x-device-id', deviceIdLocal)
+      .expect(200);
+    expect(res.body.gananciaHoyMinor).toBe(0);
+    expect(res.body.lineasSinCostoHoy).toBe(1);
+
+    await withTestTenant(isolatedContextId, async () => {
+      await prisma.saleItem.deleteMany({ where: { contextId: isolatedContextId } });
+      await prisma.sale.deleteMany({ where: { member: { contextId: isolatedContextId } } });
+      await prisma.product.deleteMany({ where: { contextId: isolatedContextId } });
+      await prisma.device.deleteMany({ where: { contextId: isolatedContextId } });
+      await prisma.member.deleteMany({ where: { contextId: isolatedContextId } });
+    });
+    await prisma.account.deleteMany({ where: { contextId: isolatedContextId } });
   });
 
   it('counts only pendiente incidencias, never resuelta', async () => {

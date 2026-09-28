@@ -109,7 +109,7 @@ actual instant range — no new offset math duplicated anywhere else.
 {
   ventasHoy: { totalMinor, count },
   ventasAyer: { totalMinor, count },
-  gananciaHoyMinor,       // nullable, same all-or-nothing-per-day rule is NOT applied here — see below
+  gananciaHoyMinor,       // always a number, see below — NOT the per-row nullable rule
   lineasSinCostoHoy,
   incidenciasPendientes,
   deudasPendientes: { totalMinor, personas },
@@ -119,7 +119,12 @@ actual instant range — no new offset math duplicated anywhere else.
 `gananciaHoyMinor` uses the **period-totals rule** (D1), not the per-row rule: sum profit over today's
 `SaleItem`s that have a cost, report `lineasSinCostoHoy` alongside it — a dashboard tile needs one number
 "as complete as today's data allows" plus an honest asterisk, not a row that goes fully blank the moment one
-sale that day lacks a cost.
+sale that day lacks a cost. Concretely (and confirmed by a dedicated test): `gananciaHoyMinor` is `0` — never
+`null` — on a day where every sale lacks a cost, exactly like `sales-detail`'s `totals.gananciaMinor` is `0`
+over zero costed lines (a real sum of an empty set, not an estimate); `lineasSinCostoHoy` is what tells the
+caller that `0` means "nothing costed today", not "broke even". `gananciaHoyMinor` would only ever be `null`
+if there were literally no sales at all today (not implemented as a special case — `0` covers it correctly:
+zero revenue minus zero cost is zero).
 
 ### D5. Migration
 `SaleItem.unitCostMinor Int?` — nullable, no default, no backfill (historical rows stay `null`, which is the
