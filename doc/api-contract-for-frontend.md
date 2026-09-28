@@ -7,7 +7,8 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
 - **Actualización de seguridad BE-12 (2026-09-25)**: nueva ruta [`GET /auth/me`](#ep-auth-me) (solo `AuthGuard`). Dice a qué persona está atada la cuenta autenticada (`memberId` y `member`, o `null` en la cuenta compartida). **La UI no debe mostrar el selector de persona cuando `memberId` no es `null`**: una cuenta atada solo puede actuar como esa persona y `ContextGuard` rechaza (403) cualquier otro `x-member-id`. Antes el login no exponía el vínculo y el selector dejaba a un colaborador elegir "socio" en la pantalla (las llamadas de datos ya daban 403).
-- Alcance: 40 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- Alcance: 42 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- **Actualización BE-13 (2026-09-28)**: `purchaseCostMinor` pasa a ser **obligatorio** al crear un producto (antes opcional) y ya no se puede "vaciar" con `PATCH` una vez que el producto tiene un costo; cada `SaleItem` guarda ahora un snapshot de costo (`unitCostMinor`) que nunca se recalcula; rutas nuevas: `GET /reports/sales-detail` (ganancia por producto/vendedor) y `GET /dashboard/summary` (resumen para la pantalla de Gestión). Las secciones [5](#mod-products) y [9](#mod-reports) reflejan ese cambio.
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
 - **Verificación en vivo (2026-09-24):** además de contrastar con el código, el comportamiento se ejecutó contra un servidor real (`npm run start:dev`, base de desarrollo, en un contexto temporal con cuenta, socio, colaborador y dispositivo propios, borrado después): autenticación y guards, paginación y sus límites, altas, ediciones y borrados lógicos, subida de imágenes, ventas (incluida una carrera real de stock que devolvió `201` con `rechazada_por_conflicto`), incidencias, comisiones, reportes, deudas y las páginas de business-registration. El resultado está en el [Apéndice B](#apendice-b-aclaraciones). No se envió un `POST /business-registration` válido para no disparar un correo real.
@@ -33,7 +34,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 6. [Sales](#mod-sales)
 7. [Incidencias](#mod-incidencias)
 8. [Commissions (incluye `PATCH /settings/commission-rate`)](#mod-commissions)
-9. [Reports](#mod-reports)
+9. [Reports (incluye Dashboard)](#mod-reports)
 10. [Deudas](#mod-deudas)
 11. [Business Registration](#mod-business-registration)
 12. [Apéndice A: índice de rutas](#apendice-a-indice-de-rutas)
@@ -128,7 +129,7 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
 | Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
-| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
+| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
 
 Matiz sobre los endpoints "solo `AuthGuard`": únicamente `GET /members` y `GET /products` leen `x-member-id` de forma **opcional** (para decidir si se respeta `includeInactive`, ver sus secciones); ninguno de los endpoints de este grupo exige ni lee `x-device-id`.
 
@@ -146,7 +147,7 @@ Fuente: `src/auth/auth.guard.ts:52-77`, `src/auth/context.guard.ts:47-77`, `src/
 <a id="f-dinero"></a>
 ### 1.4 Dinero y porcentajes
 
-- **Dinero**: enteros en **centavos de MXN**. Todo campo de dinero termina en `Minor` (`unitPriceMinor`, `totalMinor`, `cashReceivedMinor`, `changeMinor`, `subtotalMinor`, `montoMinor`, `purchaseCostMinor`, `totalSoldMinor`, `commissionMinor`, ...). `125000` = `$1,250.00 MXN`; `12550` = `$125.50`. Para mostrar: `(minor / 100).toFixed(2)`.
+- **Dinero**: enteros en **centavos de MXN**. Todo campo de dinero termina en `Minor` (`unitPriceMinor`, `totalMinor`, `cashReceivedMinor`, `changeMinor`, `subtotalMinor`, `montoMinor`, `purchaseCostMinor`, `unitCostMinor`, `totalSoldMinor`, `commissionMinor`, `ingresoMinor`, `costoMinor`, `gananciaMinor`, `gananciaHoyMinor`, ...). `125000` = `$1,250.00 MXN`; `12550` = `$125.50`. Para mostrar: `(minor / 100).toFixed(2)`.
 - Un decimal como `125.5` en un campo de dinero es **400** (`@IsInt`): nunca envíes flotantes.
 - Rango de los campos de dinero de entrada: entero `0..2147483647` (`MAX_MINOR_UNITS`), salvo `montoMinor` de abono (`1..2147483647`). El precio unitario se valida `>= 0` (un producto de precio 0 es válido).
 - **Moneda**: solo `MXN`. `POST /sales` exige `currency: "MXN"`; no hay multi-moneda.
@@ -170,8 +171,9 @@ Parámetros por endpoint (todos en query string; `page`/`limit` son enteros, cua
 | `GET /api/v1/sales` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del vendedor), `sort` (`asc`/`desc`, def. `desc`) | `receivedAt` según `sort`, `id` asc |
 | `GET /api/v1/incidencias` | 1..1000000, def. 1 | 1..100, def. 20 | `type`, `resolutionStatus`, `search` (0..200, nombre del vendedor de la venta), `sort` (def. `desc`) | `detectedAt` según `sort`, `id` asc |
 | `GET /api/v1/deudas` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del deudor), `sort` (def. `desc`) | `createdAt` según `sort`, `id` asc |
+| `GET /api/v1/reports/sales-detail` | 1..1000000, def. 1 | 1..100, def. 20 | `from`, `to` (requeridos) | `ingresoMinor` desc, `productName` asc (ver [9](#ep-reports-sales-detail)); a diferencia de las filas de arriba, la paginación se aplica en memoria sobre filas ya agrupadas por (producto, vendedor), no sobre una consulta paginada en base de datos |
 
-**No están paginados** (devuelven todo): `GET /api/v1/members` (array plano), `GET /api/v1/commissions` y los dos reportes (objeto con `items`, sin `total`/`page`/`limit`).
+**No están paginados** (devuelven todo): `GET /api/v1/members` (array plano), `GET /api/v1/commissions`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member` y `GET /api/v1/dashboard/summary` (objetos sin `total`/`page`/`limit`). `GET /api/v1/reports/sales-detail` sí está paginado (fila arriba).
 
 Fuente: `src/products/dto/product.dto.ts:70-93`, `src/sales/dto/sale-list.dto.ts:17-50`, `src/incidencias/dto/incidencia.dto.ts:13-51`, `src/deudas/dto/deuda-list.dto.ts:13-44`, `src/products/products.service.ts:242-275,372-389`.
 
@@ -952,7 +954,7 @@ Forma de un producto en las respuestas:
 | `initialStock` | integer | |
 | `stock` | integer | existencia actual |
 | `category` | string \| null | |
-| `purchaseCostMinor` | integer \| null | costo de compra, centavos |
+| `purchaseCostMinor` | integer \| null | costo de compra, centavos. `null` solo es posible en un producto creado antes de BE-13 (obligatorio en creación desde entonces, ver [creación](#ep-products-create) y [edición](#ep-products-patch)) |
 | `supplier` | string \| null | |
 | `notes` | string \| null | |
 | `createdAt` | string (ISO 8601) | |
@@ -977,7 +979,7 @@ Forma de un producto en las respuestas:
 | `unitPriceMinor` | integer | requerido, 0..2147483647 (centavos) |
 | `initialStock` | integer | **requerido si `tipo` es `cantidad`** (0..2147483647). Para `unica` es opcional y se **ignora** (siempre 1), pero si se envía se valida igual (un valor negativo o > 2147483647 sigue siendo 400) |
 | `category` | string \| null | opcional, 1..100 |
-| `purchaseCostMinor` | integer \| null | opcional, 0..2147483647 |
+| `purchaseCostMinor` | integer | **requerido (BE-13)**, 0..2147483647. Antes de BE-13 era opcional; ahora falta el campo, o mandarlo `null`, es 400 — el costo de compra ya no puede quedar sin definir en un producto nuevo (lo necesitan `GET /reports/sales-detail` y `GET /dashboard/summary` para calcular ganancia real) |
 | `supplier` | string \| null | opcional, 1..200 |
 | `notes` | string \| null | opcional, 0..2000 |
 
@@ -987,7 +989,7 @@ Forma de un producto en las respuestas:
 
 | HTTP | Situación | `message` |
 |---|---|---|
-| 400 | Validación: `unitPriceMinor` decimal (`125.5`) o negativo, `tipo` fuera del enum, nombre en blanco, `cantidad` sin `initialStock`, `initialStock` negativo, campo desconocido (`contextId`, `image`) | array de validación |
+| 400 | Validación: `unitPriceMinor` decimal (`125.5`) o negativo, `tipo` fuera del enum, nombre en blanco, `cantidad` sin `initialStock`, `initialStock` negativo, `purchaseCostMinor` ausente o `null`, campo desconocido (`contextId`, `image`) | array de validación |
 | 401 / 403 | ver [1.3](#f-auth) (un colaborador recibe 403 `"Only socios may access this resource"`) | |
 
 **Ejemplo** (basado en `test/products.e2e-spec.ts` y las fixtures de `src/docs/bazaar-examples.ts`)
@@ -1114,7 +1116,7 @@ Edita nombre, precio y metadatos. **Al menos un campo** es obligatorio. Cada PAT
 | `name` | string | 1..200, algún carácter no blanco. No admite `null` |
 | `unitPriceMinor` | integer | 0..2147483647. **`null` es 400** (no se puede "borrar" el precio) |
 | `category` | string \| null | 1..100; `null` lo borra |
-| `purchaseCostMinor` | integer \| null | 0..2147483647; `null` lo borra |
+| `purchaseCostMinor` | integer \| null | 0..2147483647; **`null` solo se acepta si el producto todavía no tiene costo** (BE-13). Si el producto ya tiene un `purchaseCostMinor` guardado (no `null`), mandar `purchaseCostMinor: null` es **400** — el costo, una vez conocido, ya no se puede "vaciar" (los reportes de ganancia dependen de que no desaparezca). Se puede seguir **corrigiendo** a otro valor entero en cualquier momento; solo se rechaza volver a `null`. Un producto que nunca tuvo costo (de antes de BE-13) puede guardarse con `purchaseCostMinor: null` sin problema (no cambia nada) o recibir un costo por primera vez |
 | `supplier` | string \| null | 1..200; `null` lo borra |
 | `notes` | string \| null | 0..2000; `null` lo borra |
 
@@ -1127,6 +1129,7 @@ Edita nombre, precio y metadatos. **Al menos un campo** es obligatorio. Cada PAT
 | 400 | `:id` no UUID | `"Validation failed (uuid is expected)"` |
 | 400 | Body vacío `{}` | `"At least one editable field is required"` |
 | 400 | `tipo`/`stock`/`initialStock`/`unitPriceMinor: null`, decimales, campo desconocido | array de validación |
+| 400 | `purchaseCostMinor: null` cuando el producto ya tenía un costo guardado (BE-13) | `"purchaseCostMinor cannot be cleared once it has been set"` |
 | 401 / 403 | ver [1.3](#f-auth) | |
 | 404 | Producto inexistente en este negocio | `"Not Found"` |
 
@@ -1793,12 +1796,12 @@ Fuente: `src/members/members.controller.ts:73-86`, `src/commissions/dto/commissi
 <a id="mod-reports"></a>
 ## 9. Reports
 
-Dos reportes de solo lectura, solo para socios. Reglas:
+Tres reportes de solo lectura más el dashboard de resumen (`GET /dashboard/summary`, al final de esta sección), todos solo para socios. Reglas comunes a los tres reportes:
 
 - **`from` y `to` son obligatorios** (a diferencia de `/commissions`, no hay periodo por defecto).
 - Solo cuentan ventas `completada` (una `rechazada_por_conflicto` nunca genera ingreso). Los abonos de deudas **no** son ventas y no aparecen.
 - El periodo se ancla a `receivedAt` (reloj del servidor), con límites inclusivos. Fecha simple `YYYY-MM-DD`: `from` = inicio de ese día local, `to` = fin de ese día local (hora de negocio fija UTC-6). Instante ISO 8601 completo: se usa tal cual. La respuesta devuelve los límites ya normalizados en UTC.
-- No hay paginación.
+- `sales-by-period` y `sales-by-member` no están paginados; `sales-detail` sí (ver más abajo).
 
 <a id="ep-reports-period"></a>
 ### `GET /api/v1/reports/sales-by-period`
@@ -1855,6 +1858,128 @@ Mismo query que el anterior (`from`, `to` requeridos).
 ```
 
 Fuente: `src/reports/reports.controller.ts:48-55`, `src/reports/reports.service.ts:65-90`, `test/reports.e2e-spec.ts:216-238`.
+
+<a id="ep-reports-sales-detail"></a>
+### `GET /api/v1/reports/sales-detail`
+
+Ganancia real por producto y por vendedor en un periodo (BE-13), con un hueco explícito (nunca estimado) para las líneas sin costo registrado.
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
+| Éxito | **200**, `{ items, total, page, limit, totals }` |
+
+**Query** (desconocidos = 400): `from`, `to` (requeridos, mismo formato que los otros dos reportes), `page` (1..1000000, def. 1), `limit` (1..100, def. 20).
+
+Cada fila agrupa **todas** las partidas (`SaleItem`) del periodo por par `(productId, memberId)` — "qué vendió esta persona de este producto" — no una fila por venta ni por partida individual.
+
+**`items[]`**:
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `productId` | string | |
+| `productName` | string | |
+| `memberId` | string | quien vendió (socio o colaborador) |
+| `memberName` | string \| null | |
+| `units` | integer | suma de `quantity` de todas las partidas del par |
+| `ingresoMinor` | integer | suma de `subtotalMinor` de todas las partidas del par (siempre presente, no depende del costo) |
+| `costoMinor` | integer \| null | `null` cuando `gananciaDisponible` es `false` |
+| `gananciaMinor` | integer \| null | `null` cuando `gananciaDisponible` es `false` |
+| `gananciaDisponible` | boolean | `true` solo si **todas** las partidas agrupadas en esta fila tienen `unitCostMinor`. Si aunque sea una carece de costo, la fila entera pierde su ganancia (no una suma parcial de lo que sí se sabe) |
+
+Orden: `ingresoMinor` descendente, luego `productName` ascendente (y `productId`/`memberId` como desempate final, para que la paginación sea estable). `total` es el número de filas `(productId, memberId)` del periodo completo (no el número de `SaleItem`), y la paginación se aplica sobre esas filas ya agrupadas.
+
+**`totals`** (todo el periodo, no solo la página actual — regla distinta a la de cada fila):
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `ingresoMinor` | integer | suma de `subtotalMinor` de **todas** las partidas del periodo |
+| `gananciaMinor` | integer | suma de ganancia solo sobre las partidas que sí tienen `unitCostMinor`; **nunca `null`**, es `0` (no una estimación) cuando ninguna partida del periodo tiene costo |
+| `lineasSinCosto` | integer | cuántas partidas (`SaleItem`, no filas) del periodo no tienen `unitCostMinor` |
+
+Por qué la regla de `totals` es distinta a la de cada fila: una fila sin ganancia visible (`null`) le dice al socio exactamente cuál par producto/vendedor no puede evaluar todavía; el total, en cambio, necesita seguir siendo un número usable aunque falte algún dato — por eso suma solo lo que conoce y declara aparte cuánto le falta (`lineasSinCosto`), en vez de anularse por completo o inventar un promedio.
+
+**Errores**: 400 (`from`/`to` ausentes o inválidos, `page`/`limit` fuera de rango o no enteros, parámetro desconocido), 401, 403 (`"Only socios may access this resource"`).
+
+**Ejemplo**
+
+```http
+GET /api/v1/reports/sales-detail?from=2026-09-20&to=2026-09-26&page=1&limit=20 HTTP/1.1
+```
+
+```json
+{
+  "items": [
+    {
+      "productId": "30000000-0000-4000-8000-000000000001",
+      "productName": "Marvel’s Spider-Man 2 — PS5",
+      "memberId": "10000000-0000-4000-8000-000000000003",
+      "memberName": "Carlos",
+      "units": 1,
+      "ingresoMinor": 125000,
+      "costoMinor": 90000,
+      "gananciaMinor": 35000,
+      "gananciaDisponible": true
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 20,
+  "totals": { "ingresoMinor": 125000, "gananciaMinor": 35000, "lineasSinCosto": 0 }
+}
+```
+
+Fuente: `src/reports/reports.controller.ts:58-65`, `src/reports/dto/sales-detail-query.dto.ts`, `src/reports/reports.service.ts:96-218`, `src/common/profit-totals.ts`, `test/reports-sales-detail.e2e-spec.ts`.
+
+<a id="ep-dashboard-summary"></a>
+### `GET /api/v1/dashboard/summary`
+
+Resumen para la pantalla de inicio de Gestión (BE-13): ventas de hoy/ayer, ganancia de hoy (con el mismo hueco explícito que `sales-detail`), incidencias y deudas pendientes, y productos con poca existencia. Módulo propio (`src/dashboard/`), no `src/reports/`, pero documentado aquí junto a los otros reportes por ser también socio-only y compartir la misma lógica de ganancia (`computeProfitTotals`).
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
+| Éxito | **200** |
+
+**Query** (desconocidos = 400): `umbral` (integer, 0..100000, def. **2**) — umbral de stock (inclusive) para "productos con poca existencia"; no existe un máximo de negocio, solo un tope alto para rechazar entradas absurdas.
+
+**"Hoy" y "ayer"** se resuelven con el mismo corte de hora de negocio UTC-6 que usan comisiones y los demás reportes (no son parámetros; siempre es la fecha de negocio actual del servidor al momento de la petición).
+
+**Respuesta 200**:
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `ventasHoy` | `{ totalMinor, count }` | ventas `completada` del día de negocio actual |
+| `ventasAyer` | `{ totalMinor, count }` | mismo cálculo, día de negocio anterior |
+| `gananciaHoyMinor` | integer | misma regla que `sales-detail.totals.gananciaMinor` (nunca `null`; `0`, no una estimación, si ninguna venta de hoy tiene costo) |
+| `lineasSinCostoHoy` | integer | cuántas partidas de ventas de hoy no tienen `unitCostMinor` |
+| `incidenciasPendientes` | integer | conteo de `Incidencia` con `resolutionStatus: "pendiente"` del negocio |
+| `deudasPendientes` | `{ totalMinor, personas }` | `totalMinor`: suma del saldo pendiente (`totalMinor - abonos`) de toda `Deuda` con `status: "pendiente"`; `personas`: número de deudores distintos con al menos una deuda pendiente |
+| `productosPocaExistencia` | `{ umbral, total, items }` | `total`: cuántos productos activos tienen `stock <= umbral`; `items`: hasta **5** de esos productos (`{ id, name, stock, category }`), ordenados por `stock` ascendente y luego `name` |
+
+**Errores**: 400 (`umbral` no entero o fuera de rango, parámetro desconocido), 401, 403 (`"Only socios may access this resource"`).
+
+**Ejemplo**
+
+```http
+GET /api/v1/dashboard/summary?umbral=2 HTTP/1.1
+```
+
+```json
+{
+  "ventasHoy": { "totalMinor": 125000, "count": 1 },
+  "ventasAyer": { "totalMinor": 0, "count": 0 },
+  "gananciaHoyMinor": 35000,
+  "lineasSinCostoHoy": 0,
+  "incidenciasPendientes": 0,
+  "deudasPendientes": { "totalMinor": 0, "personas": 0 },
+  "productosPocaExistencia": { "umbral": 2, "total": 0, "items": [] }
+}
+```
+
+Fuente: `src/dashboard/dashboard.controller.ts`, `src/dashboard/dashboard.service.ts`, `src/dashboard/dto/dashboard-query.dto.ts`, `src/common/business-time.ts` (`currentBusinessDate`), `src/common/profit-totals.ts`, `test/dashboard.e2e-spec.ts`.
 
 ---
 
@@ -2240,7 +2365,7 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 <a id="apendice-a-indice-de-rutas"></a>
 ## Apéndice A: índice de rutas
 
-40 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
+42 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
 
 | Método | Ruta | Audiencia | Sección |
 |---|---|---|---|
@@ -2277,6 +2402,8 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 | `PATCH` | `/api/v1/settings/commission-rate` | Socio | [Commissions](#ep-settings-commission-rate) |
 | `GET` | `/api/v1/reports/sales-by-period` | Socio | [Reports](#ep-reports-period) |
 | `GET` | `/api/v1/reports/sales-by-member` | Socio | [Reports](#ep-reports-member) |
+| `GET` | `/api/v1/reports/sales-detail` | Socio | [Reports](#ep-reports-sales-detail) |
+| `GET` | `/api/v1/dashboard/summary` | Socio | [Reports](#ep-dashboard-summary) |
 | `POST` | `/api/v1/deudas` | Socio | [Deudas](#ep-deudas-create) |
 | `GET` | `/api/v1/deudas` | Socio | [Deudas](#ep-deudas-list) |
 | `GET` | `/api/v1/deudas/:id` | Socio | [Deudas](#ep-deudas-get) |

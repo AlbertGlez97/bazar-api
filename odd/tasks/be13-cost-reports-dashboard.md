@@ -141,9 +141,20 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
   not `null`, alongside a non-zero `lineasSinCosto` — intentional per D1, but not asserted by any test yet).
 - `sales-detail`: invalid pagination input (`page=0`, `limit=0`, `limit=101`, non-numeric) should each 400;
   a page past the last row should return an empty `items` with the correct `total`. Not covered yet.
-- `test/reports-sales-detail.e2e-spec.ts`'s cross-context isolation test cleans up its other-context
-  fixtures inline instead of in `try/finally`/`afterEach` — a failed assertion mid-test would leak them into
-  the test DB. Low real risk (spec-local `contextId`, doesn't collide with other files) but worth tidying.
+- `test/reports-sales-detail.e2e-spec.ts` and `test/dashboard.e2e-spec.ts`'s cross-context isolation /
+  all-cost-less tests clean up their other-context fixtures inline instead of in `try/finally`/`afterEach` —
+  a failed assertion mid-test would leak them into the test DB. Low real risk (spec-local `contextId`,
+  doesn't collide with other files) but worth tidying.
+- `dashboard.e2e-spec.ts`: pin down `sales-detail`'s all-cost-less-period case the same way the dashboard's
+  own test does (see D1/D4 note above) — `totals.gananciaMinor: 0`, not `null`, with a non-zero
+  `lineasSinCosto`. Low risk since both endpoints already share `computeProfitTotals`, but not locked in by
+  a `sales-detail`-specific test yet.
+- **Accepted, not fixed**: `dashboard.e2e-spec.ts` resolves "today"/"yesterday" once when the file loads;
+  `DashboardService` resolves them again from `new Date()` on every request. If the suite happened to run
+  across the UTC-6 day boundary mid-file, the exact-delta assertions could fail for a reason unrelated to a
+  real bug. Fixing this properly needs a clock-injection seam in `DashboardService` (an actual, if small,
+  architecture change) for a failure window measured in milliseconds once a day — not worth adding for a
+  two-person bazar's test suite. Documented here instead of silently accepted.
 
 ## Checklist
 
@@ -198,9 +209,17 @@ whole point: changing a product's cost later must never rewrite a past sale's pr
       logic isn't duplicated between `sales-detail`'s totals and the dashboard's `gananciaHoyMinor` —
       `ReportsService.salesDetail()` refactored to call it too (response shape unchanged, re-verified green).
       519/519 e2e, 354/354 unit, lint clean, build ok.
-- [ ] **B6** Docs: `doc/reglas-de-negocio.md` (mandatory cost, snapshot, profit + its limitation) in
-      **bazar-api**; `doc/api-contract-for-frontend.md` in **both** `bazar-api` and
-      `bazar-frontend/doc` (the two endpoints, request/response shapes, guard, error cases).
+- [x] **B6** Docs: `doc/reglas-de-negocio.md` — new "Costo de compra y ganancia (BE-13)" section
+      (mandatory cost, immutable-once-set rule, `unitCostMinor` snapshot, never-estimate profit rule,
+      per-row vs. totals rule with rationale, socio-only/UTC-6/`completada`-only scope) in **bazar-api**.
+      `doc/api-contract-for-frontend.md` updated in **both** `bazar-api` and `bazar-frontend/doc`
+      (kept in sync): `POST /products` `purchaseCostMinor` now required, `PATCH /products/:id`
+      documents the can't-clear-once-set 400, new `GET /reports/sales-detail` and
+      `GET /dashboard/summary` sections (query params, guard, exact response shape, errors), both
+      docs' pagination table (1.5), guard table (1.3) and Apéndice A route index updated; route counts
+      corrected (bazar-api 40→42, bazar-frontend 39→41 — the frontend copy was already one route behind
+      before this change, a pre-existing discrepancy left untouched). Not run: build/lint/test (pure
+      docs, no code touched).
 - [ ] **B7** Verify: `npm run build`, `npm run lint`, `npm test` (unit), `npm run test:e2e`. Record RED/GREEN
       evidence per behavior above.
 

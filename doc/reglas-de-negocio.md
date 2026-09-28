@@ -105,6 +105,15 @@
 - Solo cuentan ventas con status="completada".
 - Un valor from/to de solo fecha (sin hora) se interpreta como el día completo en la zona horaria de negocio (inicio de ese día para from, fin de ese día para to), para que un socio pueda pedir "las ventas del 5 de mayo" sin tener que calcular instantes UTC a mano.
 
+## Costo de compra y ganancia (BE-13)
+- `purchaseCompraMinor`/`purchaseCostMinor` (costo de compra) es obligatorio al crear un producto (antes era opcional): sin él, `GET /reports/sales-detail` y `GET /dashboard/summary` no podrían calcular ninguna ganancia real. Al editar (`PATCH /products/:id`), un producto que ya tiene costo no puede "vaciarse": mandar `purchaseCostMinor: null` de forma explícita cuando ya tenía valor es 400. Un producto que nunca tuvo costo (creado antes de BE-13) sigue permitiendo guardarse sin él, y puede recibir un costo por primera vez sin restricción. Los productos existentes sin costo quedan tal cual: no hay backfill ni obligación retroactiva de cargarlo.
+- Cada `SaleItem` guarda una foto del costo del producto al momento de la venta (`unitCostMinor`, nullable). Nunca se recalcula después: si el costo del producto cambia más adelante, ninguna venta ya hecha ni ningún reporte/dashboard generado a partir de ella cambia de valor. Es lo que hace confiable un número de ganancia histórico.
+- Ganancia de una línea = (precio cobrado - costo) × cantidad, y solo existe si esa línea tiene costo. Nunca se estima ni se pone en 0 cuando falta el dato — un 0 se confundiría con "no hubo ganancia" en vez de "no lo sabemos".
+- Dos reglas de agregación distintas, a propósito:
+  - **Por fila** (cada (producto, socio/colaborador) de `GET /reports/sales-detail`): si aunque sea una sola línea de esa fila no tiene costo, la fila entera pierde su ganancia (`gananciaMinor: null`, `gananciaDisponible: false`), no solo la parte sin costo. Una suma parcial de lo que sí se conoce se vería como una cifra completa sin serlo, que es justo lo que "nunca se estima" busca evitar a nivel de fila.
+  - **Totales** (`sales-detail.totals` y `dashboard.gananciaHoyMinor`): suman ganancia solo sobre las líneas (`SaleItem`) que sí tienen costo, y reportan aparte cuántas faltan (`lineasSinCosto`/`lineasSinCostoHoy`). El total es `0` (nunca `null`) cuando ninguna línea del periodo tiene costo — una suma real de un conjunto vacío, no una estimación. Así el número siempre es "lo que sabemos, con su faltante declarado", nunca un valor mezclado con lo que no se sabe.
+- Todo reporte de ganancia y el dashboard cuentan únicamente ventas `status: completada` (igual que el resto de reportes), con el mismo corte de hora de negocio UTC-6 que usan las comisiones, y son endpoints exclusivos de socios (`SocioGuard`).
+
 ## Fiado y apartados (Deuda)
 - Un solo concepto "Deuda" con dos tipos: "fiado" (producto ya entregado) y "apartado" (producto reservado). Ambos descuentan inventario de inmediato al crearse, para evitar que el producto se venda dos veces mientras el cliente abona.
 - Solo socios pueden autorizar una Deuda (crear un fiado/apartado). Cualquier Member (socio o colaborador) puede registrar abonos.
