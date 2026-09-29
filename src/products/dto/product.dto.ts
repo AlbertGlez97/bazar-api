@@ -92,10 +92,17 @@ export class ProductListDto {
   // AFTER any `@Transform` — so `Number('')` (which is 0, not NaN) would
   // still land regardless of decorator order, silently filtering to stock
   // <= 0 instead of leaving the catalog unfiltered. A single custom
-  // `@Transform` doing the whole conversion (empty string -> undefined,
-  // for @IsOptional to treat as absent) replaces @Type here entirely.
+  // `@Transform` doing the whole conversion (empty/whitespace -> undefined,
+  // for @IsOptional to treat as absent; anything else must look like a
+  // plain decimal integer, so '0x10'/'1e2'/'1.5' fail @IsInt as NaN rather
+  // than silently coercing) replaces @Type here entirely.
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? undefined : Number(value)))
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (trimmed === '') return undefined;
+    return /^-?\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+  })
   @IsInt()
   @Min(0)
   @Max(100_000)

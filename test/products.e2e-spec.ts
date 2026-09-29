@@ -450,7 +450,21 @@ describe('context-scoped products', () => {
       new Set(res.body.items.map((p: { id: string }) => p.id)),
     ).toEqual(new Set([low.id, high.id]));
   });
-  it.each([-1, 100_001, 1.5, 'abc'])(
+  it('treats a whitespace-only umbral as absent, never as 0', async () => {
+    const prefix = randomUUID();
+    const low = await create({ ...body(`${prefix} low`), initialStock: 0 });
+    const high = await create({ ...body(`${prefix} high`), initialStock: 10 });
+    const res = await request(app.getHttpServer())
+      .get('/products')
+      .query({ search: prefix, umbral: '   ' })
+      .auth(token, { type: 'bearer' })
+      .expect(200);
+    expect(res.body.total).toBe(2);
+    expect(
+      new Set(res.body.items.map((p: { id: string }) => p.id)),
+    ).toEqual(new Set([low.id, high.id]));
+  });
+  it.each([-1, 100_001, 1.5, 'abc', '0x10', '1e2'])(
     'rejects an invalid umbral %s with 400',
     async (umbral) => {
       await request(app.getHttpServer())

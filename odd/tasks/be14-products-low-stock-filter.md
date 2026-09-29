@@ -66,6 +66,16 @@ assume `<=` without checking.
       case. RED confirmed via `git stash` (isolated the DTO change, reran the new test, saw `total: 1` instead
       of the expected `2`) before GREEN. Re-verified: `test/products.e2e-spec.ts` 35/35, full `npm run test`
       354/354, full `npm run test:e2e` 526/526 (+1), build/lint clean.
+- [x] **T6** (coordinator, second Gentle AI `review-reliability` pass) Fixed a second real WARNING
+      (`R3-whitespace-umbral-coerces-to-zero`, non-blocking, already approved/acknowledged): the T5 fix only
+      special-cased the exact empty string — a whitespace-only value (e.g. a URL-encoded space) still went
+      through `Number()`, which coerces `' '` to `0` too, and `Number()` also silently accepts non-decimal
+      forms like `'0x10'`/`'1e2'`. Replaced the single-line ternary with a small transform: trims the string
+      first (empty-after-trim → `undefined`, absent), then only calls `Number()` when the trimmed value matches
+      a plain decimal-integer pattern (`/^-?\d+$/`) — anything else becomes `NaN`, which `@IsInt()` already
+      rejects with 400. RED confirmed via `git stash` again (3 failures: whitespace returned 200 instead of
+      filtering nothing, `'0x10'`/`'1e2'` returned 200 instead of 400) before GREEN (38/38 in the spec file).
+      Re-verified: full `npm run test` 354/354, full `npm run test:e2e` 529/529 (+3), build/lint clean.
 
 ## Out of scope
 
