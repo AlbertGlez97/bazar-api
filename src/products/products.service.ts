@@ -235,6 +235,11 @@ export class ProductsService {
    * created/edited concurrently — otherwise a page boundary could shift
    * mid-scroll and duplicate or skip an item.
    *
+   * `umbral` (BE-14), when present, additionally filters to `stock <=
+   * umbral` — same name/semantics as {@link DashboardService.summary}'s own
+   * `umbral`, but with no server-applied default: absent means unfiltered,
+   * only the caller opts into a threshold.
+   *
    * Deactivated products are excluded by default (BE-10). `includeInactive:
    * true` is only honored when the request also identifies an active
    * socio via the optional `x-member-id` header ({@link isRequestingSocio})
@@ -270,6 +275,7 @@ export class ProductsService {
       ...(query.search
         ? { name: { contains: query.search, mode: 'insensitive' as const } }
         : {}),
+      ...(query.umbral !== undefined ? { stock: { lte: query.umbral } } : {}),
     };
     const [items, total] = await this.prisma.$transaction(
       [

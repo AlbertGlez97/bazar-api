@@ -402,6 +402,48 @@ describe('context-scoped products', () => {
     ).toEqual(['cantidad', 'unica']);
     expect((await fetchPage(3)).body.items).toEqual([]);
   });
+  it('filters by umbral (stock <= umbral, same semantics as dashboard) without a server-side default', async () => {
+    const prefix = randomUUID();
+    const low = await create({ ...body(`${prefix} low`), initialStock: 0 });
+    const mid = await create({ ...body(`${prefix} mid`), initialStock: 3 });
+    const high = await create({ ...body(`${prefix} high`), initialStock: 10 });
+    const search = (query: Record<string, string | number>) =>
+      request(app.getHttpServer())
+        .get('/products')
+        .query({ search: prefix, ...query })
+        .auth(token, { type: 'bearer' })
+        .expect(200);
+    // umbral absent: identical to the pre-existing unfiltered behavior —
+    // absent must never silently apply the dashboard's own default of 2.
+    const absent = (await search({})).body;
+    expect(absent.total).toBe(3);
+    expect(
+      new Set(absent.items.map((p: { id: string }) => p.id)),
+    ).toEqual(new Set([low.id, mid.id, high.id]));
+    // umbral=3 (inclusive, stock <= umbral): only low (0) and mid (3).
+    const filtered = (await search({ umbral: 3 })).body;
+    expect(filtered.total).toBe(2);
+    expect(
+      new Set(filtered.items.map((p: { id: string }) => p.id)),
+    ).toEqual(new Set([low.id, mid.id]));
+    expect(
+      filtered.items.some((p: { id: string }) => p.id === high.id),
+    ).toBe(false);
+    // umbral=0: only the literally out-of-stock product.
+    const zero = (await search({ umbral: 0 })).body;
+    expect(zero.total).toBe(1);
+    expect(zero.items[0].id).toBe(low.id);
+  });
+  it.each([-1, 100_001, 1.5, 'abc'])(
+    'rejects an invalid umbral %s with 400',
+    async (umbral) => {
+      await request(app.getHttpServer())
+        .get('/products')
+        .query({ umbral })
+        .auth(token, { type: 'bearer' })
+        .expect(400);
+    },
+  );
   it('rejects anonymous access and isolates foreign product/audit/upload paths', async () => {
     await request(app.getHttpServer()).get('/products').expect(401);
     const list = await request(app.getHttpServer())

@@ -74,6 +74,26 @@ export class PatchProductDto extends ProductMetadataDto {
 
 export class ProductListDto {
   @IsOptional() @IsString() @Length(0, 200) search?: string;
+  // Same param name/semantics as GET /dashboard/summary's own `umbral`
+  // (dashboard-query.dto.ts): stock <= umbral, 0..100_000. Deliberately NO
+  // default here (unlike the dashboard's default of 2) — absent must mean
+  // "no filter" for the everyday catalog listing, not "silently filter at
+  // 2". Only the frontend decides to send a threshold when its low-stock
+  // toggle is on.
+  @ApiProperty({
+    required: false,
+    minimum: 0,
+    maximum: 100_000,
+    description:
+      'Stock threshold (inclusive): only products with stock <= umbral. ' +
+      'No default — omit for the unfiltered catalog.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100_000)
+  umbral?: number;
   // Defaults to hiding deactivated products, since the everyday catalog
   // (sale screen) should never surface something that can no longer be
   // sold. Only honored when the caller's `x-member-id` header resolves
