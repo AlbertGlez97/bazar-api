@@ -54,6 +54,18 @@ assume `<=` without checking.
       `test/sales-conflict.e2e-spec.ts`, untouched by this task). `npm run test` → 24 files / 354 tests green.
       `npm run test:e2e` → 27 files / 525 tests green (+5 from the new `umbral` coverage). All re-verified by
       the coordinator independently after the writer's own report.
+- [x] **T5** (coordinator, post-review) Fixed a real WARNING from the Gentle AI `review-reliability` lens
+      (`R3-empty-umbral-coerces-to-zero`, non-blocking, already approved/acknowledged): `?umbral=` (empty
+      string) was silently coerced to `0` by `@Type(() => Number)` (`Number('') === 0`, not `NaN`), filtering
+      to out-of-stock only instead of being treated as absent. Root cause: `@Type(() => Number)` runs its own
+      coercion pass unconditionally, AFTER any `@Transform`, regardless of decorator declaration order —
+      confirmed empirically with a standalone class-transformer script before guessing at a fix a second time.
+      Fix: replaced `@Type(() => Number)` with a single custom `@Transform(({ value }) => value === '' ?
+      undefined : Number(value))`, which owns the whole conversion so there's no separate Type-coercion stage
+      to fight with. `'abc'` still becomes `NaN`, still rejected by `@IsInt()` — unchanged behavior for that
+      case. RED confirmed via `git stash` (isolated the DTO change, reran the new test, saw `total: 1` instead
+      of the expected `2`) before GREEN. Re-verified: `test/products.e2e-spec.ts` 35/35, full `npm run test`
+      354/354, full `npm run test:e2e` 526/526 (+1), build/lint clean.
 
 ## Out of scope
 

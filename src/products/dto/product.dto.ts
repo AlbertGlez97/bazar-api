@@ -88,8 +88,14 @@ export class ProductListDto {
       'Stock threshold (inclusive): only products with stock <= umbral. ' +
       'No default — omit for the unfiltered catalog.',
   })
+  // `@Type(() => Number)` coerces primitives in its own pass, unconditionally
+  // AFTER any `@Transform` — so `Number('')` (which is 0, not NaN) would
+  // still land regardless of decorator order, silently filtering to stock
+  // <= 0 instead of leaving the catalog unfiltered. A single custom
+  // `@Transform` doing the whole conversion (empty string -> undefined,
+  // for @IsOptional to treat as absent) replaces @Type here entirely.
   @IsOptional()
-  @Type(() => Number)
+  @Transform(({ value }) => (value === '' ? undefined : Number(value)))
   @IsInt()
   @Min(0)
   @Max(100_000)
