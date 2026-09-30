@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+.env.*.local
+coverage
+.git
+*.log
+.tmp
+odd/
+
+# Extra build-artifact hygiene (not requested explicitly, but these are
+# large local-only files that don't belong in the build context):
+tsconfig.build.tsbuildinfo
+.server.pid
+doc/
+test/
