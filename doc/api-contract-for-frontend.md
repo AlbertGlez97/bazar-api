@@ -1207,7 +1207,7 @@ Fuente: `src/products/products.controller.ts:100-109`, `src/products/products.se
 **Body multipart**: exactamente **un** archivo en el campo llamado **`image`** y **ningún otro campo** (el servidor rechaza cualquier campo de formulario adicional). Reglas de archivo:
 
 - Tamaño máximo **5 MiB** (5 242 880 bytes).
-- Formatos aceptados: PNG, JPEG o WebP reales. El `Content-Type` declarado de la parte (`image/png`, `image/jpeg`, `image/webp`) debe coincidir con el formato real de los bytes (se valida firma y decodificación); SVG, HTML, GIF animado o un archivo renombrado se rechazan.
+- Formatos aceptados: PNG, JPEG o WebP reales. El `Content-Type` declarado de la parte (`image/png`, `image/jpeg`, `image/webp`) debe coincidir con el formato real de los bytes (se valida firma y decodificación); SVG, HTML, GIF animado o un archivo renombrado se rechazan. **HEIC/HEIF no está soportado** (la build de sharp instalada no trae decodificador HEVC) y se rechaza con un mensaje específico antes de intentar decodificar.
 - Imagen de un solo fotograma y hasta 16 millones de píxeles decodificados.
 - El servidor **reencoda siempre a PNG** con un nombre aleatorio; el nombre de archivo enviado se descarta.
 - Reemplazar la imagen crea una nueva URL; el archivo anterior **no se borra** y sigue accesible por su URL vieja (lo muestra `test/products.e2e-spec.ts:404`). Cada subida escribe una fila de auditoría.
@@ -1218,8 +1218,11 @@ Fuente: `src/products/products.controller.ts:100-109`, `src/products/products.se
 |---|---|---|
 | 400 | `:id` no UUID | `"Validation failed (uuid is expected)"` |
 | 400 | No se envió el archivo | `"Image is required"` |
-| 400 | Firma de bytes no soportada (SVG, HTML, truncado) | `"Unsupported image signature"` |
-| 400 | Decodificación fallida, MIME declarado distinto del real, animada, > 16 M píxeles o resultado > 5 MiB | `"Invalid, unsupported or oversized decoded image"` |
+| 400 | Firma de bytes HEIC/HEIF (foto "alta eficiencia" de celular/tablet) | `"HEIC/HEIF images are not supported. Please export or share the photo as JPEG, PNG or WebP (on iPhone: Settings > Camera > Formats > Most Compatible) and try again."` |
+| 400 | Firma de bytes no soportada y no-HEIC (SVG, HTML, truncado) | `"Unsupported image format. Only PNG, JPEG or WebP images are accepted."` |
+| 400 | Decodificación OK pero MIME declarado distinto del real, animada o formato decodificado fuera de PNG/JPEG/WebP | `"Unsupported image format. Only PNG, JPEG or WebP images are accepted."` |
+| 400 | Decodifica pero excede 16 M píxeles, o el resultado reencodado a PNG supera 5 MiB | `"Image is too large after processing (over 5 MB once decoded). Try a smaller or lower-resolution photo."` |
+| 400 | Fallo de decodificación genuino (archivo corrupto/no reconocido por sharp) | `"Invalid, unsupported or oversized decoded image"` |
 | 400 | Campo de archivo con otro nombre distinto de `image` (verificado en vivo con `foto`) | `"Unexpected file field - foto"` |
 | 400 | Campo de formulario extra además del archivo | `"Too many fields"` |
 | 400 | Más de un archivo | `"Too many files"` |

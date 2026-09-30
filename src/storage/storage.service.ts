@@ -9,6 +9,57 @@ import { resolve, join } from 'node:path';
 import sharp from 'sharp';
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Names, in one place, the image formats this service will actually accept
+ * and store — kept as a single source of truth so the controller/frontend
+ * docs and any client-side validation can be described from the same list
+ * instead of drifting from what the byte-signature/sharp checks below
+ * really enforce.
+ */
+export const ACCEPTED_IMAGE_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+] as const;
+
+const ACCEPTED_FORMATS_MESSAGE =
+  'Unsupported image format. Only PNG, JPEG or WebP images are accepted.';
+
+// ISO-BMFF `ftyp` major/compatible brands used by HEIC/HEIF photos (the
+// default "high efficiency" format on modern phone cameras). Sharp's
+// npm-distributed prebuilt libvips binary does NOT include HEVC/HEIC decode
+// support (only AVIF) — see node_modules/sharp docs: "Support for
+// patent-encumbered HEIC images requires the use of a globally-installed
+// libvips compiled with support for libheif, libde265 and x265" — so these
+// are rejected by signature before ever reaching sharp, with a message that
+// tells the user what to do instead of a generic decode error.
+const HEIC_BRANDS = new Set([
+  'heic',
+  'heix',
+  'heim',
+  'heis',
+  'hevc',
+  'hevx',
+  'hevm',
+  'hevs',
+  'mif1',
+  'msf1',
+]);
+
+function isHeicSignature(buffer: Buffer): boolean {
+  if (buffer.length < 12) return false;
+  if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+  return HEIC_BRANDS.has(buffer.toString('ascii', 8, 12));
+}
+
+/**
+ * Internal marker for a decode/re-encode failure that already carries a
+ * specific, user-facing explanation — as opposed to an unexpected sharp/
+ * libvips error, which is never shown to the client verbatim.
+ */
+class InvalidImageError extends Error {}
+
 /**
  * Storage is behind this interface (rather than ProductsService calling the
  * filesystem directly) so the local disk implementation can later be
@@ -60,7 +111,10 @@ export class LocalStorageService extends StorageService {
    *
    * @throws BadRequestException when the file is missing, its signature or
    * decoded format/MIME/page-count do not match an accepted still
-   * PNG/JPEG/WebP, or the re-encoded result is invalid.
+   * PNG/JPEG/WebP, or the re-encoded result is invalid. HEIC/HEIF (and other
+   * recognized-but-unsupported) rejections get a specific, actionable
+   * message; a genuinely undecodable/corrupt buffer falls back to the
+   * generic message below.
    * @throws PayloadTooLargeException when the raw upload exceeds
    * {@link MAX_IMAGE_BYTES} (the re-encoded size is checked separately and
    * surfaces as a BadRequestException, since by that point it is a
@@ -80,8 +134,15 @@ export class LocalStorageService extends StorageService {
     const webp =
       signature.toString('ascii', 0, 4) === 'RIFF' &&
       signature.toString('ascii', 8, 12) === 'WEBP';
-    if (!png && !jpeg && !webp)
-      throw new BadRequestException('Unsupported image signature');
+    if (!png && !jpeg && !webp) {
+      if (isHeicSignature(signature))
+        throw new BadRequestException(
+          'HEIC/HEIF images are not supported. Please export or share the ' +
+            'photo as JPEG, PNG or WebP (on iPhone: Settings > Camera > ' +
+            'Formats > Most Compatible) and try again.',
+        );
+      throw new BadRequestException(ACCEPTED_FORMATS_MESSAGE);
+    }
     let bytes: Buffer;
     try {
       const image = sharp(file.buffer, {
@@ -95,14 +156,17 @@ export class LocalStorageService extends StorageService {
         file.mimetype !== `image/${format}` ||
         (metadata.pages ?? 1) !== 1
       ) {
-        throw new Error(
-          'Only nonanimated PNG/JPEG/WebP with matching MIME are accepted',
-        );
+        throw new InvalidImageError(ACCEPTED_FORMATS_MESSAGE);
       }
       bytes = await image.rotate().png().toBuffer();
       if (bytes.length > MAX_IMAGE_BYTES)
-        throw new Error('Normalized image exceeds 5 MiB');
-    } catch {
+        throw new InvalidImageError(
+          'Image is too large after processing (over 5 MB once decoded). ' +
+            'Try a smaller or lower-resolution photo.',
+        );
+    } catch (error) {
+      if (error instanceof InvalidImageError)
+        throw new BadRequestException(error.message);
       throw new BadRequestException(
         'Invalid, unsupported or oversized decoded image',
       );
