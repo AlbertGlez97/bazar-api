@@ -2,10 +2,12 @@ import { ApiExample } from '../docs/api-example.decorator.js';
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -19,6 +21,7 @@ import { SocioGuard } from '../auth/socio.guard.js';
 import { CreateDeudaDto } from './dto/create-deuda.dto.js';
 import { DeudaListDto } from './dto/deuda-list.dto.js';
 import { CreateAbonoDto } from './dto/create-abono.dto.js';
+import { CreateCuotaDto, UpdateCuotaDto } from './dto/cuota-planeada.dto.js';
 import { DeudasService } from './deudas.service.js';
 
 const validate = (expectedType: new () => object) =>
@@ -82,5 +85,39 @@ export class DeudasController {
     @Body(validate(CreateAbonoDto)) dto: CreateAbonoDto,
   ) {
     return this.deudas.registerAbono(req, id, dto);
+  }
+
+  // BE-15 (D3): cuotas (planned installments) are socio-only, same as
+  // creating the Deuda itself — planning the schedule is an authorization
+  // decision, unlike collecting an abono (ContextGuard above).
+  @Post(':id/cuotas')
+  @UseGuards(SocioGuard)
+  addCuota(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(CreateCuotaDto)) dto: CreateCuotaDto,
+  ) {
+    return this.deudas.addCuota(req, id, dto);
+  }
+
+  @Patch(':id/cuotas/:cuotaId')
+  @UseGuards(SocioGuard)
+  updateCuota(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('cuotaId', new ParseUUIDPipe()) cuotaId: string,
+    @Body(validate(UpdateCuotaDto)) dto: UpdateCuotaDto,
+  ) {
+    return this.deudas.updateCuota(req, id, cuotaId, dto);
+  }
+
+  @Delete(':id/cuotas/:cuotaId')
+  @UseGuards(SocioGuard)
+  deleteCuota(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('cuotaId', new ParseUUIDPipe()) cuotaId: string,
+  ) {
+    return this.deudas.deleteCuota(req, id, cuotaId);
   }
 }

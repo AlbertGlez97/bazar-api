@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsIn,
   IsInt,
   IsOptional,
@@ -12,6 +13,8 @@ import {
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_ITEM_QUANTITY } from '../../sales/dto/create-sale.dto.js';
+import { MAX_MINOR_UNITS } from '../../common/money.js';
+import { CuotaPlaneadaInputDto } from './cuota-planeada.dto.js';
 
 /**
  * Inline payload to create a brand-new {@link Deudor} in the same request
@@ -67,4 +70,35 @@ export class CreateDeudaDto {
   @ValidateNested()
   @Type(() => DeudorInputDto)
   deudor?: DeudorInputDto;
+
+  // BE-15 (D1): required (not optional), specifically so the caller must
+  // always be explicit about it — `0` is a valid, deliberate "no initial
+  // payment", never a silently-omitted default. When > 0, DeudasService
+  // creates the first Abono inside the same transaction that creates the
+  // Deuda, reusing registerAbono's own "cannot exceed totalMinor" guard.
+  @ApiProperty({
+    minimum: 0,
+    maximum: MAX_MINOR_UNITS,
+    description:
+      'Initial payment collected at creation time, in minor units. Always required — send 0 for "no initial payment". Creates the first Abono (dated today) in the same transaction when > 0; rejected if it alone would exceed totalMinor.',
+  })
+  @IsInt()
+  @Min(0)
+  @Max(MAX_MINOR_UNITS)
+  abonoInicialMinor!: number;
+
+  // BE-15 (D3): optional payment schedule created alongside the Deuda, in
+  // the same transaction. Purely informative — see CuotaPlaneadaInputDto's
+  // own doc comment.
+  @ApiProperty({
+    required: false,
+    type: [CuotaPlaneadaInputDto],
+    description:
+      'Optional planned payment schedule, created in the same transaction as the Deuda.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CuotaPlaneadaInputDto)
+  cuotasPlaneadas?: CuotaPlaneadaInputDto[];
 }

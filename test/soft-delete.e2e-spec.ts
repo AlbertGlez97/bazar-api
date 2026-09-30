@@ -266,6 +266,7 @@ describe('soft delete (BE-10)', () => {
       await asSocio(request(app.getHttpServer()).post('/deudas'))
         .send({
           type: 'apartado',
+          abonoInicialMinor: 0,
           productId: product.id,
           cantidad: 1,
           deudor: { nombre: 'Cliente' },
