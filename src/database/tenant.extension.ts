@@ -22,6 +22,7 @@ const TENANT_SCOPED_MODELS = new Set([
   'Deudor',
   'Deuda',
   'Abono',
+  'CuotaPlaneada',
   'AppSettings',
   'Member',
   'Device',

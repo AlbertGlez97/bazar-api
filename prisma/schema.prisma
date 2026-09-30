@@ -382,12 +382,28 @@ model Deuda {
   // Abono (see DeudasService.registerAbono), so it can never drift from
   // reality or be overwritten by mistake.
   status            DeudaStatus @default(pendiente)
+  // BE-15 (D5): snapshot of Product.purchaseCostMinor taken at creation,
+  // same nullable, never-estimated/never-recomputed pattern as
+  // SaleItem.unitCostMinor (BE-13) — null stays null forever (no
+  // backfill, no guessing), and changing the product's cost later never
+  // rewrites what a past Deuda actually cost at the time. Needed so
+  // "deudas liquidadas" reporting (D7) can compute real profit.
+  unitCostMinor     Int?
+  // BE-15 (D4): set exactly once, inside registerAbono's existing
+  // transaction, at the precise moment `status` flips to "saldada" —
+  // never set any other way, never backfilled for rows that were already
+  // saldada before this column existed (those stay null: we genuinely
+  // don't know when they settled).
+  saldadaAt         DateTime?   @db.Timestamptz(3)
   createdByMemberId String      @db.Uuid
   createdAt         DateTime    @default(now()) @db.Timestamptz(3)
   deudor            Deudor      @relation(fields: [deudorId], references: [id])
   product           Product     @relation(fields: [productId], references: [id])
   createdByMember   Member      @relation("DeudaCreatedBy", fields: [createdByMemberId], references: [id])
   abonos            Abono[]
+  // BE-15 (D2): purely informative payment schedule, never read by any
+  // balance calculation (see CuotaPlaneada's own doc comment).
+  cuotasPlaneadas   CuotaPlaneada[]
 
   @@index([status, createdAt, id])
   @@index([contextId])
@@ -407,6 +423,29 @@ model Abono {
   receivedByMember   Member   @relation("AbonoReceivedBy", fields: [receivedByMemberId], references: [id])
 
   @@index([deudaId, receivedAt, id])
+  @@index([contextId])
+}
+
+// BE-15 (D2): a purely informative payment schedule for a Deuda —
+// "when the debtor said they'd pay each installment", not a ledger of what
+// actually happened. NEVER read by DeudasService.registerAbono or any other
+// balance/status calculation: the running balance is, and remains, always
+// and only the sum of real Abono rows (see Abono's own doc comment on
+// DeudasService.registerAbono) — a CuotaPlaneada existing, matching or not
+// matching any real payment never moves the saldo, never flips `status`,
+// and is never itself an Abono. Tenant-scoped like every sibling model
+// (contextId + mirrored RLS policy, see doc/reglas-de-negocio.md's
+// "Multi-tenancy (BE-11)" section for the pattern this follows).
+model CuotaPlaneada {
+  id                 String   @id @default(uuid()) @db.Uuid
+  deudaId            String   @db.Uuid
+  contextId          String   @default("legacy-unassigned")
+  fechaEsperada      DateTime @db.Timestamptz(3)
+  montoEsperadoMinor Int
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  deuda              Deuda    @relation(fields: [deudaId], references: [id])
+
+  @@index([deudaId, fechaEsperada])
   @@index([contextId])
 }
 
