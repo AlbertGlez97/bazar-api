@@ -7,7 +7,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
 - **Actualización de seguridad BE-12 (2026-09-25)**: nueva ruta [`GET /auth/me`](#ep-auth-me) (solo `AuthGuard`). Dice a qué persona está atada la cuenta autenticada (`memberId` y `member`, o `null` en la cuenta compartida). **La UI no debe mostrar el selector de persona cuando `memberId` no es `null`**: una cuenta atada solo puede actuar como esa persona y `ContextGuard` rechaza (403) cualquier otro `x-member-id`. Antes el login no exponía el vínculo y el selector dejaba a un colaborador elegir "socio" en la pantalla (las llamadas de datos ya daban 403).
-- Alcance: 42 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- Alcance: 45 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - **Actualización BE-13 (2026-09-28)**: `purchaseCostMinor` pasa a ser **obligatorio** al crear un producto (antes opcional) y ya no se puede "vaciar" con `PATCH` una vez que el producto tiene un costo; cada `SaleItem` guarda ahora un snapshot de costo (`unitCostMinor`) que nunca se recalcula; rutas nuevas: `GET /reports/sales-detail` (ganancia por producto/vendedor) y `GET /dashboard/summary` (resumen para la pantalla de Gestión). Las secciones [5](#mod-products) y [9](#mod-reports) reflejan ese cambio.
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -129,7 +129,7 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
 | Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
-| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id` |
+| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id`, `POST /api/v1/deudas/:id/cuotas` (BE-15), `PATCH /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15), `DELETE /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15) |
 
 Matiz sobre los endpoints "solo `AuthGuard`": únicamente `GET /members` y `GET /products` leen `x-member-id` de forma **opcional** (para decidir si se respeta `includeInactive`, ver sus secciones); ninguno de los endpoints de este grupo exige ni lee `x-device-id`.
 
@@ -170,7 +170,7 @@ Parámetros por endpoint (todos en query string; `page`/`limit` son enteros, cua
 | `GET /api/v1/products/:id/audit` | 1..1000000, def. 1 | 1..100, def. 20 | acepta `search`, `includeInactive` y `umbral` (mismo DTO) pero los **ignora** | `changedAt` asc, `id` asc (fijo) |
 | `GET /api/v1/sales` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del vendedor), `sort` (`asc`/`desc`, def. `desc`) | `receivedAt` según `sort`, `id` asc |
 | `GET /api/v1/incidencias` | 1..1000000, def. 1 | 1..100, def. 20 | `type`, `resolutionStatus`, `search` (0..200, nombre del vendedor de la venta), `sort` (def. `desc`) | `detectedAt` según `sort`, `id` asc |
-| `GET /api/v1/deudas` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del deudor), `sort` (def. `desc`) | `createdAt` según `sort`, `id` asc |
+| `GET /api/v1/deudas` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del deudor), `sort` (def. `desc`, solo aplica con `orderBy=createdAt`), `orderBy` (`createdAt` def. \| `saldoPendiente` \| `cuotaVencida`, BE-15), `atrasado` (bool, sin filtro por defecto, BE-15) | `createdAt` según `sort` (por defecto); con `orderBy=saldoPendiente`, saldo pendiente descendente (fijo); con `orderBy=cuotaVencida`, `CuotaPlaneada.fechaEsperada` vencida más antigua primero (fijo, sin vencidas al final); `id` asc como desempate final. Con `atrasado` presente u `orderBy` distinto de `createdAt`, la paginación se aplica en memoria (ver detalle abajo), igual que `sales-detail` |
 | `GET /api/v1/reports/sales-detail` | 1..1000000, def. 1 | 1..100, def. 20 | `from`, `to` (requeridos) | `ingresoMinor` desc, `productName` asc (ver [9](#ep-reports-sales-detail)); a diferencia de las filas de arriba, la paginación se aplica en memoria sobre filas ya agrupadas por (producto, vendedor), no sobre una consulta paginada en base de datos |
 
 **No están paginados** (devuelven todo): `GET /api/v1/members` (array plano), `GET /api/v1/commissions`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member` y `GET /api/v1/dashboard/summary` (objetos sin `total`/`page`/`limit`). `GET /api/v1/reports/sales-detail` sí está paginado (fila arriba).
@@ -1799,7 +1799,7 @@ Fuente: `src/members/members.controller.ts:73-86`, `src/commissions/dto/commissi
 Tres reportes de solo lectura más el dashboard de resumen (`GET /dashboard/summary`, al final de esta sección), todos solo para socios. Reglas comunes a los tres reportes:
 
 - **`from` y `to` son obligatorios** (a diferencia de `/commissions`, no hay periodo por defecto).
-- Solo cuentan ventas `completada` (una `rechazada_por_conflicto` nunca genera ingreso). Los abonos de deudas **no** son ventas y no aparecen.
+- Solo cuentan ventas `completada` (una `rechazada_por_conflicto` nunca genera ingreso). Los abonos de deudas **no** son ventas y no cuentan para `totalSoldMinor`/`saleCount` — desde BE-15, `sales-by-period` sí los incluye en sus propios campos (`abonosRecibidos`/`abonosRecibidosMinor`), ver esa sección.
 - El periodo se ancla a `receivedAt` (reloj del servidor), con límites inclusivos. Fecha simple `YYYY-MM-DD`: `from` = inicio de ese día local, `to` = fin de ese día local (hora de negocio fija UTC-6). Instante ISO 8601 completo: se usa tal cual. La respuesta devuelve los límites ya normalizados en UTC.
 - `sales-by-period` y `sales-by-member` no están paginados; `sales-detail` sí (ver más abajo).
 
@@ -1814,9 +1814,18 @@ Tres reportes de solo lectura más el dashboard de resumen (`GET /dashboard/summ
 
 **Query** (ambos requeridos; desconocidos = 400): `from`, `to` (fecha `YYYY-MM-DD` o ISO 8601).
 
-**Respuesta 200**: `{ from: string, to: string, totalSoldMinor: integer, saleCount: integer }` (`totalSoldMinor` es la suma de `totalMinor` de las ventas completadas del periodo, de cualquier vendedor; `0` si no hubo).
+**Respuesta 200**: `{ from, to, totalSoldMinor, saleCount, abonosRecibidos, abonosRecibidosMinor, deudasLiquidadas, totalIngresadoMinor }` — extendido en BE-15 (D7) con dos tablas de deudas y un total combinado, en vez de crear un endpoint nuevo (ver `doc/reglas-de-negocio.md`, sección "Abono inicial, cuotas planeadas..." para por qué se extendió este endpoint y no otro).
 
-**Errores**: 400 (falta `from` o `to`, valor que no es una fecha ISO 8601, parámetro desconocido; mensaje del tipo `"from must be a valid ISO 8601 date string"`), 401, 403. No se valida `from` <= `to`: con el orden invertido responde **200** con `totalSoldMinor: 0` y `saleCount: 0` (verificado en vivo). Los formatos ISO 8601 raros (semana u ordinal) responden 400 con el `message` como **string** `"Invalid date: <valor>"`, no como array.
+| Campo | Tipo | Notas |
+|---|---|---|
+| `totalSoldMinor` | integer | suma de `totalMinor` de las ventas completadas del periodo, de cualquier vendedor; `0` si no hubo |
+| `saleCount` | integer | |
+| `abonosRecibidos` | array | **BE-15**. Todo `Abono` real con `receivedAt` en el periodo, sea su Deuda activa o ya saldada. Cada uno: `{ fecha: string (ISO 8601, = receivedAt), deudor: string, montoMinor: integer, type: "fiado" \| "apartado" }` |
+| `abonosRecibidosMinor` | integer | **BE-15**. Suma de `abonosRecibidos[].montoMinor`; `0` si no hubo |
+| `deudasLiquidadas` | array | **BE-15**. Deudas cuyo `saldadaAt` cae en el periodo (no `createdAt`). Cada una: `{ id, type, deudor: string, totalMinor: integer, saldadaAt: string, gananciaMinor: integer \| null, gananciaDisponible: boolean }`. `gananciaMinor = totalMinor - unitCostMinor × cantidad` solo si `unitCostMinor` no es null; si no, `gananciaDisponible: false` y `gananciaMinor: null` (nunca estimado, mismo criterio que `sales-detail`) |
+| `totalIngresadoMinor` | integer | **BE-15**. `totalSoldMinor + abonosRecibidosMinor`, ya sumado — "dinero total ingresado en el periodo" (ventas de contado + abonos reales) |
+
+**Errores**: 400 (falta `from` o `to`, valor que no es una fecha ISO 8601, parámetro desconocido; mensaje del tipo `"from must be a valid ISO 8601 date string"`), 401, 403. No se valida `from` <= `to`: con el orden invertido responde **200** con todos los totales en `0` (verificado en vivo). Los formatos ISO 8601 raros (semana u ordinal) responden 400 con el `message` como **string** `"Invalid date: <valor>"`, no como array.
 
 **Ejemplo**
 
@@ -1825,10 +1834,36 @@ GET /api/v1/reports/sales-by-period?from=2026-09-20&to=2026-09-26 HTTP/1.1
 ```
 
 ```json
-{ "from": "2026-09-20T06:00:00.000Z", "to": "2026-09-27T05:59:59.999Z", "totalSoldMinor": 210000, "saleCount": 1 }
+{
+  "from": "2026-09-20T06:00:00.000Z",
+  "to": "2026-09-27T05:59:59.999Z",
+  "totalSoldMinor": 210000,
+  "saleCount": 1,
+  "abonosRecibidos": [
+    {
+      "fecha": "2026-09-22T15:30:00.000Z",
+      "deudor": "Lucía (example customer)",
+      "montoMinor": 20000,
+      "type": "apartado"
+    }
+  ],
+  "abonosRecibidosMinor": 20000,
+  "deudasLiquidadas": [
+    {
+      "id": "70000000-0000-4000-8000-000000000002",
+      "type": "fiado",
+      "deudor": "Carlos (example customer)",
+      "totalMinor": 65000,
+      "saldadaAt": "2026-09-23T13:00:00.000Z",
+      "gananciaMinor": 15000,
+      "gananciaDisponible": true
+    }
+  ],
+  "totalIngresadoMinor": 230000
+}
 ```
 
-Fuente: `src/reports/reports.controller.ts:33,39-46`, `src/reports/dto/date-range.dto.ts:8-22`, `src/reports/reports.service.ts:19-55`, `src/common/business-time.ts:84-100`, `test/reports.e2e-spec.ts:167-215`.
+Fuente: `src/reports/reports.controller.ts`, `src/reports/dto/date-range.dto.ts`, `src/reports/reports.service.ts` (`salesByPeriod`), `src/common/business-time.ts:84-100`, `test/reports.e2e-spec.ts`.
 
 <a id="ep-reports-member"></a>
 ### `GET /api/v1/reports/sales-by-member`
@@ -1996,8 +2031,12 @@ Un solo concepto **Deuda** con dos tipos: `fiado` (el producto ya se entregó) y
 - Un abono **no puede exceder el saldo pendiente**; no hay aplicación parcial. Cuando la suma de abonos iguala el total, `status` pasa solo a `saldada`; **no existe endpoint para cambiar el estado** manualmente.
 - La respuesta **no trae un campo de saldo**: se calcula en el cliente como `totalMinor - suma(abonos[].montoMinor)`.
 - No existe endpoint para editar ni cancelar una deuda, ni para devolver el stock.
+- **BE-15 — `abonoInicialMinor` (obligatorio)**: `POST /deudas` siempre exige este campo (puede ser `0`). Si es mayor a 0, se crea el primer `Abono` (fecha de hoy) en la misma transacción, con la misma regla de "no exceder el saldo" que un abono normal; si por sí solo cubre el total, la deuda nace ya `saldada`.
+- **BE-15 — `cuotasPlaneadas` (calendario informativo)**: un array opcional de cuotas planeadas (`fechaEsperada`, `montoEsperadoMinor`) que se puede enviar al crear la deuda o gestionar después (`POST`/`PATCH`/`DELETE .../cuotas`, ver más abajo). **Nunca afecta el saldo ni el `status`** — es solo un calendario de referencia, el saldo real sigue siendo la suma de `abonos`.
+- **BE-15 — `unitCostMinor` (snapshot de costo)**: copiado de `Product.purchaseCostMinor` al crear la deuda, nunca estimado ni recalculado después (`null` si el producto no tenía costo).
+- **BE-15 — `saldadaAt`**: instante en que la deuda se liquidó, fijado una sola vez (por `registerAbono` o por un `abonoInicialMinor` que cubre el total) — `null` si sigue pendiente o si se liquidó antes de que existiera esta columna.
 
-Forma de una deuda (registro crudo; `deudor` y `abonos` según el endpoint):
+Forma de una deuda (registro crudo; `deudor`, `abonos` y `cuotasPlaneadas` según el endpoint):
 
 | Campo | Tipo | Notas |
 |---|---|---|
@@ -2009,10 +2048,13 @@ Forma de una deuda (registro crudo; `deudor` y `abonos` según el endpoint):
 | `cantidad` | integer | |
 | `totalMinor` | integer | total original, no baja con los abonos |
 | `status` | `"pendiente"` \| `"saldada"` | derivado |
+| `unitCostMinor` | integer \| null | BE-15; snapshot de `Product.purchaseCostMinor`, nunca estimado |
+| `saldadaAt` | string (ISO 8601) \| null | BE-15; instante exacto de liquidación, `null` si no liquidada (o si se liquidó antes de BE-15) |
 | `createdByMemberId` | string | socio que la creó |
 | `createdAt` | string (ISO 8601) | |
 | `abonos` | array | cada uno `{ id, deudaId, contextId, montoMinor, receivedByMemberId, receivedAt, nota }` |
 | `deudor` | objeto | `{ id, nombre, telefono, notas, contextId, createdAt }`. **No** viene en la respuesta de `POST /deudas`; sí en el listado, el detalle y el abono |
+| `cuotasPlaneadas` | array | BE-15; cada una `{ id, deudaId, contextId, fechaEsperada, montoEsperadoMinor, createdAt }`. Presente en todas las respuestas que incluyen `abonos` |
 
 <a id="ep-deudas-create"></a>
 ### `POST /api/v1/deudas`
@@ -2021,9 +2063,9 @@ Forma de una deuda (registro crudo; `deudor` y `abonos` según el endpoint):
 |---|---|
 | Audiencia | Solo socios (`SocioGuard`) |
 | Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
-| Éxito | **201**, la deuda con `abonos: []` (**sin** `deudor` anidado) |
+| Éxito | **201**, la deuda con `abonos` (`[]`, o con un abono si `abonoInicialMinor > 0`) y `cuotasPlaneadas` (**sin** `deudor` anidado) |
 
-**Body** (desconocidos, también dentro de `deudor`, = 400):
+**Body** (desconocidos, también dentro de `deudor`/`cuotasPlaneadas[]`, = 400):
 
 | Campo | Tipo | Reglas |
 |---|---|---|
@@ -2035,20 +2077,25 @@ Forma de una deuda (registro crudo; `deudor` y `abonos` según el endpoint):
 | `deudor.nombre` | string | requerido dentro de `deudor`; 1..200 |
 | `deudor.telefono` | string | opcional; 1..50 |
 | `deudor.notas` | string | opcional; 0..2000 |
+| `abonoInicialMinor` | integer | **requerido (BE-15)**, 0..2147483647. `0` = sin abono inicial. `> 0` crea el primer `Abono` (fecha de hoy) en la misma transacción; si por sí solo cubre `totalMinor`, la deuda nace `saldada` |
+| `cuotasPlaneadas` | array | opcional (BE-15); calendario informativo, creado en la misma transacción. **Nunca** afecta el saldo/`status` |
+| `cuotasPlaneadas[].fechaEsperada` | string (ISO 8601) | requerida dentro de cada cuota |
+| `cuotasPlaneadas[].montoEsperadoMinor` | integer | requerido dentro de cada cuota; 1..2147483647 |
 
 **Errores**
 
 | HTTP | Situación | `message` |
 |---|---|---|
-| 400 | Validación (tipo fuera del enum, `cantidad` < 1 o decimal, UUID inválido, `deudor.nombre` faltante, campo desconocido) | array de validación |
+| 400 | Validación (tipo fuera del enum, `cantidad` < 1 o decimal, UUID inválido, `deudor.nombre` faltante, `abonoInicialMinor` ausente/negativo, cuota sin `fechaEsperada`/`montoEsperadoMinor`, campo desconocido) | array de validación |
 | 400 | Se envían los dos o ninguno de `deudorId`/`deudor` | `"Exactly one of deudorId or deudor must be provided"` |
 | 400 | `deudorId` no existe en el negocio | `"Deudor <id> does not exist in this context"` |
 | 400 | `productId` no existe en el negocio | `"Product <id> does not exist in this context"` |
 | 400 | Producto desactivado | `"Product <id> is deactivated and cannot be used for a new deuda"` |
 | 400 | `cantidad` mayor al stock | `"Insufficient stock for product <id>"` |
+| 400 | `abonoInicialMinor` por sí solo excede `totalMinor` (BE-15) | `"Abono of <monto> exceeds the remaining balance of <saldo>"` (mismo mensaje que el abono normal) |
 | 401 / 403 | ver [1.3](#f-auth) (un colaborador recibe 403) | |
 
-Todo ocurre en una transacción: si falla algo, no se crea el deudor inline ni se descuenta stock.
+Todo ocurre en una transacción: si falla algo (incluido un `abonoInicialMinor` excesivo), no se crea el deudor inline, no se descuenta stock y no se crea ninguna cuota planeada.
 
 **Ejemplo** (fixtures)
 
@@ -2057,7 +2104,12 @@ Todo ocurre en una transacción: si falla algo, no se crea el deudor inline ni s
   "type": "apartado",
   "productId": "30000000-0000-4000-8000-000000000003",
   "cantidad": 1,
-  "deudor": { "nombre": "Lucía (example customer)", "telefono": "EXAMPLE-PHONE", "notas": "Collect Gran Turismo 7 on Saturday." }
+  "abonoInicialMinor": 0,
+  "deudor": { "nombre": "Lucía (example customer)", "telefono": "EXAMPLE-PHONE", "notas": "Collect Gran Turismo 7 on Saturday." },
+  "cuotasPlaneadas": [
+    { "fechaEsperada": "2026-10-15T00:00:00.000Z", "montoEsperadoMinor": 32500 },
+    { "fechaEsperada": "2026-11-15T00:00:00.000Z", "montoEsperadoMinor": 32500 }
+  ]
 }
 ```
 
@@ -2071,13 +2123,33 @@ Todo ocurre en una transacción: si falla algo, no se crea el deudor inline ni s
   "cantidad": 1,
   "totalMinor": 65000,
   "status": "pendiente",
+  "unitCostMinor": null,
+  "saldadaAt": null,
   "createdByMemberId": "bf030001-0000-4000-8000-000000000001",
   "createdAt": "2026-09-23T12:00:00.000Z",
-  "abonos": []
+  "abonos": [],
+  "cuotasPlaneadas": [
+    {
+      "id": "90000000-0000-4000-8000-000000000001",
+      "deudaId": "70000000-0000-4000-8000-000000000001",
+      "contextId": "bazar-local",
+      "fechaEsperada": "2026-10-15T00:00:00.000Z",
+      "montoEsperadoMinor": 32500,
+      "createdAt": "2026-09-23T12:00:00.000Z"
+    },
+    {
+      "id": "90000000-0000-4000-8000-000000000002",
+      "deudaId": "70000000-0000-4000-8000-000000000001",
+      "contextId": "bazar-local",
+      "fechaEsperada": "2026-11-15T00:00:00.000Z",
+      "montoEsperadoMinor": 32500,
+      "createdAt": "2026-09-23T12:00:00.000Z"
+    }
+  ]
 }
 ```
 
-Fuente: `src/deudas/deudas.controller.ts:46-54`, `src/deudas/dto/create-deuda.dto.ts:22-70`, `src/deudas/deudas.service.ts:114-195`, `test/deudas.e2e-spec.ts:135-240`, `test/soft-delete.e2e-spec.ts:256-282`.
+Fuente: `src/deudas/deudas.controller.ts`, `src/deudas/dto/create-deuda.dto.ts`, `src/deudas/dto/cuota-planeada.dto.ts`, `src/deudas/deudas.service.ts`, `test/deudas.e2e-spec.ts`, `test/soft-delete.e2e-spec.ts:256-282`.
 
 <a id="ep-deudas-list"></a>
 ### `GET /api/v1/deudas`
@@ -2086,9 +2158,14 @@ Fuente: `src/deudas/deudas.controller.ts:46-54`, `src/deudas/dto/create-deuda.dt
 |---|---|
 | Audiencia | Solo socios (`SocioGuard`) |
 | Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
-| Éxito | **200**, `{ items, total, page, limit }`; cada deuda incluye `abonos` y `deudor` |
+| Éxito | **200**, `{ items, total, page, limit }`; cada deuda incluye `abonos`, `deudor` y `cuotasPlaneadas` |
 
-**Query** (desconocidos = 400): `status` (`pendiente` \| `saldada`; sin filtro por defecto; el uso típico es `pendiente` = "quién debe"), `search` (0..200, coincidencia parcial sin distinguir mayúsculas sobre el **nombre del deudor**), `sort` (`asc`/`desc`, def. `desc`, por `createdAt`), `page` (def. 1), `limit` (def. 20, máx. 100).
+**Query** (desconocidos = 400): `status` (`pendiente` \| `saldada`; sin filtro por defecto; el uso típico es `pendiente` = "quién debe"), `search` (0..200, coincidencia parcial sin distinguir mayúsculas sobre el **nombre del deudor**), `sort` (`asc`/`desc`, def. `desc`; solo aplica cuando `orderBy=createdAt`), `orderBy` (BE-15: `createdAt` def. \| `saldoPendiente` \| `cuotaVencida`), `atrasado` (BE-15: bool, sin filtro por defecto), `page` (def. 1), `limit` (def. 20, máx. 100).
+
+- `orderBy=saldoPendiente`: siempre descendente (quien más debe primero), ignora `sort`.
+- `orderBy=cuotaVencida`: la `CuotaPlaneada.fechaEsperada` vencida más antigua primero (ascendente); una deuda sin cuotas vencidas queda al final. Ignora `sort`.
+- `atrasado=true|false`: calculado por el servidor — atrasada = tiene al menos una `CuotaPlaneada` vencida (`fechaEsperada` pasada) **y** la suma de `montoEsperadoMinor` vencidas supera la suma de `Abono.montoMinor` reales recibidos hasta hoy.
+- Detalle de implementación: con `atrasado` presente o `orderBy` distinto de `createdAt`, el servidor trae todas las deudas que cumplen `status`/`search`, calcula saldo/atrasado en memoria y pagina el arreglo ya ordenado (no una consulta paginada en base de datos) — igual disciplina que `sales-detail`, ver [1.5](#f-paginacion).
 
 **Errores**: 400, 401, 403.
 
@@ -2222,6 +2299,56 @@ Registra un pago contra la deuda. Quien recibe el abono queda como `receivedByMe
 ```
 
 Fuente: `src/deudas/deudas.controller.ts:76-85`, `src/deudas/dto/create-abono.dto.ts:5-13`, `src/deudas/deudas.service.ts:281-356`, `test/deudas.e2e-spec.ts:241-330`.
+
+<a id="ep-deudas-cuotas"></a>
+### Cuotas planeadas (BE-15): `POST`/`PATCH`/`DELETE /api/v1/deudas/:id/cuotas[/:cuotaId]`
+
+Calendario de pagos **puramente informativo** — nunca afecta el saldo ni `status` de la deuda (ver la nota de la sección arriba). Los tres endpoints son solo para socios (`SocioGuard`), a diferencia de registrar un abono.
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
+
+**`POST /api/v1/deudas/:id/cuotas`** — agrega una cuota.
+
+- **Body**: `{ fechaEsperada: string (ISO 8601), montoEsperadoMinor: integer (1..2147483647) }`. Desconocidos = 400.
+- **Éxito**: **201**, la cuota creada: `{ id, deudaId, contextId, fechaEsperada, montoEsperadoMinor, createdAt }`.
+- **Errores**: 400 (validación, `:id` no UUID), 401/403 (ver [1.3](#f-auth); un colaborador recibe 403), 404 (deuda inexistente o de otro negocio).
+
+**`PATCH /api/v1/deudas/:id/cuotas/:cuotaId`** — edita una cuota existente.
+
+- **Body**: ambos campos opcionales (edición parcial); un body vacío es un no-op válido. Desconocidos = 400.
+- **Éxito**: **200**, la cuota actualizada (misma forma que arriba).
+- **Errores**: igual que arriba; 404 también cuando `cuotaId` no pertenece a esa deuda/negocio.
+
+**`DELETE /api/v1/deudas/:id/cuotas/:cuotaId`** — elimina una cuota (borrado físico: no lleva historial que preservar, a diferencia de productos/colaboradores).
+
+- **Éxito**: **200**, la cuota eliminada (misma forma que arriba).
+- **Errores**: igual que `PATCH`.
+
+**Ejemplo**
+
+```http
+POST /api/v1/deudas/70000000-0000-4000-8000-000000000001/cuotas HTTP/1.1
+```
+
+```json
+{ "fechaEsperada": "2026-10-15T00:00:00.000Z", "montoEsperadoMinor": 32500 }
+```
+
+```json
+{
+  "id": "90000000-0000-4000-8000-000000000001",
+  "deudaId": "70000000-0000-4000-8000-000000000001",
+  "contextId": "bazar-local",
+  "fechaEsperada": "2026-10-15T00:00:00.000Z",
+  "montoEsperadoMinor": 32500,
+  "createdAt": "2026-09-29T12:00:00.000Z"
+}
+```
+
+Fuente: `src/deudas/deudas.controller.ts`, `src/deudas/dto/cuota-planeada.dto.ts`, `src/deudas/deudas.service.ts` (`addCuota`/`updateCuota`/`deleteCuota`), `test/deudas.e2e-spec.ts`.
 
 ---
 
@@ -2365,7 +2492,7 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 <a id="apendice-a-indice-de-rutas"></a>
 ## Apéndice A: índice de rutas
 
-42 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
+45 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
 
 | Método | Ruta | Audiencia | Sección |
 |---|---|---|---|
@@ -2408,6 +2535,9 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 | `GET` | `/api/v1/deudas` | Socio | [Deudas](#ep-deudas-list) |
 | `GET` | `/api/v1/deudas/:id` | Socio | [Deudas](#ep-deudas-get) |
 | `POST` | `/api/v1/deudas/:id/abonos` | Member | [Deudas](#ep-deudas-abonos) |
+| `POST` | `/api/v1/deudas/:id/cuotas` | Socio | [Deudas](#ep-deudas-cuotas) |
+| `PATCH` | `/api/v1/deudas/:id/cuotas/:cuotaId` | Socio | [Deudas](#ep-deudas-cuotas) |
+| `DELETE` | `/api/v1/deudas/:id/cuotas/:cuotaId` | Socio | [Deudas](#ep-deudas-cuotas) |
 | `POST` | `/api/v1/business-registration` | Registro de negocio | [Business Registration](#ep-br-create) |
 | `GET` | `/api/v1/business-registration/approve` | Registro de negocio | [Business Registration](#ep-br-approve) |
 | `GET` | `/api/v1/business-registration/reject` | Registro de negocio | [Business Registration](#ep-br-reject) |
