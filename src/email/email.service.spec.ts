@@ -80,7 +80,7 @@ describe('EmailService.sendBusinessRegistrationApprovalEmail', () => {
 
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
-        from: 'onboarding@resend.dev',
+        from: 'notificaciones@albertogdlc.org',
         to: 'approver@example.test',
       }),
     );

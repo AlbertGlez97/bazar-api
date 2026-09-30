@@ -182,9 +182,11 @@ export interface BusinessCredentialsEmailInput {
  * still be able to boot the whole app; it only fails the moment an email
  * actually needs to go out.
  *
- * `onboarding@resend.dev` (Resend's own shared test sender) is used as
- * the "from" address for now, per this entrega's explicit instruction —
- * a real, domain-verified sender is a follow-up once one exists.
+ * Sends from `notificaciones@albertogdlc.org`, now that the domain is
+ * verified in Resend (DKIM/SPF records added to Cloudflare DNS) — replaces
+ * the earlier placeholder, Resend's own shared test sender
+ * (`onboarding@resend.dev`), which could only deliver to the account
+ * owner's own verified address.
  */
 @Injectable()
 export class EmailService {
@@ -459,7 +461,7 @@ export class EmailService {
     // (see CREDENTIALS_EMAIL_TIMEOUT_MS); the approval notification keeps
     // waiting for Resend as before.
     const { data, error } = await this.getClient().emails.send({
-      from: 'onboarding@resend.dev',
+      from: 'notificaciones@albertogdlc.org',
       ...message,
     });
     if (error) throw new ResendRejectionError(label, error);
