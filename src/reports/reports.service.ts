@@ -29,32 +29,126 @@ export class ReportsService {
 
   /**
    * Total sold (sum of `totalMinor`) across every completed sale in the
-   * context during the given period, regardless of who sold it.
+   * context during the given period, regardless of who sold it, PLUS two
+   * BE-15 (D7) debt-reporting tables and a combined cash total.
+   *
+   * Extended rather than a wholly separate endpoint: this is already the
+   * "how much money came in during this period" report, and the combined
+   * total (D7) needs exactly this endpoint's `totalSoldMinor` — adding a
+   * new endpoint would force the frontend to call two endpoints and add
+   * two numbers itself for a figure this response can already return
+   * pre-summed. `sales-by-member` (per-seller breakdown) and
+   * `sales-detail` (per-product/seller profit) do not fit the same two
+   * debt tables cleanly (neither breaks down by seller or product), so
+   * they are left untouched.
+   *
+   * - `abonosRecibidos`: every real `Abono` with `receivedAt` in
+   *   `[from, to]`, regardless of whether its Deuda is still `pendiente`
+   *   or already `saldada` — an abono is real money received in the
+   *   period either way.
+   * - `deudasLiquidadas`: Deudas whose `saldadaAt` falls in `[from, to]`.
+   *   `gananciaMinor` is `totalMinor - unitCostMinor * cantidad` only when
+   *   `unitCostMinor` is not null; `gananciaDisponible: false` (never
+   *   estimated) otherwise — the exact same convention `salesDetail` uses
+   *   for `SaleItem.unitCostMinor`.
+   * - `totalIngresadoMinor` = `totalSoldMinor + abonosRecibidosMinor`,
+   *   already summed so the frontend never adds two numbers from two
+   *   different reports itself.
    */
   async salesByPeriod(contextId: string, query: DateRangeQueryDto) {
     const { from, to } = this.range(query);
-    const [agg, saleCount] = await this.prisma.$transaction([
-      this.prisma.sale.aggregate({
-        where: {
-          status: 'completada',
-          member: { contextId },
-          receivedAt: { gte: from, lte: to },
-        },
-        _sum: { totalMinor: true },
-      }),
-      this.prisma.sale.count({
-        where: {
-          status: 'completada',
-          member: { contextId },
-          receivedAt: { gte: from, lte: to },
-        },
-      }),
-    ]);
+    const [agg, saleCount, abonos, deudasLiquidadas] =
+      await this.prisma.$transaction([
+        this.prisma.sale.aggregate({
+          where: {
+            status: 'completada',
+            member: { contextId },
+            receivedAt: { gte: from, lte: to },
+          },
+          _sum: { totalMinor: true },
+        }),
+        this.prisma.sale.count({
+          where: {
+            status: 'completada',
+            member: { contextId },
+            receivedAt: { gte: from, lte: to },
+          },
+        }),
+        this.prisma.abono.findMany({
+          where: {
+            deuda: { createdByMember: { contextId } },
+            receivedAt: { gte: from, lte: to },
+          },
+          select: {
+            montoMinor: true,
+            receivedAt: true,
+            deuda: {
+              select: { type: true, deudor: { select: { nombre: true } } },
+            },
+          },
+        }),
+        this.prisma.deuda.findMany({
+          where: {
+            createdByMember: { contextId },
+            saldadaAt: { gte: from, lte: to },
+          },
+          select: {
+            id: true,
+            type: true,
+            cantidad: true,
+            totalMinor: true,
+            unitCostMinor: true,
+            saldadaAt: true,
+            deudor: { select: { nombre: true } },
+          },
+        }),
+      ]);
+
+    const abonosRecibidos = abonos.map((a) => ({
+      fecha: a.receivedAt,
+      deudor: a.deuda.deudor.nombre,
+      montoMinor: a.montoMinor,
+      type: a.deuda.type,
+    }));
+    const abonosRecibidosMinor = abonosRecibidos.reduce(
+      (sum, a) => sum + a.montoMinor,
+      0,
+    );
+
+    const deudasLiquidadasRows = deudasLiquidadas.map((d) => {
+      const gananciaDisponible = d.unitCostMinor !== null;
+      return {
+        id: d.id,
+        type: d.type,
+        deudor: d.deudor.nombre,
+        totalMinor: d.totalMinor,
+        saldadaAt: d.saldadaAt,
+        gananciaMinor: gananciaDisponible
+          ? toMinorUnits(
+              subtract(
+                toDinero(d.totalMinor),
+                multiply(toDinero(d.unitCostMinor!), d.cantidad),
+              ),
+            )
+          : null,
+        gananciaDisponible,
+      };
+    });
+
+    const totalSoldMinor = agg._sum.totalMinor ?? 0;
+    const totalIngresadoMinor = toMinorUnits(
+      add(toDinero(totalSoldMinor), toDinero(abonosRecibidosMinor)),
+    );
+
     return {
       from,
       to,
-      totalSoldMinor: agg._sum.totalMinor ?? 0,
+      totalSoldMinor,
       saleCount,
+      abonosRecibidos,
+      abonosRecibidosMinor,
+      deudasLiquidadas: deudasLiquidadasRows,
+      totalIngresadoMinor,
     };
   }
 
