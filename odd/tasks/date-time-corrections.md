@@ -24,6 +24,8 @@ Runtime harness: functional service/component tests. Rollback boundary: each beh
 T1 verified: focused RED 7 failed / 2 passed; GREEN 9 passed. Build passed; lint passed with two pre-existing warnings in test/sales-conflict.e2e-spec.ts. T1 commit: 8b7d2a12511b1dc89c8c049c42c1c3ea91eb2e33. Engram mirror saved but readback unavailable (ambiguous project); synchronization pending verification.
 
 ## Next step
-Independent verification, then separately authorize and provision a local test database to apply migration and rerun e2e. No remote recreation authorized.
+Await explicit user authorization naming the database recreation destination, operation, and credential/session before any recreation or remote access. Local migration and database-backed e2e remain pending. No push or deployment.
 
 T2 evidence: RED 6 failed / 4 passed, GREEN 10 passed; additional null regression RED 1 failed / 11 passed, GREEN 12 passed. Final build/lint passed; full unit suite 26 files / 377 tests passed. E2E run and elevated retry both failed because local bazar_test at 127.0.0.1:5433 is unavailable: 27 files failed, 10 tests failed, 556 skipped. No migration/reset/recreation was executed. DATE migration structural checks passed, actual migration execution remains pending. T2 commit: fda506a20422551b163df42947811d4fb6a356b5.
+
+Independent verification complete: sales + quota service/DTO regression tests, 21 passed (exit 0); clean worktree confirmed. Native assessment: medium, 429 authored lines; RDD off. V remains incomplete because migration execution and database-backed e2e require an available database. Engram full mirror updated; readback remains pending because the parent workspace has ambiguous project identity.
