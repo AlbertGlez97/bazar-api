@@ -10,6 +10,7 @@ import {
   Max,
   Min,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_ITEM_QUANTITY } from '../../sales/dto/create-sale.dto.js';
@@ -39,6 +40,16 @@ export class DeudorInputDto {
 }
 
 export class CreateDeudaDto {
+  @ApiProperty({
+    required: false,
+    format: 'uuid',
+    description:
+      'Client-generated retry identity. Reuse only with identical creation input.',
+  })
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsUUID()
+  id?: string;
+
   @ApiProperty({ enum: ['fiado', 'apartado'] })
   @IsIn(['fiado', 'apartado'])
   type!: 'fiado' | 'apartado';

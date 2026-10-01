@@ -113,6 +113,65 @@ describe('deudas (BE-09)', () => {
     });
   });
 
+  it.each([
+    { type: 'fiado' as const, stock: 1 },
+    { type: 'apartado' as const, stock: 1 },
+    { type: 'fiado' as const, stock: 2 },
+    { type: 'apartado' as const, stock: 2 },
+  ])(
+    'concurrent client-ID $type retries with stock=$stock apply all effects once',
+    async ({ type, stock }) => {
+      const product = await createProduct({
+        name: 'Offline retry',
+        tipo: 'cantidad',
+        unitPriceMinor: 1000,
+        stock,
+      });
+      const id = randomUUID();
+      const body = {
+        id,
+        type,
+        productId: product.id,
+        cantidad: 1,
+        deudor: { nombre: `Retry ${id}` },
+        abonoInicialMinor: 100,
+        cuotasPlaneadas: [
+          { fechaEsperada: '2026-10-15', montoEsperadoMinor: 900 },
+        ],
+      };
+      const send = (data = body) =>
+        asSocio(request(app.getHttpServer()).post('/deudas')).send(data);
+      const results = await Promise.all([send(), send()]);
+      expect(results.map((result) => result.status)).toEqual([201, 201]);
+      expect(results[0].body).toEqual(results[1].body);
+      expect(results[0].body.id).toBe(id);
+      expect(results[0].body).not.toHaveProperty('creationResponse');
+      expect(results[0].body).not.toHaveProperty('requestFingerprint');
+      await withTestTenant(contextId, async () => {
+        expect(
+          (
+            await prisma.product.findUniqueOrThrow({
+              where: { id: product.id },
+            })
+          ).stock,
+        ).toBe(stock - 1);
+        expect(await prisma.deuda.count({ where: { id } })).toBe(1);
+        expect(
+          await prisma.deudor.count({ where: { nombre: body.deudor.nombre } }),
+        ).toBe(1);
+        expect(await prisma.abono.count({ where: { deudaId: id } })).toBe(1);
+        expect(
+          await prisma.cuotaPlaneada.count({ where: { deudaId: id } }),
+        ).toBe(1);
+      });
+      await send({ ...body, abonoInicialMinor: 200 }).expect(409);
+      await asSocio(request(app.getHttpServer()).post(`/deudas/${id}/abonos`))
+        .send({ montoMinor: 900 })
+        .expect(201);
+      expect((await send().expect(201)).body).toEqual(results[0].body);
+    },
+  );
+
   afterAll(async () => {
     if (prisma) {
       await withTestTenant(contextId, async () => {

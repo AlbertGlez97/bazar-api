@@ -1,11 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { add, multiply, subtract } from 'dinero.js';
+import { createHash } from 'node:crypto';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -32,11 +34,75 @@ function cuotaResponse(cuota: CuotaPlaneada) {
   };
 }
 
-function response<T extends { cuotasPlaneadas: CuotaPlaneada[] }>(deuda: T) {
+function response<
+  T extends {
+    cuotasPlaneadas: CuotaPlaneada[];
+    requestFingerprint?: string | null;
+    creationResponse?: Prisma.JsonValue;
+  },
+>(deuda: T) {
+  const {
+    requestFingerprint: _fingerprint,
+    creationResponse: _snapshot,
+    ...publicDeuda
+  } = deuda;
   return {
-    ...deuda,
+    ...publicDeuda,
     cuotasPlaneadas: deuda.cuotasPlaneadas.map(cuotaResponse),
   };
+}
+
+function requestFingerprint(actor: Actor, dto: CreateDeudaDto) {
+  // Explicit field projection makes object key order irrelevant. Preserve
+  // installment order and empty strings: those are persisted semantics.
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        contextId: actor.account.contextId,
+        accountId: actor.account.id,
+        memberId: actor.selection!.memberId,
+        deviceId: actor.selection!.deviceId,
+        type: dto.type,
+        productId: dto.productId.toLowerCase(),
+        cantidad: dto.cantidad,
+        deudorId: dto.deudorId?.toLowerCase() ?? null,
+        deudor: dto.deudor
+          ? {
+              nombre: dto.deudor.nombre,
+              telefono: dto.deudor.telefono ?? null,
+              notas: dto.deudor.notas ?? null,
+            }
+          : null,
+        abonoInicialMinor: dto.abonoInicialMinor,
+        cuotasPlaneadas: (dto.cuotasPlaneadas ?? []).map((cuota) => ({
+          fechaEsperada: cuota.fechaEsperada,
+          montoEsperadoMinor: cuota.montoEsperadoMinor,
+        })),
+      }),
+    )
+    .digest('hex');
+}
+
+function isDebtIdConflict(error: unknown) {
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== 'P2002'
+  )
+    return false;
+  const adapter = error.meta?.driverAdapterError as
+    { cause?: { table?: string; constraint?: { index?: string } } } | undefined;
+  if (
+    error.meta?.modelName === 'Deuda' &&
+    adapter?.cause?.table === 'Deuda' &&
+    adapter.cause.constraint?.index === 'Deuda_pkey'
+  )
+    return true;
+  const target = error.meta?.target;
+  return (Array.isArray(target) ? target : [target]).some(
+    (value) =>
+      value === 'Deuda_pkey' ||
+      (error.meta?.modelName === 'Deuda' && value === 'id'),
+  );
 }
 
 /**
@@ -170,10 +236,9 @@ export class DeudasService {
    * comment (schema.prisma) for why it can never affect the balance
    * computed here or anywhere else.
    *
-   * Unlike {@link SalesService.create}, there is no offline-sync stock
-   * race to reconcile here (a Deuda is always created in-person, online,
-   * by a socio) — insufficient stock is always a plain rejection, never a
-   * persisted "conflict" record.
+   * Offline creation may arrive after stock has changed. Insufficient
+   * stock remains a plain rejection; clients retain it for manual review.
+   * Client IDs replay an immutable creation result, not the current balance.
    *
    * @throws ForbiddenException via {@link authorize} (socio-only).
    * @throws BadRequestException when neither/both of `deudorId`/`deudor`
@@ -189,8 +254,26 @@ export class DeudasService {
         'Exactly one of deudorId or deudor must be provided',
       );
 
-    const deuda = await this.prisma.$transaction(async (tx) => {
+    const replay = async (tx: Prisma.TransactionClient) => {
+      if (!dto.id) return null;
+      const existing = await tx.deuda.findFirst({
+        where: { id: dto.id, contextId: actor.account.contextId },
+      });
+      if (!existing) return null;
+      if (
+        existing.requestFingerprint !== requestFingerprint(actor, dto) ||
+        !existing.creationResponse
+      )
+        throw new ConflictException(
+          `Deuda ${dto.id} already exists with different data`,
+        );
+      return existing.creationResponse;
+    };
+
+    const create = async (tx: Prisma.TransactionClient) => {
       const { memberId } = await this.authorize(tx, actor, true);
+      const existing = await replay(tx);
+      if (existing) return existing;
 
       let deudorId = dto.deudorId;
       if (!deudorId) {
@@ -215,9 +298,7 @@ export class DeudasService {
       }
 
       // Row-locked read (matches SalesService's FOR UPDATE pattern): even
-      // without an offline-sync race to reconcile, two socios could still
-      // submit a fiado/apartado for the last unit of the same product at
-      // the same moment from two different tablets.
+      // two socios or a reconnecting queue may contend for the last unit.
       await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${dto.productId}::uuid AND "contextId" = ${actor.account.contextId} FOR UPDATE`;
       const product = await tx.product.findFirst({
         where: { id: dto.productId, contextId: actor.account.contextId },
@@ -258,7 +339,10 @@ export class DeudasService {
 
       const created = await tx.deuda.create({
         data: {
-          id: createServerId(),
+          id: dto.id ?? createServerId(),
+          ...(dto.id
+            ? { requestFingerprint: requestFingerprint(actor, dto) }
+            : {}),
           contextId: actor.account.contextId,
           type: dto.type,
           deudorId,
@@ -298,12 +382,41 @@ export class DeudasService {
         });
       }
 
-      return tx.deuda.findUniqueOrThrow({
+      const full = await tx.deuda.findUniqueOrThrow({
         where: { id: created.id },
         include: { abonos: true, cuotasPlaneadas: true },
       });
-    });
-    return response(deuda);
+      const result = response(full);
+      if (!dto.id) return result;
+      // Freeze JSON wire bytes before later payments or schedule edits.
+      const snapshot = JSON.parse(JSON.stringify(result)) as Prisma.JsonObject;
+      await tx.deuda.update({
+        where: { id: created.id },
+        data: { creationResponse: snapshot },
+      });
+      return snapshot;
+    };
+    try {
+      return await this.prisma.$transaction(create);
+    } catch (error) {
+      if (
+        !dto.id ||
+        (!(error instanceof BadRequestException) && !isDebtIdConflict(error))
+      )
+        throw error;
+      // A losing transaction can fail the stock check before reaching the
+      // debt PK. Its debtor/payment/stock writes have already rolled back.
+      const winner = await this.prisma.$transaction(async (tx) => {
+        await this.authorize(tx, actor, true);
+        return replay(tx);
+      });
+      if (winner) return winner;
+      // The global PK may belong to an invisible tenant. Do not bypass RLS
+      // to inspect it or expose storage errors/details to the caller.
+      if (isDebtIdConflict(error))
+        throw new ConflictException('Debt creation ID is unavailable');
+      throw error;
+    }
   }
 
   /**

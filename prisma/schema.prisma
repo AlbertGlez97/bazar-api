@@ -369,6 +369,9 @@ model Deudor {
 // a future entry if that assumption turns out to be wrong in practice.
 model Deuda {
   id                String      @id @default(uuid()) @db.Uuid
+  // Immutable creation receipt; nullable for historical/server-ID clients.
+  requestFingerprint String?
+  creationResponse   Json?
   type              DeudaType
   deudorId          String      @db.Uuid
   productId         String      @db.Uuid
