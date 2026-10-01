@@ -92,10 +92,7 @@ class ResendRejectionError extends Error {
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
 type EmailKind =
-  | 'approval'
-  | 'credentials'
-  | 'activation'
-  | 'member credentials';
+  'approval' | 'credentials' | 'activation' | 'member credentials';
 
 interface EmailMessage {
   to: string;
@@ -196,8 +193,7 @@ export class EmailService {
   private getClient(): Resend {
     if (this.client) return this.client;
     const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey)
-      throw new Error('RESEND_API_KEY is required to send email');
+    if (!apiKey) throw new Error('RESEND_API_KEY is required to send email');
     this.client = new Resend(apiKey);
     return this.client;
   }
@@ -471,6 +467,53 @@ export class EmailService {
   }
 }
 
+// Email clients cannot rely on CSS variables or downloaded fonts. These
+// inline values match frontend/src/assets/main.css and its brand guidelines.
+const businessEmailColors = {
+  paper: '#faf4e8',
+  surface: '#fffdf9',
+  text: '#2b1d14',
+  muted: '#6a5443',
+  border: '#e3d5bc',
+  terracotta: '#b8501c',
+  maize: '#f0b429',
+  nopal: '#2f6b3f',
+};
+const businessEmailDisplayFont =
+  "'Bricolage Grotesque', 'Trebuchet MS', 'Segoe UI', Arial, sans-serif";
+const businessEmailBodyFont = "'Figtree', 'Segoe UI', Arial, sans-serif";
+
+function renderBusinessEmailShell(heading: string, content: string): string {
+  const c = businessEmailColors;
+  return `<!doctype html>
+<html lang="es">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+  <body style="margin:0;padding:0;background:${c.paper};color:${c.text};font-family:${businessEmailBodyFont};font-size:16px;line-height:1.6;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${c.paper};border-collapse:collapse;">
+      <tr><td align="center" style="padding:24px 12px;">
+        <!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background:${c.surface};border:1px solid ${c.border};border-collapse:collapse;">
+          <tr><td style="padding:24px;border-top:8px solid ${c.maize};border-bottom:1px solid ${c.border};font-family:${businessEmailDisplayFont};font-size:28px;font-weight:800;color:${c.terracotta};">La Marchanta</td></tr>
+          <tr><td style="padding:24px;word-wrap:break-word;overflow-wrap:anywhere;">
+            <h1 style="margin:0 0 20px;font-family:${businessEmailDisplayFont};font-size:26px;line-height:1.3;color:${c.nopal};">${heading}</h1>
+            ${content}
+          </td></tr>
+          <tr><td style="padding:20px 24px;border-top:1px solid ${c.border};color:${c.muted};font-size:14px;">Gracias por confiar en nosotros.<br />De tu lado del mostrador, La Marchanta.</td></tr>
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td></tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function renderBusinessEmailCard(heading: string, content: string): string {
+  const c = businessEmailColors;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;border-collapse:collapse;background:${c.paper};border:1px solid ${c.border};">
+    <tr><td style="padding:20px;word-wrap:break-word;overflow-wrap:anywhere;"><h2 style="margin:0 0 16px;font-family:${businessEmailDisplayFont};font-size:20px;">${heading}</h2>${content}</td></tr>
+  </table>`;
+}
+
 function renderCredentialsEmailHtml(
   input: BusinessCredentialsEmailInput,
   mode: CredentialsEmailMode,
@@ -487,31 +530,37 @@ function renderCredentialsEmailHtml(
   const deviceIdentifier = escapeHtml(input.deviceIdentifier);
   const relayNote =
     mode === 'relay'
-      ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Para quien aprueba:</strong> ${correo ? `el correo registrado del socio (${correo}) no se pudo usar como destinatario` : 'el socio no tiene un correo electrónico registrado'}, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreCompleto}${telefonoNote}) estos datos de acceso por otro medio.</p>`
+      ? `<p style="background:${businessEmailColors.maize};color:${businessEmailColors.text};padding:16px;border:1px solid ${businessEmailColors.border};"><strong>Para quien aprueba:</strong> ${correo ? `el correo registrado del socio (${correo}) no se pudo usar como destinatario` : 'el socio no tiene un correo electrónico registrado'}, por eso este mensaje llegó a ti. Debes hacer llegar al socio (${nombreCompleto}${telefonoNote}) estos datos de acceso por otro medio.</p>`
       : mode === 'backup'
-        ? `<p style="background:#fff8e1;padding:12px;border-radius:4px;"><strong>Reenvío de respaldo para quien aprueba:</strong> Este correo era para ${correo} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (${nombreCompleto}${telefonoNote}) por otro medio.</p>`
+        ? `<p style="background:${businessEmailColors.maize};color:${businessEmailColors.text};padding:16px;border:1px solid ${businessEmailColors.border};"><strong>Reenvío de respaldo para quien aprueba:</strong> Este correo era para ${correo} (Resend en modo de prueba no permitió entregarlo); reenviarlo manualmente al socio (${nombreCompleto}${telefonoNote}) por otro medio.</p>`
         : '';
-  // Only the socio reads it as a greeting; the approver gets the relay/backup
-  // variants, which name the socio in the note instead.
-  const greeting = mode === 'socio' ? `<p>Estimado/a ${nombre}:</p>` : '';
+  // Welcome the socio directly; the approver variants address the approver
+  // and name the socio only in the forwarding instructions.
+  const greeting =
+    mode === 'socio'
+      ? `<p>Hola, ${nombre}. ¡Qué gusto darte la bienvenida a La Marchanta!</p>`
+      : '<p>Hola. Gracias por ayudar a que este negocio dé su siguiente paso.</p>';
   const heading =
     mode === 'backup'
       ? 'Reenvío de respaldo: negocio aprobado'
       : 'Tu negocio fue aprobado';
-  return `<!doctype html>
-<html lang="es">
-  <body style="font-family: sans-serif; line-height: 1.5;">
-    <h1>${heading}</h1>
+  return renderBusinessEmailShell(
+    heading,
+    `
     ${greeting}
     ${relayNote}
     <p>El negocio <strong>${nombreNegocio}</strong> ya está activo. Estos son los datos de acceso de ${nombreCompleto}:</p>
+    ${renderBusinessEmailCard(
+      'Datos de acceso',
+      `
     <p><strong>Usuario:</strong> <code>${username}</code></p>
     <p><strong>Contraseña temporal:</strong> <code>${temporaryPassword}</code></p>
-    <p><strong>Dispositivo:</strong> ${deviceName}<br /><strong>Identificador del dispositivo:</strong> <code>${deviceIdentifier}</code></p>
+    <p><strong>Dispositivo:</strong> ${deviceName}<br /><strong>Identificador del dispositivo:</strong> <code>${deviceIdentifier}</code></p>`,
+    )}
     <p>Inicia sesión con el usuario y la contraseña temporal. Después, la aplicación necesita el identificador del dispositivo para reconocer este dispositivo: consérvalo junto con este mensaje.</p>
     <p>Es una contraseña temporal: cámbiala en cuanto la aplicación lo permita y no la compartas.</p>
-  </body>
-</html>`;
+  `,
+  );
 }
 
 function renderDeviceActivationEmailHtml(
@@ -587,19 +636,27 @@ function renderApprovalEmailHtml(
   const nombreCompleto = escapeHtml(fullName(input.nombre, input.apellidos));
   const correo = escapeHtml(input.correo);
   const telefono = input.telefono ? escapeHtml(input.telefono) : undefined;
-  return `<!doctype html>
-<html lang="es">
-  <body style="font-family: sans-serif; line-height: 1.5;">
-    <h1>Nueva solicitud de registro de negocio</h1>
+  return renderBusinessEmailShell(
+    'Nueva solicitud de registro de negocio',
+    `
+    <p>Hola. Un nuevo negocio quiere sumarse a La Marchanta. Estos son sus datos para que puedas revisar la solicitud:</p>
+    ${renderBusinessEmailCard(
+      'Datos del negocio',
+      `
     <p><strong>Negocio:</strong> ${nombreNegocio}</p>
     <p><strong>Socio fundador:</strong> ${nombreCompleto}</p>
-    <p><strong>Correo:</strong> ${correo}</p>${telefono ? `
-    <p><strong>Teléfono:</strong> ${telefono}</p>` : ''}
+    <p><strong>Correo:</strong> ${correo}</p>${
+      telefono
+        ? `
+    <p><strong>Teléfono:</strong> ${telefono}</p>`
+        : ''
+    }`,
+    )}
     <p>
-      <a href="${input.approveUrl}" style="display:inline-block;padding:10px 20px;background:#2e7d32;color:#fff;text-decoration:none;border-radius:4px;margin-right:12px;">Aprobar</a>
-      <a href="${input.rejectUrl}" style="display:inline-block;padding:10px 20px;background:#c62828;color:#fff;text-decoration:none;border-radius:4px;">Rechazar</a>
+      <a href="${escapeHtml(input.approveUrl)}" style="display:inline-block;padding:12px 20px;background:${businessEmailColors.terracotta};color:#ffffff;text-decoration:none;border-radius:6px;margin:0 12px 12px 0;">Aprobar</a>
+      <a href="${escapeHtml(input.rejectUrl)}" style="display:inline-block;padding:12px 20px;background:#b3261e;color:#ffffff;text-decoration:none;border-radius:6px;margin-bottom:12px;">Rechazar</a>
     </p>
-    <p style="color:#666;font-size:12px;">Este enlace expira en 30 días y solo puede usarse una vez.</p>
-  </body>
-</html>`;
+    <p style="color:${businessEmailColors.muted};font-size:14px;">Este enlace expira en 30 días y solo puede usarse una vez.</p>
+  `,
+  );
 }
