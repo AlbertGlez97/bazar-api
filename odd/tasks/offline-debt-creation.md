@@ -45,11 +45,13 @@ Insufficient stock without a matching winner remains HTTP 400; future offline cl
 Strategy: ask-on-risk; selected chain: stacked-to-main. PR 1 backend -> human confirmation of main integration -> PR 2 frontend.
 User accepted size:exception for the cohesive backend unit (reported 594 authored lines / 524 excluding the then-current recovery document). One honest slicing pass retained indispensable schema/behavior/tests together; no code-golf.
 Initial forecast: backend 500-750 authored additions+deletions, frontend 350-550 to refine after integration; generated Prisma output excluded.
-PR 1 boundary: branch point through backend work-unit commits; identities recorded after commit. PR 2 starts from frontend main only after the gate.
+PR 1 boundary: branch point through backend work-unit commits. PR 2 starts from frontend main only after the gate.
+Feature work-unit commit: fb03e4f59276c85080148d09ee0f042cd5c9d020 (feat(deudas): make debt creation idempotent by client id), closing D1/D2 with schema/behavior/tests/contract/recovery together.
+Feature commit authored count: 565 additions + 14 deletions = 579; 524 excluding its 55-line recovery document. Accepted cohesive size exception applies.
 Rollback boundary: debt DTO/service/schema/additive migration/regression tests/API contract. Revert its work-unit commits without unrelated changes; assess stored receipt data before any reverse migration. Applied only to isolated test, not dev/prod.
 
 ## Recovery and next step
 
 Engram mirror: bazar-api, odd/offline-debt-creation/tasks; locator: odd/tasks/offline-debt-creation.md. Full file/mirror readbacks reconciled.
-Current delivery: parent proof accepted; create the authorized atomic feature commit, record its identity in a narrow evidence commit, then report readiness. No push or PR created.
+Current delivery: parent proof accepted and feature commit created; this narrow evidence update records its identity and independent proof. No hooks/source mutation occurred; source bytes remain the verified candidate. No push or PR created.
 Next: await human push authorization; do not start PR 2 until explicit confirmation PR 1 is in main.
