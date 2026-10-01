@@ -14,7 +14,7 @@ Improve the business approval, approval request and credentials backup emails wi
 ## Tasks
 
 - [x] EMAIL-1: document measured DNS findings, safe DMARC setup and reputation caveats. Runtime proof: DNS investigation supplied by the parent; documentation readback. Commit: `e093b1c`. Rollback: deliverability document only.
-- [x] EMAIL-2: share a branded table/inline shell across the business emails; preserve data, escaping and safety. Verify focused RED/GREEN, build, lint and full tests. Commit identity: recorded in the delivery report after commit. Rollback: business HTML renderer and associated tests.
+- [x] EMAIL-2: share a branded table/inline shell across the business emails; preserve data, escaping and safety. Verify focused RED/GREEN, build, lint and full tests. Commit: `641818bf51d687a316ade23469fbdf4e798c2bd1`. Rollback: business HTML renderer and associated tests.
 - [ ] EMAIL-3: inspect synthetic previews and send a real test to a confirmed recipient; verify appearance in a real email client. Recipient/send authorization details pending.
 
 ## Evidence and next step
