@@ -440,7 +440,8 @@ model CuotaPlaneada {
   id                 String   @id @default(uuid()) @db.Uuid
   deudaId            String   @db.Uuid
   contextId          String   @default("legacy-unassigned")
-  fechaEsperada      DateTime @db.Timestamptz(3)
+  // Calendar day, not an instant. Prisma exposes DATE as UTC midnight.
+  fechaEsperada      DateTime @db.Date
   montoEsperadoMinor Int
   createdAt          DateTime @default(now()) @db.Timestamptz(3)
   deuda              Deuda    @relation(fields: [deudaId], references: [id])

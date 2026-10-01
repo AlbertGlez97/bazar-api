@@ -9,22 +9,34 @@ import { add, multiply, subtract } from 'dinero.js';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
+import type { CuotaPlaneada } from '../generated/prisma/client.js';
+import { currentBusinessDate } from '../common/business-time.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import type { CreateDeudaDto } from './dto/create-deuda.dto.js';
 import type { DeudaListDto } from './dto/deuda-list.dto.js';
 import type { CreateAbonoDto } from './dto/create-abono.dto.js';
-import type { CreateCuotaDto, UpdateCuotaDto } from './dto/cuota-planeada.dto.js';
+import type {
+  CreateCuotaDto,
+  UpdateCuotaDto,
+} from './dto/cuota-planeada.dto.js';
 import { createServerId } from '../common/server-id.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 
-// Deliberately untyped-through (`<T>`): the exact shape returned varies by
-// method (`create` never nests `deudor`; `list`/`findOne`/`registerAbono`
-// do; every method now also nests `cuotasPlaneadas`) — this is just the
-// one place that shape decision is made, not a place that needs its own
-// duplicate type per call site.
-function response<T>(deuda: T): T {
-  return deuda;
+// All debt responses share this calendar-day projection; other fields,
+// including real Abono instants, remain untouched.
+function cuotaResponse(cuota: CuotaPlaneada) {
+  return {
+    ...cuota,
+    fechaEsperada: cuota.fechaEsperada.toISOString().slice(0, 10),
+  };
+}
+
+function response<T extends { cuotasPlaneadas: CuotaPlaneada[] }>(deuda: T) {
+  return {
+    ...deuda,
+    cuotasPlaneadas: deuda.cuotasPlaneadas.map(cuotaResponse),
+  };
 }
 
 /**
@@ -347,7 +359,7 @@ export class DeudasService {
         { isolationLevel: 'RepeatableRead' },
       );
       return {
-        items,
+        items: items.map(response),
         total,
         page: query.page,
         limit: query.limit,
@@ -360,6 +372,7 @@ export class DeudasService {
     });
 
     const now = new Date();
+    const today = currentBusinessDate(now);
     type Computed = {
       deuda: (typeof all)[number];
       saldoPendienteMinor: number;
@@ -377,7 +390,7 @@ export class DeudasService {
       const paidMinor = deuda.abonos.reduce((sum, a) => sum + a.montoMinor, 0);
       const saldoPendienteMinor = deuda.totalMinor - paidMinor;
       const overdueCuotas = deuda.cuotasPlaneadas.filter(
-        (c) => c.fechaEsperada.getTime() < now.getTime(),
+        (c) => c.fechaEsperada.toISOString().slice(0, 10) < today,
       );
       const overdueExpectedMinor = overdueCuotas.reduce(
         (sum, c) => sum + c.montoEsperadoMinor,
@@ -432,7 +445,9 @@ export class DeudasService {
 
     const total = filtered.length;
     const start = (query.page - 1) * query.limit;
-    const items = filtered.slice(start, start + query.limit).map((c) => c.deuda);
+    const items = filtered
+      .slice(start, start + query.limit)
+      .map((c) => response(c.deuda));
     return { items, total, page: query.page, limit: query.limit };
   }
 
@@ -574,7 +589,7 @@ export class DeudasService {
         },
       });
       if (!deuda) throw new NotFoundException();
-      return tx.cuotaPlaneada.create({
+      const created = await tx.cuotaPlaneada.create({
         data: {
           id: createServerId(),
           deudaId,
@@ -583,6 +598,7 @@ export class DeudasService {
           montoEsperadoMinor: dto.montoEsperadoMinor,
         },
       });
+      return cuotaResponse(created);
     });
   }
 
@@ -606,7 +622,7 @@ export class DeudasService {
         where: { id: cuotaId, deudaId, contextId: actor.account.contextId },
       });
       if (!cuota) throw new NotFoundException();
-      return tx.cuotaPlaneada.update({
+      const updated = await tx.cuotaPlaneada.update({
         where: { id: cuotaId },
         data: {
           ...(dto.fechaEsperada !== undefined
@@ -617,6 +633,7 @@ export class DeudasService {
             : {}),
         },
       });
+      return cuotaResponse(updated);
     });
   }
 
@@ -639,7 +656,9 @@ export class DeudasService {
         where: { id: cuotaId, deudaId, contextId: actor.account.contextId },
       });
       if (!cuota) throw new NotFoundException();
-      return tx.cuotaPlaneada.delete({ where: { id: cuotaId } });
+      return cuotaResponse(
+        await tx.cuotaPlaneada.delete({ where: { id: cuotaId } }),
+      );
     });
   }
 }

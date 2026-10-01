@@ -13,7 +13,7 @@ Reduce legitimate-sale clock-skew noise and represent planned installments as ca
 
 ## Tasks and acceptance
 - [x] T1: Tolerate future sale clocks up to five minutes; preserve the two-day past boundary; human-readable incident reason.
-- [ ] T2: Store installment calendar days as DATE; strict YYYY-MM-DD validation/response; overdue only before the business day.
+- [x] T2: Store installment calendar days as DATE; strict YYYY-MM-DD validation/response; overdue only before the business day.
 - [ ] V: Required build, lint, and full tests observed; report failures/skips honestly.
 
 ## Verification
@@ -21,7 +21,9 @@ Required: npm.cmd run build; npm.cmd run lint; npm.cmd test; npm.cmd run test:e2
 Runtime harness: functional service/component tests. Rollback boundary: each behavioral commit and its tests/docs independently; DATE conversion is intentionally lossy and cannot restore historical hours.
 
 ## Progress
-T1 verified: focused RED 7 failed / 2 passed; GREEN 9 passed. Build passed; lint passed with two pre-existing warnings in test/sales-conflict.e2e-spec.ts. Work-unit commit identity will be recorded after commit. Engram mirror saved but readback unavailable (ambiguous project); synchronization pending verification.
+T1 verified: focused RED 7 failed / 2 passed; GREEN 9 passed. Build passed; lint passed with two pre-existing warnings in test/sales-conflict.e2e-spec.ts. T1 commit: 8b7d2a12511b1dc89c8c049c42c1c3ea91eb2e33. Engram mirror saved but readback unavailable (ambiguous project); synchronization pending verification.
 
 ## Next step
-T2: write quota regression tests, observe RED, then implement DATE/calendar API.
+Independent verification, then separately authorize and provision a local test database to apply migration and rerun e2e. No remote recreation authorized.
+
+T2 evidence: RED 6 failed / 4 passed, GREEN 10 passed; additional null regression RED 1 failed / 11 passed, GREEN 12 passed. Final build/lint passed; full unit suite 26 files / 377 tests passed. E2E run and elevated retry both failed because local bazar_test at 127.0.0.1:5433 is unavailable: 27 files failed, 10 tests failed, 556 skipped. No migration/reset/recreation was executed. DATE migration structural checks passed, actual migration execution remains pending. T2 commit identity will be recorded after commit.

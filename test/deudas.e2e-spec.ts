@@ -495,7 +495,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 100_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -503,8 +505,8 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: 'Cliente Cuotas Ficticias' },
           cuotasPlaneadas: [
-            { fechaEsperada: '2020-01-01T00:00:00.000Z', montoEsperadoMinor: 100_00 },
-            { fechaEsperada: '2020-02-01T00:00:00.000Z', montoEsperadoMinor: 100_00 },
+            { fechaEsperada: '2020-01-01', montoEsperadoMinor: 100_00 },
+            { fechaEsperada: '2020-02-01', montoEsperadoMinor: 100_00 },
           ],
         })
         .expect(201);
@@ -540,7 +542,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 50_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -647,7 +651,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 100_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -660,7 +666,7 @@ describe('deudas (BE-09)', () => {
       const added = await asSocio(
         request(app.getHttpServer()).post(`/deudas/${created.body.id}/cuotas`),
       )
-        .send({ fechaEsperada: '2030-01-01T00:00:00.000Z', montoEsperadoMinor: 50_00 })
+        .send({ fechaEsperada: '2030-01-01', montoEsperadoMinor: 50_00 })
         .expect(201);
       expect(added.body.montoEsperadoMinor).toBe(50_00);
       expectUuidV7(added.body.id);
@@ -701,8 +707,8 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: 'Cliente Cuotas En Creacion' },
           cuotasPlaneadas: [
-            { fechaEsperada: '2030-01-01T00:00:00.000Z', montoEsperadoMinor: 45_00 },
-            { fechaEsperada: '2030-02-01T00:00:00.000Z', montoEsperadoMinor: 45_00 },
+            { fechaEsperada: '2030-01-01', montoEsperadoMinor: 45_00 },
+            { fechaEsperada: '2030-02-01', montoEsperadoMinor: 45_00 },
           ],
         })
         .expect(201);
@@ -716,7 +722,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 100_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -740,7 +748,7 @@ describe('deudas (BE-09)', () => {
       await asColaborador(
         request(app.getHttpServer()).post(`/deudas/${created.body.id}/cuotas`),
       )
-        .send({ fechaEsperada: '2030-01-01T00:00:00.000Z', montoEsperadoMinor: 10_00 })
+        .send({ fechaEsperada: '2030-01-01', montoEsperadoMinor: 10_00 })
         .expect(403);
       await asColaborador(
         request(app.getHttpServer()).patch(
@@ -765,7 +773,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 10_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -794,7 +804,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 100_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -802,7 +814,7 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: `Deudor Cuotas Cumplidas ${randomUUID()}` },
           cuotasPlaneadas: [
-            { fechaEsperada: '2020-01-01T00:00:00.000Z', montoEsperadoMinor: 100_00 },
+            { fechaEsperada: '2020-01-01', montoEsperadoMinor: 100_00 },
           ],
         })
         .expect(201);
@@ -834,7 +846,9 @@ describe('deudas (BE-09)', () => {
         unitPriceMinor: 100_00,
         stock: 5,
       });
-      const created = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const created = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
@@ -842,7 +856,7 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: `Deudor Cuotas Vencidas ${randomUUID()}` },
           cuotasPlaneadas: [
-            { fechaEsperada: '2020-01-01T00:00:00.000Z', montoEsperadoMinor: 50_00 },
+            { fechaEsperada: '2020-01-01', montoEsperadoMinor: 50_00 },
           ],
         })
         .expect(201);
@@ -910,7 +924,7 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: `Deudor Mas Vencido ${randomUUID()}` },
           cuotasPlaneadas: [
-            { fechaEsperada: '2019-01-01T00:00:00.000Z', montoEsperadoMinor: 50_00 },
+            { fechaEsperada: '2019-01-01', montoEsperadoMinor: 50_00 },
           ],
         })
         .expect(201);
@@ -924,11 +938,13 @@ describe('deudas (BE-09)', () => {
           cantidad: 1,
           deudor: { nombre: `Deudor Menos Vencido ${randomUUID()}` },
           cuotasPlaneadas: [
-            { fechaEsperada: '2021-01-01T00:00:00.000Z', montoEsperadoMinor: 50_00 },
+            { fechaEsperada: '2021-01-01', montoEsperadoMinor: 50_00 },
           ],
         })
         .expect(201);
-      const noCuotas = await asSocio(request(app.getHttpServer()).post('/deudas'))
+      const noCuotas = await asSocio(
+        request(app.getHttpServer()).post('/deudas'),
+      )
         .send({
           type: 'fiado',
           abonoInicialMinor: 0,
