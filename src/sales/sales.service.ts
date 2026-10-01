@@ -87,12 +87,13 @@ function response(sale: SaleWithItems) {
 // flags an Incidencia for a socio to look at, since the money and stock
 // are already real and in hand.
 const MAX_OCCURRED_AT_PAST_DAYS = 2;
+// Ordinary device/server clock drift is not an actionable incident.
+const MAX_OCCURRED_AT_FUTURE_MS = 5 * 60_000;
 
 function occurredAtIssue(occurredAt: Date, receivedAt: Date): string | null {
   const diffMs = occurredAt.getTime() - receivedAt.getTime();
-  if (diffMs > 0) {
-    const hours = (diffMs / 3_600_000).toFixed(1);
-    return `occurredAt es ${hours}h posterior a receivedAt (fecha futura)`;
+  if (diffMs > MAX_OCCURRED_AT_FUTURE_MS) {
+    return 'La fecha registrada por el dispositivo parece estar adelantada. Revisa el reloj de la tablet.';
   }
   const pastDays = -diffMs / 86_400_000;
   if (pastDays > MAX_OCCURRED_AT_PAST_DAYS) {
