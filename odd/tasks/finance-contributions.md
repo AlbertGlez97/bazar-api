@@ -7,7 +7,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 ## Architecture and acceptance
 
 - Explicit tenant-scoped immutable Contribution; integer MXN cents; client UUID v7; contributor distinct from authenticated recording Member and Device.
-- Socio-only administration using existing guards. Contributor references must belong to the same context. UI starts with socios as requested; confirm target role validation consistently in implementation.
+- Socio-only administration using existing guards. New contributors must be active socios in the same context; historical records remain readable and replayable after contributor deactivation.
 - Stable normalized creation fingerprint: exact replay returns the existing receipt, changed content returns conflict.
 - Explicit unique reversal of an original; optional linked replacement applied atomically. A reversal corrects a record and is not capital repayment. Preserve originals and actor/reason/time.
 - Durable origin-scoped financial queue/history, no credentials in payloads. Persist before success; preserve original account/API/member/device and economic date; reconcile pending and confirmed by identity without double counting.
@@ -28,7 +28,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 - [x] FC2 — Backend auditable reversal and atomic replacement, concurrency/idempotency tests/docs.
 - [x] FC3 — Frontend durable scoped financial persistence and synchronization with backwards-compatible IndexedDB upgrade and tests.
 - [x] FC4 — Responsive contributions management UI, existing components, filters, create/reverse/correct and tests/docs.
-- [ ] FC5 — Full relevant verification, independent audit, parent spot check, fix confirmed in-scope defects and record final limitations.
+- [x] FC5 — Full relevant verification, independent audit, parent spot check, fix confirmed in-scope defects and record final limitations.
 
 ## Required checks
 
@@ -39,7 +39,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 
 ## Progress and recovery
 
-FC1 through FC4 implemented and writer-verified; independent frontend FC5 audit and parent spot check remain pending. Tracking was created before source edits. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Workers must read and update this document, preserve earlier completed work and attach commit/evidence. Next: frontend FC3/FC4 follows doc/finance-contributions.md, then independent FC5 verification.
+All five tasks completed and verified, including the independently validated recovery correction. Tracking was created before source edits. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Preserve this document and commit/evidence on recovery. Next: user review; no further finance scope, integration or remote delivery is authorized.
 
 ### FC1 evidence
 
@@ -83,10 +83,21 @@ FC1 through FC4 implemented and writer-verified; independent frontend FC5 audit 
 - No browser visual verification claimed: responsive CSS and component proof only. Frontend native RDD state unknown; parent independent verifier and spot check pending. Backend source unchanged in frontend iteration. Engram full mirror write backed by explicit project, readback unavailable due outer workspace ambiguity; preserve canonical local tracker.
 - NextFC5: independent frontend audit and final parent validation. No push, merge, deploy, remote work or production Docker.
 
-### FC5 bounded correction evidence (independent validation pending)
+### FC5 bounded correction evidence (independently validated)
 
 - Independent frontend verification reproduced a recovery dead end: original401 pauses creation, dependent correction moves to needs_review, recovering and confirming original did not expose a UI retry action for the reviewed correction. Parent authorized one bounded in-scope fix; no additional finance behavior.
 - Frontend commit471844d: explicit correction retry available for both paused and needs_review, pending remains non-retryable. No automatic business-conflict loop; immutable operation origin and payload unchanged. Also corrected stale IndexedDB headerv1 to v2 and documented recovery. Five files,136 additions+2 deletions; rollback removes only retry eligibility/regression docs/tests/header correction.
 - Behavioral RED targeted UI/sync:26 passed/1 failed (needs_review button absent). GREEN44/44 in6 files, including paused/review/pending UI eligibility and complete401 dependency recovery/manual retry success plus genuine409 remaining review without silent deletion or automatic resend. Runtime harness: real sync engine and fake-indexeddb durable operations with controlled network responses.
 - Final normalized foreground checks: npm.cmd run lint exit0 with no warnings; npx.cmd vue-tsc -b exit0; focused contribution suite44/44; npm.cmd run test:run -- --maxWorkers=2 3221/3221 in184 files,192.70s; npm.cmd run build exit0; git diff --check and staged diff-check exit0. Build retains existing toast dynamic/static import and chunk-size warnings. An earlier full run also3221/3221; final rerun followed removal of formatter-only noise so exact final source bytes are covered.
-- Backend source untouched. FC5 checkbox remains pending for parent targeted independent validation/spot check. No push, merge, PR, deploy, remote or production Docker. Engram full mirror refreshed after local tracker commit; readback remains unavailable due outer-workspace ambiguity.
+- Backend source untouched. At writer handoff FC5 was pending parent validation; final evidence below records its completion. No push, merge, PR, deploy, remote or production Docker. Engram full mirror refreshed after local tracker commit; readback remains unavailable due outer-workspace ambiguity.
+
+### Final independent verification and delivery state
+
+- Independent backend verifier: contributions HTTP21/21, DTO7/7, impersonation216/216, typecheck and committed diff-check exit0. Six additional isolated HTTP/RLS/replay/concurrency harness checks passed. No significant backend defect found.
+- Independent frontend verifier: initial contributions29/29 and existing integration83/83 passed; reproduced the dependency recovery issue, then independently validated the bounded fix at471844d with27/27 (sync16/UI11) and diff-check exit0. The issue is resolved; no new review cycle or scope expansion.
+- Parent spot checks: backend DTO7/7; frontend IndexedDB/store5/5. Structural readback confirmed dedicated contribution endpoints/schema, socio-only Finance route and preservation of existing stores. Native risk assessment medium in both repositories; backend RDD off and frontend mode unknown, no native review started or fabricated approval.
+- Final source checks of record: backend unit405/e2e609, lint/typecheck/build exit0 (two pre-existing lint warnings); frontend3221/3221 with maxWorkers2, lint/typecheck/build exit0 (existing bundle warnings). Full checks were run by the writer; independent focused checks and parent spot checks are separate evidence, not claims of independently rerun full suites.
+- Current source boundaries: API6589c6e/0257a00; frontend762901f/d92e8a8/471844d. API08bb2ed/b10c62a/09096bf and this final task-document commit are documentation-only; identify this commit using git log -1 -- odd/tasks/finance-contributions.md.
+- Both repositories remain on feat/finance-contributions. No push, merge, PR, deploy, production migration or production Docker. Only isolated local bazar_test received the two migrations. The local postgres-test service was started for proof; volumes were not reset/deleted.
+- Limitations: no visual browser, real multi-tab browser or installed service-worker test; source/component/fake-indexeddb/Web Lock simulations only. Offline history is partial last-known data, and initial offline capture requires a genuine cached socio list. Operations cannot be reassigned to another account/API/device. Future PR boundaries still require re-slicing or an approved size exception; no PR created.
+- All five tasks completed with actual checks. Next: user reviews the contributions vertical; any deployment, main integration, PR or additional finance domain requires separate authorization. Engram full mirror saved; full mirror readback remains unavailable due outer workspace project ambiguity, with the local canonical document preserved.
