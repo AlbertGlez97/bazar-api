@@ -59,3 +59,5 @@ FC1 and FC2 backend implemented and checked; frontend FC3/FC4 remain pending. Tr
 - Runtime harness uses only local postgres-test / bazar_test; both migrations applied there. No dev/production migration, no real email (existing suites mock delivery). No credentials printed.
 - Rollback boundary: remove reversal endpoint/service methods/table/relationships/new tests and matrix entries, retaining FC1; migrations are additive, reversal references restrict physical deletion.
 - Next: durable origin-scoped frontend queue and Finance > Contributions UI. No expenses/work shifts/distributions/recovery/reserves implemented.
+
+- FC2 commit:0257a00; slice backend-corrections:500 additions +27 deletions. Running backend authored change count:1232 (705+527). Cohesive units kept intact; no PR branches created. Focused security matrix after removing unrelated formatter changes:216/216.
