@@ -88,14 +88,22 @@ describe('capital contributions', () => {
     // Test fixtures are isolated by unique context, never reset the database.
     if (prisma) {
       await withTestTenant(contextId, async () => {
+        if ('contributionReversal' in prisma)
+          await prisma.contributionReversal.deleteMany({
+            where: { contextId },
+          });
         if ('contribution' in prisma)
           await prisma.contribution.deleteMany({ where: { contextId } });
         await prisma.device.deleteMany({ where: { contextId } });
         await prisma.member.deleteMany({ where: { contextId } });
       });
-      await withTestTenant(otherContext, () =>
-        prisma.member.deleteMany({ where: { contextId: otherContext } }),
-      );
+      await withTestTenant(otherContext, async () => {
+        await prisma.contribution.deleteMany({
+          where: { contextId: otherContext },
+        });
+        await prisma.device.deleteMany({ where: { contextId: otherContext } });
+        await prisma.member.deleteMany({ where: { contextId: otherContext } });
+      });
       await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
@@ -184,7 +192,9 @@ describe('capital contributions', () => {
         auth(request(app.getHttpServer()).post(endpoint)).send(dto),
       ),
     );
-    expect(results.map((r) => r.status).sort((a, b) => a - b)).toEqual([200, 201]);
+    expect(results.map((r) => r.status).sort((a, b) => a - b)).toEqual([
+      200, 201,
+    ]);
     expect(results[0].body).toEqual(results[1].body);
   });
 
@@ -223,5 +233,205 @@ describe('capital contributions', () => {
     await auth(request(app.getHttpServer()).get(endpoint))
       .query({ ...query, from: query.to, to: query.from })
       .expect(400);
+  });
+  const reversalBody = (overrides: Record<string, unknown> = {}) => ({
+    id: v7(),
+    createdByMemberId: actorId,
+    deviceId,
+    occurredAt: '2026-10-03T12:00:00Z',
+    reason: 'Incorrect amount',
+    ...overrides,
+  });
+  const createOriginal = async () => {
+    const dto = body();
+    await auth(request(app.getHttpServer()).post(endpoint))
+      .send(dto)
+      .expect(201);
+    return dto;
+  };
+
+  it('reverses without repayment and retains an immutable creation receipt', async () => {
+    const original = await createOriginal();
+    const dto = reversalBody();
+    const reversal = await auth(
+      request(app.getHttpServer()).post(
+        endpoint + '/' + original.id + '/reversals',
+      ),
+    )
+      .send(dto)
+      .expect(201);
+    expect(reversal.body).toMatchObject({
+      id: dto.id,
+      contributionId: original.id,
+      reason: dto.reason,
+      replacement: null,
+    });
+    const replay = await auth(
+      request(app.getHttpServer()).post(
+        endpoint + '/' + original.id + '/reversals',
+      ),
+    )
+      .send(dto)
+      .expect(200);
+    expect(replay.body).toEqual(reversal.body);
+    const receipt = await auth(request(app.getHttpServer()).post(endpoint))
+      .send(original)
+      .expect(200);
+    expect(receipt.body.amountMinor).toBe(800000);
+    expect(receipt.body.reversal).toBeUndefined();
+    const list = await auth(request(app.getHttpServer()).get(endpoint)).expect(
+      200,
+    );
+    expect(
+      list.body.items.find((r: { id: string }) => r.id === original.id).reversal
+        .id,
+    ).toBe(dto.id);
+  });
+
+  it('rejects modified replay, double reversal, blank reason and collaborator', async () => {
+    const original = await createOriginal();
+    const dto = reversalBody();
+    const path = endpoint + '/' + original.id + '/reversals';
+    await auth(request(app.getHttpServer()).post(path))
+      .send({ ...dto, reason: '   ' })
+      .expect(400);
+    await auth(request(app.getHttpServer()).post(path), collaboratorId)
+      .send({ ...dto, createdByMemberId: collaboratorId })
+      .expect(403);
+    await auth(request(app.getHttpServer()).post(path)).send(dto).expect(201);
+    await auth(request(app.getHttpServer()).post(path))
+      .send({ ...dto, reason: 'Changed' })
+      .expect(409);
+    await auth(request(app.getHttpServer()).post(path))
+      .send(reversalBody())
+      .expect(409);
+  });
+
+  it('atomically corrects with a linked replacement, preserving each operation identity', async () => {
+    const original = await createOriginal();
+    const replacement = body({ amountMinor: 600000 });
+    const dto = reversalBody({ replacement });
+    const path = endpoint + '/' + original.id + '/reversals';
+    const corrected = await auth(request(app.getHttpServer()).post(path))
+      .send(dto)
+      .expect(201);
+    expect(corrected.body.replacement).toMatchObject({
+      id: replacement.id,
+      amountMinor: 600000,
+    });
+    const replay = await auth(request(app.getHttpServer()).post(path))
+      .send(dto)
+      .expect(200);
+    expect(replay.body).toEqual(corrected.body);
+    await auth(request(app.getHttpServer()).post(endpoint))
+      .send(replacement)
+      .expect(409);
+  });
+
+  it('rolls back reversal if replacement contributor is invalid or ID already exists', async () => {
+    for (const replacement of [
+      body({ memberId: foreignMemberId }),
+      await createOriginal(),
+    ]) {
+      const original = await createOriginal();
+      const path = endpoint + '/' + original.id + '/reversals';
+      await auth(request(app.getHttpServer()).post(path))
+        .send(reversalBody({ replacement }))
+        .expect(replacement.memberId === foreignMemberId ? 403 : 409);
+      await auth(request(app.getHttpServer()).post(path))
+        .send(reversalBody())
+        .expect(201);
+    }
+  });
+
+  it('serializes concurrent distinct reversals to exactly one winner', async () => {
+    const original = await createOriginal();
+    const path = endpoint + '/' + original.id + '/reversals';
+    const results = await Promise.all(
+      [0, 1].map(() =>
+        auth(request(app.getHttpServer()).post(path)).send(reversalBody()),
+      ),
+    );
+    expect(results.map((r) => r.status).sort((a, b) => a - b)).toEqual([
+      201, 409,
+    ]);
+  });
+
+  it('serializes concurrent identical reversal replay', async () => {
+    const original = await createOriginal();
+    const path = endpoint + '/' + original.id + '/reversals';
+    const dto = reversalBody();
+    const results = await Promise.all(
+      [0, 1].map(() => auth(request(app.getHttpServer()).post(path)).send(dto)),
+    );
+    expect(results.map((r) => r.status).sort((a, b) => a - b)).toEqual([
+      200, 201,
+    ]);
+    expect(results[0].body).toEqual(results[1].body);
+  });
+
+  it('isolates Contribution and Reversal in the extension and raw RLS', async () => {
+    const original = await createOriginal();
+    await auth(
+      request(app.getHttpServer()).post(
+        endpoint + '/' + original.id + '/reversals',
+      ),
+    )
+      .send(reversalBody())
+      .expect(201);
+    await withTestTenant(otherContext, async () => {
+      expect(
+        await prisma.contribution.findMany({
+          where: { contextId: otherContext },
+        }),
+      ).toEqual([]);
+      expect(
+        await prisma.contributionReversal.findMany({
+          where: { contextId: otherContext },
+        }),
+      ).toEqual([]);
+      await prisma.$transaction(async (tx) => {
+        expect(
+          await tx.$queryRaw`SELECT id FROM "Contribution" WHERE id = ${original.id}::uuid`,
+        ).toEqual([]);
+        expect(
+          await tx.$queryRaw`SELECT id FROM "ContributionReversal" WHERE "contributionId" = ${original.id}::uuid`,
+        ).toEqual([]);
+      });
+    });
+    await auth(
+      request(app.getHttpServer()).post(endpoint + '/' + v7() + '/reversals'),
+    )
+      .send(reversalBody())
+      .expect(404);
+  });
+  it('returns a safe conflict for a UUID already owned by another tenant', async () => {
+    const dto = body();
+    await withTestTenant(otherContext, async () => {
+      const device = await prisma.device.create({
+        data: {
+          name: 'Other device',
+          contextId: otherContext,
+          authorized: true,
+        },
+      });
+      await prisma.contribution.create({
+        data: {
+          id: dto.id as string,
+          contextId: otherContext,
+          memberId: foreignMemberId,
+          createdByMemberId: foreignMemberId,
+          createdByAccountId: v7(),
+          deviceId: device.id,
+          amountMinor: 1,
+          occurredAt: new Date(),
+          requestFingerprint: 'fixture',
+          creationResponse: {},
+        },
+      });
+    });
+    await auth(request(app.getHttpServer()).post(endpoint))
+      .send(dto)
+      .expect(409);
   });
 });

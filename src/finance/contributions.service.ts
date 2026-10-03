@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
@@ -13,6 +14,7 @@ import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import type {
   CreateContributionDto,
   ContributionListDto,
+  ReverseContributionDto,
 } from './contribution.dto.js';
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 function normalized(dto: CreateContributionDto) {
@@ -85,10 +87,10 @@ export class ContributionsService {
   ) {
     const data = normalized(dto);
     const contextId = actor.account.contextId;
-    const contributor = await tx.member.findFirst({
-      where: { id: data.memberId, contextId, active: true, role: 'socio' },
-    });
-    if (!contributor)
+    const contributors = await tx.$queryRaw<
+      { id: string }[]
+    >`SELECT id FROM "Member" WHERE id = ${data.memberId}::uuid AND "contextId" = ${contextId} AND active = true AND role = 'socio' FOR SHARE`;
+    if (!contributors.length)
       throw new ForbiddenException(
         'Contributor must be an active socio of this business',
       );
@@ -118,25 +120,145 @@ export class ContributionsService {
     this.checkSelection(actor, dto);
     const id = dto.id.toLowerCase();
     const requestFingerprint = fingerprint(actor, dto);
-    return this.prisma.$transaction(async (tx) => {
-      await this.authorize(tx, actor);
-      await this.lockIdentity(tx, actor.account.contextId, id);
-      const existing = await tx.contribution.findFirst({
-        where: { id, contextId: actor.account.contextId },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.authorize(tx, actor);
+        await this.lockIdentity(tx, actor.account.contextId, id);
+        const existing = await tx.contribution.findFirst({
+          where: { id, contextId: actor.account.contextId },
+        });
+        if (existing) {
+          if (existing.requestFingerprint !== requestFingerprint)
+            throw new ConflictException(
+              'Contribution ID already has different content',
+            );
+          return { created: false, receipt: existing.creationResponse };
+        }
+        return {
+          created: true,
+          receipt: await this.insert(tx, actor, dto, requestFingerprint),
+        };
       });
-      if (existing) {
-        if (existing.requestFingerprint !== requestFingerprint)
-          throw new ConflictException(
-            'Contribution ID already has different content',
-          );
-        return { created: false, receipt: existing.creationResponse };
-      }
-      return {
-        created: true,
-        receipt: await this.insert(tx, actor, dto, requestFingerprint),
-      };
-    });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      )
+        throw new ConflictException('Contribution identity already exists');
+      throw error;
+    }
   }
+
+  async reverse(
+    actor: Actor,
+    contributionId: string,
+    dto: ReverseContributionDto,
+  ) {
+    this.checkSelection(actor, dto);
+    if (dto.replacement) this.checkSelection(actor, dto.replacement);
+    const contextId = actor.account.contextId;
+    const id = dto.id.toLowerCase();
+    const targetId = contributionId.toLowerCase();
+    const replacementId = dto.replacement?.id.toLowerCase();
+    if (replacementId === targetId || replacementId === id || id === targetId)
+      throw new BadRequestException('Correction identities must be distinct');
+    const data = {
+      id,
+      contributionId: targetId,
+      createdByMemberId: dto.createdByMemberId.toLowerCase(),
+      deviceId: dto.deviceId.toLowerCase(),
+      occurredAt: new Date(dto.occurredAt).toISOString(),
+      reason: dto.reason,
+    };
+    const requestFingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          contextId,
+          accountId: actor.account.id,
+          ...data,
+          replacement: dto.replacement ? normalized(dto.replacement) : null,
+        }),
+      )
+      .digest('hex');
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.authorize(tx, actor);
+        // Global ordering avoids cycles when different corrections name overlapping IDs.
+        for (const identity of [
+          id,
+          targetId,
+          ...(replacementId ? [replacementId] : []),
+        ].sort((a, b) => a.localeCompare(b)))
+          await this.lockIdentity(tx, contextId, identity);
+        const existing = await tx.contributionReversal.findFirst({
+          where: { id, contextId },
+        });
+        if (existing) {
+          if (existing.requestFingerprint !== requestFingerprint)
+            throw new ConflictException(
+              'Reversal ID already has different content',
+            );
+          return { created: false, receipt: existing.creationResponse };
+        }
+        const locked = await tx.$queryRaw<
+          { id: string }[]
+        >`SELECT id FROM "Contribution" WHERE id = ${targetId}::uuid AND "contextId" = ${contextId} FOR UPDATE`;
+        if (!locked.length)
+          throw new NotFoundException('Contribution not found');
+        const original = await tx.contribution.findFirstOrThrow({
+          where: { id: targetId, contextId },
+          include: { reversal: true },
+        });
+        if (original.reversal)
+          throw new ConflictException('Contribution already reversed');
+        let replacement: Prisma.JsonValue = null;
+        if (dto.replacement) {
+          const used = await tx.contribution.findFirst({
+            where: { id: replacementId!, contextId },
+          });
+          if (used)
+            throw new ConflictException('Replacement ID already exists');
+          replacement = await this.insert(
+            tx,
+            actor,
+            dto.replacement,
+            fingerprint(actor, dto.replacement, 'replacement:' + id),
+          );
+        }
+        const receivedAt = new Date();
+        const receipt = {
+          ...data,
+          contextId,
+          createdByAccountId: actor.account.id,
+          receivedAt: receivedAt.toISOString(),
+          replacementContributionId: replacementId ?? null,
+          original: original.creationResponse,
+          replacement,
+        };
+        await tx.contributionReversal.create({
+          data: {
+            ...data,
+            contextId,
+            occurredAt: new Date(data.occurredAt),
+            receivedAt,
+            createdByAccountId: actor.account.id,
+            replacementContributionId: replacementId ?? null,
+            requestFingerprint,
+            creationResponse: receipt,
+          },
+        });
+        return { created: true, receipt };
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      )
+        throw new ConflictException('Correction identity already exists');
+      throw error;
+    }
+  }
+
   async list(contextId: string, query: ContributionListDto) {
     if (query.from && query.to && new Date(query.from) >= new Date(query.to))
       throw new BadRequestException('from must precede to');
@@ -175,7 +297,21 @@ export class ContributionsService {
       },
       orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
-      include: { member: { select: { id: true, name: true, active: true } } },
+      include: {
+        member: { select: { id: true, name: true, active: true } },
+        reversal: {
+          select: {
+            id: true,
+            contributionId: true,
+            replacementContributionId: true,
+            reason: true,
+            occurredAt: true,
+            receivedAt: true,
+            createdByMemberId: true,
+            deviceId: true,
+          },
+        },
+      },
     });
     const items = rows
       .slice(0, query.limit)

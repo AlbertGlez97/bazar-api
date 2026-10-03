@@ -15,6 +15,7 @@ import {
  */
 const TENANT_SCOPED_MODELS = new Set([
   'Contribution',
+  'ContributionReversal',
   'Product',
   'ProductAudit',
   'Sale',

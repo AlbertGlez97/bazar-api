@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { MAX_MINOR_UNITS } from '../common/money.js';
 export const UUID_V7 =
@@ -36,4 +37,16 @@ export class ContributionListDto {
   @IsOptional() @IsUUID() memberId?: string;
   @IsOptional() @IsString() @MaxLength(500) cursor?: string;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+
+export class ReverseContributionDto {
+  @IsUUID() @Matches(UUID_V7) id!: string;
+  @IsUUID() createdByMemberId!: string;
+  @IsUUID() deviceId!: string;
+  @IsISO8601({ strict: true }) @Matches(ZONED_INSTANT) occurredAt!: string;
+  @IsString() @MaxLength(1000) @Matches(/\S/) reason!: string;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreateContributionDto)
+  replacement?: CreateContributionDto;
 }

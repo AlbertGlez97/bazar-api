@@ -4,6 +4,8 @@ import {
   Get,
   Inject,
   Post,
+  Param,
+  ParseUUIDPipe,
   Query,
   Req,
   Res,
@@ -17,6 +19,7 @@ import { SocioGuard } from '../auth/socio.guard.js';
 import {
   CreateContributionDto,
   ContributionListDto,
+  ReverseContributionDto,
 } from './contribution.dto.js';
 import { ContributionsService } from './contributions.service.js';
 const validate = (expectedType: new () => object) =>
@@ -51,5 +54,16 @@ export class ContributionsController {
     @Query(validate(ContributionListDto)) query: ContributionListDto,
   ) {
     return this.contributions.list(req.account.contextId, query);
+  }
+  @Post(':id/reversals')
+  async reverse(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(ReverseContributionDto)) dto: ReverseContributionDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.contributions.reverse(req, id, dto);
+    res.status(result.created ? 201 : 200);
+    return result.receipt;
   }
 }

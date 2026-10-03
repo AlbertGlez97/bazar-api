@@ -25,7 +25,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 ## Tasks
 
 - [x] FC1 — Backend contribution creation/listing, schema/migration/tenant RLS, permissions, validation, replay and filters with tests/docs.
-- [ ] FC2 — Backend auditable reversal and atomic replacement, concurrency/idempotency tests/docs.
+- [x] FC2 — Backend auditable reversal and atomic replacement, concurrency/idempotency tests/docs.
 - [ ] FC3 — Frontend durable scoped financial persistence and synchronization with backwards-compatible IndexedDB upgrade and tests.
 - [ ] FC4 — Responsive contributions management UI, existing components, filters, create/reverse/correct and tests/docs.
 - [ ] FC5 — Full relevant verification, independent audit, parent spot check, fix confirmed in-scope defects and record final limitations.
@@ -39,7 +39,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 
 ## Progress and recovery
 
-Tracking created before source edits. No implementation yet. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Workers must read and update this document, preserve earlier completed work and attach commit/evidence. Next: FC1 then FC2 via one bounded writer; frontend follows the verified API contract.
+FC1 and FC2 backend implemented and checked; frontend FC3/FC4 remain pending. Tracking was created before source edits. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Workers must read and update this document, preserve earlier completed work and attach commit/evidence. Next: frontend FC3/FC4 follows doc/finance-contributions.md, then independent FC5 verification.
 
 ### FC1 evidence
 
@@ -48,3 +48,14 @@ Tracking created before source edits. No implementation yet. Engram mirror: odd/
 - HTTP harness: npm.cmd run test:e2e -- test/contributions.e2e-spec.ts: 13/13 passed.
 - Rollback boundary: finance creation/list module, Contribution table, tenancy registration, new tests/docs; no sales changes. Full suite checks follow FC2.
 - Engram mirror readback remains unavailable due outer-workspace ambiguity; preserve local tracker.
+
+### FC2 evidence
+
+- FC1 commit: 6589c6e; slice backend-create/list: 704 additions + 1 deletion, coherent >400-line local boundary; future PR needs honest re-slicing or maintainer size exception, no PR authorized/created.
+- Behavioral RED: focused HTTP suite 13 passed / 7 failed (reversal endpoint absent); GREEN after reversal implementation and list projection: 20/20. Additional cross-tenant UUID collision RED:20 passed/1 failed (500 instead409), GREEN:21/21.
+- Atomic original/reversal/replacement preserved; concurrency identical replay and distinct reversal one-winner, rollback of invalid/used replacement, raw RLS isolation exercised. Creation receipts remain unchanged after reversal.
+- Full HTTP suite initially589 passed/2 failed because new protected routes needed registration in existing self-checking impersonation matrix; updated matrix, then609/609 in28 files. No bypass of guard tests.
+- npm.cmd test:405/405 in28 files; focused DTO7/7. npm.cmd run lint: exit0, two existing warnings in test/sales-conflict.e2e-spec.ts (unused resB and sort compare). Typecheck/build/diff-check:exit0.
+- Runtime harness uses only local postgres-test / bazar_test; both migrations applied there. No dev/production migration, no real email (existing suites mock delivery). No credentials printed.
+- Rollback boundary: remove reversal endpoint/service methods/table/relationships/new tests and matrix entries, retaining FC1; migrations are additive, reversal references restrict physical deletion.
+- Next: durable origin-scoped frontend queue and Finance > Contributions UI. No expenses/work shifts/distributions/recovery/reserves implemented.

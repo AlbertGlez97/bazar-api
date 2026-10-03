@@ -100,6 +100,7 @@ model Member {
   active        Boolean        @default(true)
   contributions Contribution[] @relation("ContributionMember")
   recordedContributions Contribution[] @relation("ContributionRecorder")
+  contributionReversals ContributionReversal[]
   sales         Sale[]
   productAudits ProductAudit[]
   // Only ever populated for a Member whose role is "socio" (enforced in
@@ -157,6 +158,7 @@ model Device {
   activatedAt DateTime?   @db.Timestamptz(3)
   revokedAt   DateTime?   @db.Timestamptz(3)
   contributions Contribution[]
+  contributionReversals ContributionReversal[]
   sales      Sale[]
 }
 
@@ -520,6 +522,31 @@ model Contribution {
   createdByMember Member @relation("ContributionRecorder", fields: [createdByMemberId], references: [id], onDelete: Restrict)
   device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
 
+  reversal ContributionReversal? @relation("OriginalContribution")
+  replacedByReversal ContributionReversal? @relation("ReplacementContribution")
+
   @@index([contextId, occurredAt, id])
   @@index([contextId, memberId, occurredAt, id])
+}
+
+// An auditable record correction, never a capital refund.
+model ContributionReversal {
+  id String @id @db.Uuid
+  contextId String
+  contributionId String @unique @db.Uuid
+  replacementContributionId String? @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  contribution Contribution @relation("OriginalContribution", fields: [contributionId], references: [id], onDelete: Restrict)
+  replacementContribution Contribution? @relation("ReplacementContribution", fields: [replacementContributionId], references: [id], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId], references: [id], onDelete: Restrict)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([contextId, occurredAt, id])
 }
