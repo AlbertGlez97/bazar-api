@@ -26,8 +26,8 @@ Record money a Member delivers to the business, independently of sales, profit, 
 
 - [x] FC1 — Backend contribution creation/listing, schema/migration/tenant RLS, permissions, validation, replay and filters with tests/docs.
 - [x] FC2 — Backend auditable reversal and atomic replacement, concurrency/idempotency tests/docs.
-- [ ] FC3 — Frontend durable scoped financial persistence and synchronization with backwards-compatible IndexedDB upgrade and tests.
-- [ ] FC4 — Responsive contributions management UI, existing components, filters, create/reverse/correct and tests/docs.
+- [x] FC3 — Frontend durable scoped financial persistence and synchronization with backwards-compatible IndexedDB upgrade and tests.
+- [x] FC4 — Responsive contributions management UI, existing components, filters, create/reverse/correct and tests/docs.
 - [ ] FC5 — Full relevant verification, independent audit, parent spot check, fix confirmed in-scope defects and record final limitations.
 
 ## Required checks
@@ -39,7 +39,7 @@ Record money a Member delivers to the business, independently of sales, profit, 
 
 ## Progress and recovery
 
-FC1 and FC2 backend implemented and checked; frontend FC3/FC4 remain pending. Tracking was created before source edits. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Workers must read and update this document, preserve earlier completed work and attach commit/evidence. Next: frontend FC3/FC4 follows doc/finance-contributions.md, then independent FC5 verification.
+FC1 through FC4 implemented and writer-verified; independent frontend FC5 audit and parent spot check remain pending. Tracking was created before source edits. Engram mirror: odd/finance-contributions/tasks (bazar-api), locator bazar-api/odd/tasks/finance-contributions.md. Workers must read and update this document, preserve earlier completed work and attach commit/evidence. Next: frontend FC3/FC4 follows doc/finance-contributions.md, then independent FC5 verification.
 
 ### FC1 evidence
 
@@ -61,3 +61,24 @@ FC1 and FC2 backend implemented and checked; frontend FC3/FC4 remain pending. Tr
 - Next: durable origin-scoped frontend queue and Finance > Contributions UI. No expenses/work shifts/distributions/recovery/reserves implemented.
 
 - FC2 commit:0257a00; slice backend-corrections:500 additions +27 deletions. Running backend authored change count:1232 (705+527). Cohesive units kept intact; no PR branches created. Focused security matrix after removing unrelated formatter changes:216/216.
+
+### FC3 evidence
+
+- Frontend commit762901f (448 additions+6 deletions before readability normalization). Separate durable financial operations/history/references and IndexedDBv2 additive upgrade preserve legacy sales/debt/catalog stores.
+- Behavioral RED database upgrade:2 failures (v1 insteadv2), GREEN2/2; sync RED4 failures/4 passing with stub engine, GREEN14/14; existing localdb10/10.
+- Focused foreground26/26, lint/typecheck/build/diffcheck exit0. Build retains existing toast dynamic/static import and large-chunk warnings. No dependency installation.
+- Original/confirmation identity, shared account attribution, different Account/API/device, pending reversal dependencies, paused/review/transient errors, uncertain ack/storage failure, cross-tab lock exclusion and immutable histories covered.
+- Rollback boundary: added finance stores/sync/types/store/shell lifecycle and selective Workbox exclusion; keep existing IndexedDB stores/operations. Native risk independent parent verification still pending. No browser visual verification claimed.
+- NextFC4 finance management route/form/list/corrections and full suite.
+
+### FC4 evidence
+
+- Frontend commit d92e8a8: 2055 additions +243 deletions, including readability normalization of FC3 files, scoped reference fetch/Workbox exclusion, responsive UI, route/menu guards, store/readback proof and tests/docs. Running frontend commit churn:2752 (454+2298); this includes formatting and is not net feature line count. Coherent local boundaries exceed the advisory heuristic; future PRs require honest re-slicing or maintainer exception. No PR authorized or created.
+- UI behavioral RED: placeholder yielded3 failed/1 passed; GREEN4/4, expanded8/8 plus route/menu2/2. Durable readback RED2 failed/1 passed (scope reset erased committed pending display); GREEN3/3 after committed scope establishment. A failed initial durable write still rejects without false pending/success.
+- Foreground focused224/224 in10 files (new UI/sync/upgrade plus navigation/router), additional store3/3. Frozen late correction acknowledgement preserves a later reversal of its replacement.
+- First default full suite3205 passed/8 failed:6 newly outdated menu expectations corrected,2 lazy-import5000ms timeouts. Focused router tests passed with bounded workers and unchanged timeout configuration. Final npm.cmd run test:run -- --maxWorkers=2:3216/3216 in184 files,199.97s, exit0. This resource-bounded rerun is the full-suite proof; the initial failure is not hidden or claimed baseline.
+- Final npm.cmd run lint, npx.cmd vue-tsc -b, npm.cmd run build, git diff --check and staged diff-check:exit0 after normalization. Build retains toast dynamic/static import and >500kB chunk warnings; test harness emits existing missing-stub-route warnings plus new Finanzas links in old harnesses, no failed tests.
+- UI uses existing AppButton/Input/Select/Textarea/Modal/Card/Badge, date/money utilities; socio-only Gestion > Finanzas > Aportaciones, member/period filtering, durable create, pending/confirmed correction/annulment, no other financial domains or sales totals. Date-only means fixed UTC-6 economic midnight; inclusive end UI translates exclusive next day.
+- Offline references only actual successful /members?includeInactive=true responses, scoped account/API; no generic financial HTTP cache. No reference snapshot means honest unavailability. Local lists are partial last-known snapshots, not complete ledger totals. Pending conflicts remain visible and are never silently deleted; retry does not mutate UUID/payload.
+- No browser visual verification claimed: responsive CSS and component proof only. Frontend native RDD state unknown; parent independent verifier and spot check pending. Backend source unchanged in frontend iteration. Engram full mirror write backed by explicit project, readback unavailable due outer workspace ambiguity; preserve canonical local tracker.
+- NextFC5: independent frontend audit and final parent validation. No push, merge, deploy, remote work or production Docker.
