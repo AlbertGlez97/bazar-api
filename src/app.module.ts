@@ -13,6 +13,7 @@ import { CommissionsModule } from './commissions/commissions.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { DeudasModule } from './deudas/deudas.module.js';
 import { BusinessRegistrationModule } from './business-registration/business-registration.module.js';
+import { ContributionsModule } from './finance/contributions.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 
 @Module({
@@ -29,6 +30,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
     DeudasModule,
     BusinessRegistrationModule,
     DashboardModule,
+    ContributionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
@@ -44,4 +46,3 @@ export class AppModule implements NestModule {
     consumer.apply(TenantContextMiddleware).forRoutes('{*path}');
   }
 }
-

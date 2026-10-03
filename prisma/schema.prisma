@@ -98,6 +98,8 @@ model Member {
   // deactivated through this mechanism (enforced in MembersService, not
   // here) — socios are owners, not removable staff.
   active        Boolean        @default(true)
+  contributions Contribution[] @relation("ContributionMember")
+  recordedContributions Contribution[] @relation("ContributionRecorder")
   sales         Sale[]
   productAudits ProductAudit[]
   // Only ever populated for a Member whose role is "socio" (enforced in
@@ -154,6 +156,7 @@ model Device {
   tokenHash  String?
   activatedAt DateTime?   @db.Timestamptz(3)
   revokedAt   DateTime?   @db.Timestamptz(3)
+  contributions Contribution[]
   sales      Sale[]
 }
 
@@ -496,4 +499,27 @@ model BusinessRegistrationRequest {
   // guarantee this schema needs to enforce at the DB level (the token
   // itself already has 256 bits of entropy from crypto.randomBytes).
   @@index([approvalTokenHash])
+}
+
+// Immutable capital delivered to the business; not revenue or ownership.
+model Contribution {
+  id String @id @db.Uuid
+  contextId String
+  memberId String @db.Uuid
+  amountMinor Int
+  currency String @default("MXN") @db.Char(3)
+  occurredAt DateTime @db.Timestamptz(3)
+  note String?
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  requestFingerprint String
+  creationResponse Json
+  member Member @relation("ContributionMember", fields: [memberId], references: [id], onDelete: Restrict)
+  createdByMember Member @relation("ContributionRecorder", fields: [createdByMemberId], references: [id], onDelete: Restrict)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([contextId, occurredAt, id])
+  @@index([contextId, memberId, occurredAt, id])
 }
