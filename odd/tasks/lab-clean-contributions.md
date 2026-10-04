@@ -22,8 +22,8 @@ User explicitly authorizes existing lab Resend integration solely for test-busin
 - [x] LC1 — Recheck target/mount, integrate both local main branches and preserve feature branches.
 - [x] LC2 — Stop necessary deploy services; remove only selected postgres container/volume; recreate PostgreSQL; build/start only api/frontend and apply all migrations from zero via real entrypoint.
 - [x] LC3 — Verify migration history, tables/indexes/FKs/forced RLS/runtime role and Contribution/ContributionReversal, empty operative data, Compose status/local HTTP.
-- [ ] LC4 — Normal-flow business/member/device/product setup and Alberto800000/Adid400000 cent contributions; replay/persistence/correction and unchanged sales/income/margin; optional reliable browser offline proof. Stop for exact manual action if approval/credentials inaccessible without further authorization.
-- [ ] LC5 — Backend/frontend lint, tests, typecheck/build, independent state/volume verification, final clean Git and sanitized report/email count.
+- [x] LC4 — Normal-flow business/member/device/product setup and Alberto800000/Adid400000 cent contributions; replay/persistence/correction and unchanged sales/income/margin; optional reliable browser offline proof. Stop for exact manual action if approval/credentials inaccessible without further authorization.
+- [x] LC5 — Backend/frontend lint, tests, typecheck/build, independent state/volume verification, final clean Git and sanitized report/email count.
 
 ## Checks and execution
 
@@ -33,7 +33,7 @@ Run Docker through its existing local executable with explicit project/file/serv
 
 ## Progress
 
-LC1/LC2/LC3 runtime work complete. Both local main branches were fast-forward integrated by the parent before runtime work; feature branches retained. Only the authorized database volume was recreated; three preserved volumes are unchanged. Engram mirror odd/lab-clean-contributions/tasks, project bazar-api. Writer functional checks passed; parent independent state check and LC4 normal-flow/mail handoff remain pending.
+LC1/LC2/LC3 runtime work complete. Both local main branches were fast-forward integrated by the parent before runtime work; feature branches retained. Only the authorized database volume was recreated; three preserved volumes are unchanged. Engram mirror odd/lab-clean-contributions/tasks, project bazar-api. All five tasks completed with API normal-flow proof, independent state verification and final local Git/Compose checks. Actual authenticated browser/offline proof was explicitly skipped.
 
 ## Runtime evidence (2026-10-04 UTC)
 
@@ -56,7 +56,7 @@ Real entrypoint migrate-deploy/provision/start phases and all-migrations success
 
 Contribution has integer amountMinor with positive check, fixed MXN check, UUID id/member/actor/device, economic/received timestamptz, immutable fingerprint/creation receipt.3 indexes inclPK;3 restrictive member/device FKs. ContributionReversal4 indexes inclPK and unique original/replacement references;4 restrictive contribution/member/device FKs, reason nonblank and original!=replacement checks. Both forced RLS. Runtime bazar_app has rolsuper=false/rolbypassrls=false, no SELECT access to _prisma_migrations, existing finance DML grants.
 
-All16 operative tables initially and after isolated suites remained0 rows: Abono,Account,AppSettings,BusinessRegistrationRequest,Contribution,ContributionReversal,CuotaPlaneada,Deuda,Deudor,Device,Incidencia,Member,Product,ProductAudit,Sale,SaleItem.
+Before the authorized live normal-flow tests, all16 operative tables initially and after isolated suites remained0 rows: Abono,Account,AppSettings,BusinessRegistrationRequest,Contribution,ContributionReversal,CuotaPlaneada,Deuda,Deudor,Device,Incidencia,Member,Product,ProductAudit,Sale,SaleItem.
 
 Migrations applied from zero:
 
@@ -86,9 +86,33 @@ Migrations applied from zero:
 
 Compose project deploy: postgres healthy, API/frontend up; loopback-only ports3100/8080. API GET/api/v1/200; auth/me401; unauthenticated contributions401; POSTauth/login emptybody400 with no credentials/email; frontend root/login200. APP_BASE_URL configured/non-loopback, unchanged; no external baked origin visited or browser authentication claimed.
 
-- API lint exit0 with2 existing warnings test/sales-conflict.e2e-spec.ts; unit405/405 in28files; e2e609/609 in28files; typecheck/build exit0. E2E uses existing isolated testDB and mocks real email; deploy operativeDB remains empty.
+- API lint exit0 with2 existing warnings test/sales-conflict.e2e-spec.ts; unit405/405 in28files; e2e609/609 in28files; typecheck/build exit0. E2E uses existing isolated testDB and mocks real email; deploy operativeDB was empty before the later authorized live normal-flow scenarios.
 - Frontend lint exit0; npm.cmd run test:run -- --maxWorkers=2 3221/3221 in184files (219.57s); vue-tsc/build exit0. Existing toast dynamic/static import and large-chunk build warnings. No formatter or source edit.
-- No new logic/TDD cycle: operational validation only. No source/config/env edits, no remote/push/PR/branch deletion, no live mail or business flow. Email send count0.
+- No new logic/TDD cycle: operational validation only. No source/config/env edits, no external deployment/push/PR/branch deletion. The initial reset/isolated-suite stage sent0 emails; the later authorized live stage accepted exactly3 messages as recorded below.
 - Runtime reset is irreversible for the removed authorized volume; other data/config preserved. Tracker-only commit is independently revertible without changing runtime/source.
-- LC4 remains pending for separate parent-approved normal flow and bounded Resend/manual action; LC5 writer checks complete but independent state verification/final delivery remain pending.
+- LC4 API normal-flow proof completed by the live-flow agent; LC5 functional suites, independent state proof, root spot check and final Git/Compose readback complete. Browser offline/authenticated UI proof remains explicitly unverified, not a pending automatic action.
 - Memory mirror pending: latest runtime hook reported session registration unavailable; parent instructed agent-attributed writes to stop. Local tracker is authoritative; no memory configuration modification.
+
+## Final live-flow and independent verification
+
+### Normal-flow API proof (live-flow agent handoff)
+
+- Business registration201; local approval200; founder and Adid logins200; principal identification200 with Adid member binding. Initial device-id response-shape harness issue corrected in the same business without additional email.
+- One Maceta Laboratorio created with initial inventory3, price25000 and unit cost10000 cents; one cash sale201.
+- Alberto800000 and Adid400000 capital contributions201. Exact replay200; changed payload under the same UUID409.
+- An additional erroneous800000 record corrected atomically to600000:201; exact correction replay200; second reversal409; replacement annulment201. Final finance history4 contributions/2 reversals/2 active records, active capital1200000 cents.
+- Member/period filters verified; API restart retained history and reports. Sales-by-period, sales-by-member and sales-detail responses were deep-equal before/after contribution operations and restart. Sales income25000, cost10000 and margin15000 cents unchanged. No contribution included in sales income, cost or margin.
+
+### Exact mail boundary and limitation
+
+Exactly3 Resend-accepted messages were sent solely to the explicitly approved configured recipient:1 business approval,1 founder credentials,1 Adid credentials. Device activation0. Acceptance is not proof of inbox delivery. No recipient, key, token, password or message body is recorded here. No further email/API calls are authorized by this tracker completion.
+
+Important limitation: credential/message retrieval processes inherited disabled TLS certificate verification. The agent did not alter configuration and the user did not authorize that environment change. Restore a secure TLS-verifying environment before any further mail tests; no restoration or further Resend call was performed during documentation closeout.
+
+### Independent and closing proof
+
+Independent verifier confirmed preserved volume timestamps,21 migrations/17 tables/42 indexes/23 FKs/14 forced RLS tables, least-privileged runtime role, HTTP200+401 and clean source main boundaries API72abbda/frontend471844d. Independent IndexedDB upgrade preservation tests2/2 passed; root spot API root200 and diff-check0. Full functional results above remain valid because only this tracker changed during closeout.
+
+Final compose readback: deploy-postgres-1 healthy, deploy-api-1 and deploy-frontend-1 up on loopback-only ports3100/8080. A first readback command ran from the API directory and could not locate the compose file; corrected to the existing deploy working directory with no runtime mutation. No additional reset/build/email or source/config change. Final tracking-only conventional commit stays on preserved feat/finance-contributions and is fast-forwarded into API main; frontend main remains471844d. Both worktrees must be clean after this commit.
+
+Actual browser offline/authed UI interaction was not performed. Existing automated full suite and independently verified DB upgrade tests are the available offline proof, not a claim of manual browser validation. Memory mirror remains pending due unavailable runtime session registration; no agent-attributed memory writes or memory configuration change.
