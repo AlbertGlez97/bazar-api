@@ -49,7 +49,9 @@ export function isValidNatureCategoryPair(
   nature: string,
   category: string,
 ): boolean {
-  return (nature === 'INVENTORY_PURCHASE') === (category === INVENTORY_CATEGORY);
+  return (
+    (nature === 'INVENTORY_PURCHASE') === (category === INVENTORY_CATEGORY)
+  );
 }
 
 const trim = ({ value }: { value: unknown }) =>
