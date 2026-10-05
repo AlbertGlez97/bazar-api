@@ -101,6 +101,9 @@ model Member {
   contributions Contribution[] @relation("ContributionMember")
   recordedContributions Contribution[] @relation("ContributionRecorder")
   contributionReversals ContributionReversal[]
+  paidExpenses Expense[] @relation("ExpensePayer")
+  recordedExpenses Expense[] @relation("ExpenseRecorder")
+  expenseReversals ExpenseReversal[]
   sales         Sale[]
   productAudits ProductAudit[]
   // Only ever populated for a Member whose role is "socio" (enforced in
@@ -159,6 +162,8 @@ model Device {
   revokedAt   DateTime?   @db.Timestamptz(3)
   contributions Contribution[]
   contributionReversals ContributionReversal[]
+  expenses Expense[]
+  expenseReversals ExpenseReversal[]
   sales      Sale[]
 }
 
@@ -545,6 +550,58 @@ model ContributionReversal {
   creationResponse Json
   contribution Contribution @relation("OriginalContribution", fields: [contributionId], references: [id], onDelete: Restrict)
   replacementContribution Contribution? @relation("ReplacementContribution", fields: [replacementContributionId], references: [id], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId], references: [id], onDelete: Restrict)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([contextId, occurredAt, id])
+}
+
+// Immutable business expense or inventory purchase fact; never a cash movement
+// on its own and never touches stock, lots or product cost.
+model Expense {
+  id String @id @db.Uuid
+  contextId String
+  amountMinor Int
+  currency String @default("MXN") @db.Char(3)
+  occurredAt DateTime @db.Timestamptz(3)
+  nature String
+  category String
+  description String
+  paidByMemberId String @db.Uuid
+  fundsSource String
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  requestFingerprint String
+  creationResponse Json
+  paidByMember Member @relation("ExpensePayer", fields: [paidByMemberId], references: [id], onDelete: Restrict)
+  createdByMember Member @relation("ExpenseRecorder", fields: [createdByMemberId], references: [id], onDelete: Restrict)
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  reversal ExpenseReversal? @relation("OriginalExpense")
+  replacedByReversal ExpenseReversal? @relation("ReplacementExpense")
+
+  @@index([contextId, occurredAt, id])
+  @@index([contextId, paidByMemberId, occurredAt, id])
+}
+
+// An auditable record correction, never a refund or income.
+model ExpenseReversal {
+  id String @id @db.Uuid
+  contextId String
+  expenseId String @unique @db.Uuid
+  replacementExpenseId String? @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  expense Expense @relation("OriginalExpense", fields: [expenseId], references: [id], onDelete: Restrict)
+  replacementExpense Expense? @relation("ReplacementExpense", fields: [replacementExpenseId], references: [id], onDelete: Restrict)
   createdByMember Member @relation(fields: [createdByMemberId], references: [id], onDelete: Restrict)
   device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
 
