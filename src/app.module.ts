@@ -14,6 +14,7 @@ import { ReportsModule } from './reports/reports.module.js';
 import { DeudasModule } from './deudas/deudas.module.js';
 import { BusinessRegistrationModule } from './business-registration/business-registration.module.js';
 import { ContributionsModule } from './finance/contributions.module.js';
+import { ExpensesModule } from './finance/expenses.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 
 @Module({
@@ -31,6 +32,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
     BusinessRegistrationModule,
     DashboardModule,
     ContributionsModule,
+    ExpensesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
