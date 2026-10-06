@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
@@ -15,6 +16,7 @@ import {
   type CreateWorkShiftDto,
   type WorkShiftListDto,
   type WorkShiftSummaryDto,
+  type ReverseWorkShiftDto,
 } from './work-shift.dto.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
@@ -188,6 +190,118 @@ export class WorkShiftsService {
           created: true,
           receipt: await this.insert(tx, actor, dto, requestFingerprint),
         };
+      });
+    } catch (error) {
+      this.conflict(error);
+    }
+  }
+
+  async reverse(actor: Actor, target: string, dto: ReverseWorkShiftDto) {
+    this.checkSelection(actor, dto);
+    if (dto.replacement) this.checkSelection(actor, dto.replacement);
+    const contextId = actor.account.contextId;
+    const id = dto.id.toLowerCase();
+    const workShiftId = target.toLowerCase();
+    const replacementWorkShiftId = dto.replacement?.id.toLowerCase() ?? null;
+    const identities = [
+      id,
+      workShiftId,
+      ...(replacementWorkShiftId ? [replacementWorkShiftId] : []),
+    ];
+    if (new Set(identities).size !== identities.length)
+      throw new BadRequestException('Correction identities must be distinct');
+    const data = {
+      id,
+      workShiftId,
+      createdByMemberId: dto.createdByMemberId.toLowerCase(),
+      deviceId: dto.deviceId.toLowerCase(),
+      occurredAt: new Date(dto.occurredAt).toISOString(),
+      reason: dto.reason,
+    };
+    const requestFingerprint = fingerprint(
+      actor,
+      {
+        ...data,
+        replacement: dto.replacement ? normalized(dto.replacement) : null,
+      },
+      'reverse',
+    );
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.authorize(tx, actor);
+        await this.lockIdentities(tx, contextId, identities);
+        const existing = await tx.workShiftReversal.findFirst({
+          where: { id, contextId },
+        });
+        if (existing) {
+          if (existing.requestFingerprint !== requestFingerprint)
+            throw new ConflictException(
+              'Reversal ID already has different content',
+            );
+          return { created: false, receipt: existing.creationResponse };
+        }
+        if (await tx.workShift.findFirst({ where: { id, contextId } }))
+          throw new ConflictException('Correction identity already exists');
+        const original = await tx.workShift.findFirst({
+          where: { id: workShiftId, contextId },
+          include: { reversal: true },
+        });
+        if (!original) throw new NotFoundException('Work shift not found');
+        if (original.reversal)
+          throw new ConflictException('Work shift already reversed');
+        const days = [
+          {
+            memberId: original.memberId,
+            workDate: dateOnly(original.workDate),
+          },
+          ...(dto.replacement ? [normalized(dto.replacement)] : []),
+        ];
+        await this.lockDays(tx, contextId, days);
+        let replacement: Prisma.JsonValue = null;
+        if (dto.replacement) {
+          const usedShift = await tx.workShift.findFirst({
+            where: { id: replacementWorkShiftId!, contextId },
+          });
+          const usedReversal = await tx.workShiftReversal.findFirst({
+            where: { id: replacementWorkShiftId!, contextId },
+          });
+          if (usedShift || usedReversal)
+            throw new ConflictException('Replacement identity already exists');
+          replacement = await this.insert(
+            tx,
+            actor,
+            dto.replacement,
+            fingerprint(
+              actor,
+              normalized(dto.replacement),
+              'replacement:' + id,
+            ),
+            workShiftId,
+          );
+        }
+        const receivedAt = new Date();
+        const receipt = {
+          ...data,
+          contextId,
+          createdByAccountId: actor.account.id,
+          receivedAt: receivedAt.toISOString(),
+          replacementWorkShiftId,
+          original: original.creationResponse,
+          replacement,
+        };
+        await tx.workShiftReversal.create({
+          data: {
+            ...data,
+            contextId,
+            occurredAt: new Date(data.occurredAt),
+            receivedAt,
+            createdByAccountId: actor.account.id,
+            replacementWorkShiftId,
+            requestFingerprint,
+            creationResponse: receipt,
+          },
+        });
+        return { created: true, receipt };
       });
     } catch (error) {
       this.conflict(error);

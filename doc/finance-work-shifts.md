@@ -37,6 +37,34 @@ The receipt contains those normalized fields plus `contextId`, `createdByAccount
 
 Summary includes active records only. Totals and each member group contain `shiftCount`, `knownMinutes` and `unknownDurationCount`. Count records, NOT distinct days. Known minutes exclude unknown durations and must not be presented as complete measured time. Each group additionally has `memberId` and `member` metadata. A collaborator's explicit other-member filter is 403 on both reads.
 
+## Auditable correction
+
+Only a socio may POST `/api/v1/finance/work-shifts/:id/reversals`. The original is never edited or deleted. Send a new UUIDv7, nonblank `reason` (max 1000), explicitly zoned `occurredAt` (max three fractional-second digits), `createdByMemberId`, `deviceId`, and optionally `replacement` with the full creation payload above. All correction identities must differ. Omit replacement for a reversal without replacement.
+
+```json
+{
+  "id": "0199b14c-0000-7000-8000-000000000002",
+  "reason": "Correct recorded duration",
+  "occurredAt": "2026-10-05T12:00:00-06:00",
+  "createdByMemberId": "<selected socio UUID>",
+  "deviceId": "<selected device UUID>",
+  "replacement": {
+    "id": "0199b14c-0000-7000-8000-000000000003",
+    "memberId": "<worker UUID>",
+    "workDate": "2026-10-05",
+    "minutes": 90,
+    "createdByMemberId": "<selected socio UUID>",
+    "deviceId": "<selected device UUID>"
+  }
+}
+```
+
+First correction returns 201; identical normalized retries/account return the immutable receipt with 200. Changed content/account, an already reversed original, or a used identity returns 409; unknown/foreign originals return the same 404. An unauthorized/inactive/foreign replacement worker returns 403, atomically leaving no reversal or replacement behind.
+
+Receipt contains reversal `id`, `workShiftId`, nullable `replacementWorkShiftId`, reason/audit attribution, server context/account/receivedAt, `original` creation receipt and nullable `replacement` creation receipt. Original receipts replay unchanged even after reversal. A replacement is a new immutable shift and can itself be reversed, creating a traceable correction chain. Replaying a replacement by the direct create endpoint is not the correction retry contract: retry the reversal payload instead.
+
+Original and replacement days share the same deterministic lock ordering with recording. Replacement warnings exclude the corrected original; other active shifts on that worker/day still count. Original/replacement insertion and reversal commit together, never partially.
+
 ## Integrity and delivery
 
 Identity locks precede sorted tenant/worker/day locks. Transactional recorder/device/worker share locks prevent authorization changes during writes. Database checks, restrictive composite tenant foreign keys, and deny-by-default ENABLE/FORCE RLS protect both new tables. No PATCH/DELETE correction is exposed.

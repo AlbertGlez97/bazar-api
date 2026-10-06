@@ -4,6 +4,8 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { v7 } from 'uuid';
 import request from 'supertest';
+import { Client } from 'pg';
+import { WorkShiftsService } from '../src/finance/work-shifts.service.js';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { withTestTenant } from './tenant-scope.js';
@@ -19,6 +21,8 @@ describe('business work shifts', () => {
   let inactiveId: string;
   let deviceId: string;
   let foreignMemberId: string;
+  let foreignDeviceId: string;
+  let foreignAccountId: string;
   const contextId = `work-shifts-${randomUUID()}`;
   const otherContext = `work-shifts-other-${randomUUID()}`;
   const endpoint = '/finance/work-shifts';
@@ -84,6 +88,28 @@ describe('business work shifts', () => {
           })
         ).id,
     );
+    foreignAccountId = (
+      await prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'fixture',
+          contextId: otherContext,
+        },
+      })
+    ).id;
+    foreignDeviceId = await withTestTenant(
+      otherContext,
+      async () =>
+        (
+          await prisma.device.create({
+            data: {
+              name: 'Foreign tablet',
+              contextId: otherContext,
+              authorized: true,
+            },
+          })
+        ).id,
+    );
   });
 
   afterAll(async () => {
@@ -98,7 +124,9 @@ describe('business work shifts', () => {
           await prisma.device.deleteMany({ where: { contextId: ctx } });
           await prisma.member.deleteMany({ where: { contextId: ctx } });
         });
-      await prisma.account.deleteMany({ where: { contextId } });
+      await prisma.account.deleteMany({
+        where: { contextId: { in: [contextId, otherContext] } },
+      });
     }
     await app?.close();
   });
@@ -307,5 +335,399 @@ describe('business work shifts', () => {
         }),
       ),
     ).rejects.toThrow();
+  });
+
+  it('reauthorizes previously selected recorder/device inside the write transaction', async () => {
+    const service = app.get(WorkShiftsService);
+    const actor = {
+      account: { id: accountId, contextId, memberId: null },
+      selection: { memberId: actorId, deviceId },
+    };
+    await withTestTenant(contextId, async () => {
+      await prisma.member.update({
+        where: { id: actorId },
+        data: { role: 'colaborador' },
+      });
+      try {
+        await expect(service.create(actor, body())).rejects.toThrow(
+          'Operation origin is no longer authorized',
+        );
+      } finally {
+        await prisma.member.update({
+          where: { id: actorId },
+          data: { role: 'socio' },
+        });
+      }
+      await prisma.device.update({
+        where: { id: deviceId },
+        data: { authorized: false },
+      });
+      try {
+        await expect(service.create(actor, body())).rejects.toThrow(
+          'Operation origin is no longer authorized',
+        );
+      } finally {
+        await prisma.device.update({
+          where: { id: deviceId },
+          data: { authorized: true },
+        });
+      }
+    });
+  });
+  it('denies raw unscoped reads and rejects mixed recorder/device/account foreign keys', async () => {
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL_TEST,
+    });
+    await client.connect();
+    try {
+      expect((await client.query('SELECT id FROM "WorkShift"')).rows).toEqual(
+        [],
+      );
+      expect(
+        (await client.query('SELECT id FROM "WorkShiftReversal"')).rows,
+      ).toEqual([]);
+    } finally {
+      await client.end();
+    }
+    for (const edge of [
+      { recorder: foreignMemberId, device: deviceId, account: accountId },
+      { recorder: actorId, device: foreignDeviceId, account: accountId },
+      { recorder: actorId, device: deviceId, account: foreignAccountId },
+    ]) {
+      await expect(
+        withTestTenant(contextId, () =>
+          prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`INSERT INTO "WorkShift" (id, "contextId", "memberId", "workDate", "createdByMemberId", "createdByAccountId", "deviceId", "requestFingerprint", "creationResponse") VALUES (${v7()}::uuid, ${contextId}, ${payerSocioId}::uuid, '2026-10-05', ${edge.recorder}::uuid, ${edge.account}::uuid, ${edge.device}::uuid, 'fixture', '{}'::jsonb)`;
+          }),
+        ),
+      ).rejects.toThrow();
+    }
+  });
+  describe('auditable corrections', () => {
+    const reverseBody = (overrides: Record<string, unknown> = {}) => ({
+      id: v7(),
+      reason: 'Incorrect duration',
+      occurredAt: '2026-10-05T12:00:00-06:00',
+      createdByMemberId: actorId,
+      deviceId,
+      ...overrides,
+    });
+    const reverse = (id: string, dto: unknown, memberId = actorId) =>
+      auth(
+        request(app.getHttpServer()).post(endpoint + '/' + id + '/reversals'),
+        memberId,
+      ).send(dto as object);
+    const original = async (overrides: Record<string, unknown> = {}) => {
+      const dto = body(overrides);
+      await post(dto).expect(201);
+      return dto;
+    };
+    it('atomically reverses and replaces without counting corrected original as a duplicate', async () => {
+      const shift = await original({ workDate: '2026-04-01', minutes: 20 });
+      const replacement = body({ workDate: '2026-04-01', minutes: null });
+      const dto = reverseBody({ replacement });
+      const res = await reverse(shift.id, dto).expect(201);
+      expect(res.body).toMatchObject({
+        workShiftId: shift.id,
+        replacementWorkShiftId: replacement.id,
+        original: { id: shift.id, minutes: 20 },
+        replacement: { id: replacement.id, minutes: null, warnings: [] },
+      });
+      expect((await reverse(shift.id, dto).expect(200)).body).toEqual(res.body);
+      await reverse(shift.id, { ...dto, reason: 'Changed' }).expect(409);
+      await reverse(shift.id, reverseBody()).expect(409);
+      const summary = await get(endpoint + '/summary', {
+        from: '2026-04-01',
+        to: '2026-04-02',
+      }).expect(200);
+      expect(summary.body.totals).toEqual({
+        shiftCount: 1,
+        knownMinutes: 0,
+        unknownDurationCount: 1,
+      });
+      const list = await get(endpoint, {
+        from: '2026-04-01',
+        to: '2026-04-02',
+        status: 'active',
+      }).expect(200);
+      expect(list.body.items[0].replacedByReversal).toEqual({
+        id: dto.id,
+        workShiftId: shift.id,
+      });
+      expect(
+        (
+          await get(endpoint, {
+            from: '2026-04-01',
+            to: '2026-04-02',
+            status: 'reversed',
+          }).expect(200)
+        ).body.items[0].id,
+      ).toBe(shift.id);
+      await reverse(replacement.id, reverseBody()).expect(201);
+      expect(
+        (
+          await get(endpoint + '/summary', {
+            from: '2026-04-01',
+            to: '2026-04-02',
+          }).expect(200)
+        ).body.totals.shiftCount,
+      ).toBe(0);
+    });
+    it('persists original and replacement receipts across later changes', async () => {
+      const shift = await original({ workDate: '2026-04-02' });
+      const initial = (await post(shift).expect(200)).body;
+      const replacement = body({
+        workDate: '2026-04-02',
+        memberId: collaboratorId,
+      });
+      const dto = reverseBody({ replacement });
+      const receipt = (await reverse(shift.id, dto).expect(201)).body;
+      await post(
+        body({ workDate: '2026-04-02', memberId: collaboratorId }),
+      ).expect(201);
+      await withTestTenant(contextId, () =>
+        prisma.member.update({
+          where: { id: collaboratorId },
+          data: { active: false },
+        }),
+      );
+      try {
+        expect((await reverse(shift.id, dto).expect(200)).body).toEqual(
+          receipt,
+        );
+        expect((await post(shift).expect(200)).body).toEqual(initial);
+      } finally {
+        await withTestTenant(contextId, () =>
+          prisma.member.update({
+            where: { id: collaboratorId },
+            data: { active: true },
+          }),
+        );
+      }
+    });
+    it('rolls back on inactive/foreign or used replacement identities', async () => {
+      const shift = await original({ workDate: '2026-04-03' });
+      const used = await original({ workDate: '2026-04-04' });
+      for (const replacement of [
+        body({ memberId: inactiveId }),
+        body({ memberId: foreignMemberId }),
+        used,
+      ]) {
+        const dto = reverseBody({ replacement });
+        await reverse(shift.id, dto).expect(replacement === used ? 409 : 403);
+        await withTestTenant(contextId, async () => {
+          expect(
+            await prisma.workShiftReversal.count({
+              where: { workShiftId: shift.id },
+            }),
+          ).toBe(0);
+          if (replacement !== used)
+            expect(
+              await prisma.workShift.count({
+                where: { id: replacement.id as string },
+              }),
+            ).toBe(0);
+        });
+      }
+    });
+    it('validates immutable correction identities and zoned audit instant', async () => {
+      const shift = await original({ workDate: '2026-04-05' });
+      for (const dto of [
+        reverseBody({ id: shift.id }),
+        reverseBody({ reason: ' ' }),
+        reverseBody({ occurredAt: '2026-10-05' }),
+        reverseBody({ occurredAt: '2026-10-05T12:00:00.1234Z' }),
+        reverseBody({ replacement: body({ id: shift.id }) }),
+      ])
+        await reverse(shift.id, dto).expect(400);
+      await reverse(
+        shift.id,
+        reverseBody({ createdByMemberId: collaboratorId }),
+      ).expect(403);
+      await reverse(shift.id, reverseBody(), collaboratorId).expect(403);
+      await reverse(v7(), reverseBody()).expect(404);
+      await reverse(
+        shift.id,
+        reverseBody({
+          replacement: body({ createdByMemberId: collaboratorId }),
+        }),
+      ).expect(403);
+    });
+    it('serializes identical and distinct reversal races', async () => {
+      const shift = await original({ workDate: '2026-04-06' });
+      const dto = reverseBody();
+      const identical = await Promise.all([
+        reverse(shift.id, dto),
+        reverse(shift.id, dto),
+      ]);
+      expect(identical.map((res) => res.status).sort((a, b) => a - b)).toEqual([
+        200, 201,
+      ]);
+      expect(identical[0].body).toEqual(identical[1].body);
+      const another = await original({ workDate: '2026-04-07' });
+      const competing = await Promise.all([
+        reverse(another.id, reverseBody()),
+        reverse(another.id, reverseBody()),
+      ]);
+      expect(competing.map((res) => res.status).sort((a, b) => a - b)).toEqual([
+        201, 409,
+      ]);
+    });
+    it('shares ordered day locks across replacement and concurrent recording', async () => {
+      const shift = await original({ workDate: '2026-04-08' });
+      const replacement = body({ workDate: '2026-04-08' });
+      const concurrent = body({ workDate: '2026-04-08' });
+      const results = await Promise.all([
+        reverse(shift.id, reverseBody({ replacement })),
+        post(concurrent),
+      ]);
+      expect(results.map((res) => res.status)).toEqual([201, 201]);
+      const replacementCount =
+        results[0].body.replacement.warnings[0]?.existingActiveShiftCount ?? 0;
+      const createCount =
+        results[1].body.warnings[0]?.existingActiveShiftCount ?? 0;
+      expect([replacementCount, createCount]).toEqual(
+        replacementCount === 0 ? [0, 1] : [1, 1],
+      );
+    });
+    it('does not reuse correction identities for another shift or correction', async () => {
+      const shift = await original({ workDate: '2026-04-09' });
+      const dto = reverseBody();
+      await reverse(shift.id, dto).expect(201);
+      await post(body({ id: dto.id })).expect(409);
+      const another = await original({ workDate: '2026-04-10' });
+      await reverse(another.id, reverseBody({ id: another.id })).expect(400);
+      await reverse(another.id, reverseBody({ id: shift.id })).expect(409);
+      await reverse(
+        another.id,
+        reverseBody({ replacement: body({ id: dto.id }) }),
+      ).expect(409);
+    });
+    it('hides reversals through ORM and raw RLS from a foreign tenant', async () => {
+      const shift = await original({ workDate: '2026-04-11' });
+      const dto = reverseBody();
+      await reverse(shift.id, dto).expect(201);
+      await withTestTenant(otherContext, async () => {
+        expect(
+          await prisma.workShiftReversal.findMany({ where: { id: dto.id } }),
+        ).toEqual([]);
+        await prisma.$transaction(async (tx) => {
+          expect(
+            await tx.$queryRaw`SELECT id FROM "WorkShiftReversal" WHERE id = ${dto.id}::uuid`,
+          ).toEqual([]);
+        });
+      });
+    });
+
+    it('locks opposite worker/day corrections in one deterministic order', async () => {
+      const first = await original({
+        workDate: '2026-04-14',
+        memberId: payerSocioId,
+      });
+      const second = await original({
+        workDate: '2026-04-15',
+        memberId: collaboratorId,
+      });
+      const responses = await Promise.all([
+        reverse(
+          first.id,
+          reverseBody({
+            replacement: body({
+              workDate: '2026-04-15',
+              memberId: collaboratorId,
+            }),
+          }),
+        ),
+        reverse(
+          second.id,
+          reverseBody({
+            replacement: body({
+              workDate: '2026-04-14',
+              memberId: payerSocioId,
+            }),
+          }),
+        ),
+      ]);
+      expect(responses.map((res) => res.status)).toEqual([201, 201]);
+      expect(
+        (
+          await get(endpoint + '/summary', {
+            from: '2026-04-14',
+            to: '2026-04-16',
+          }).expect(200)
+        ).body.totals.shiftCount,
+      ).toBe(2);
+    });
+    it('serializes a same-day creation racing a reversal without replacement', async () => {
+      const shift = await original({ workDate: '2026-04-16' });
+      const responses = await Promise.all([
+        reverse(shift.id, reverseBody()),
+        post(body({ workDate: '2026-04-16' })),
+      ]);
+      expect(responses.map((res) => res.status)).toEqual([201, 201]);
+      expect([0, 1]).toContain(
+        responses[1].body.warnings[0]?.existingActiveShiftCount ?? 0,
+      );
+      expect(
+        (
+          await get(endpoint + '/summary', {
+            from: '2026-04-16',
+            to: '2026-04-17',
+          }).expect(200)
+        ).body.totals.shiftCount,
+      ).toBe(1);
+    });
+
+    it('returns generic foreign-target absence and rolls back a late reversal identity collision', async () => {
+      const foreignShiftId = v7();
+      const foreignReversalId = v7();
+      await withTestTenant(otherContext, async () => {
+        await prisma.workShift.create({
+          data: {
+            id: foreignShiftId,
+            contextId: otherContext,
+            memberId: foreignMemberId,
+            workDate: new Date('2026-04-17T00:00:00Z'),
+            createdByMemberId: foreignMemberId,
+            createdByAccountId: foreignAccountId,
+            deviceId: foreignDeviceId,
+            requestFingerprint: 'fixture',
+            creationResponse: {},
+          },
+        });
+        await prisma.workShiftReversal.create({
+          data: {
+            id: foreignReversalId,
+            workShiftId: foreignShiftId,
+            contextId: otherContext,
+            reason: 'Fixture correction',
+            occurredAt: new Date(),
+            createdByMemberId: foreignMemberId,
+            createdByAccountId: foreignAccountId,
+            deviceId: foreignDeviceId,
+            requestFingerprint: 'fixture',
+            creationResponse: {},
+          },
+        });
+      });
+      await reverse(foreignShiftId, reverseBody()).expect(404);
+      await post(body({ id: foreignShiftId })).expect(409);
+      const shift = await original({ workDate: '2026-04-18' });
+      const replacement = body({ workDate: '2026-04-18' });
+      await reverse(
+        shift.id,
+        reverseBody({ id: foreignReversalId, replacement }),
+      ).expect(409);
+      await withTestTenant(contextId, async () => {
+        expect(
+          await prisma.workShift.count({ where: { id: replacement.id } }),
+        ).toBe(0);
+        expect(
+          await prisma.workShiftReversal.count({
+            where: { workShiftId: shift.id },
+          }),
+        ).toBe(0);
+      });
+    });
   });
 });

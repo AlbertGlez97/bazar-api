@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { v7 } from 'uuid';
-import { CreateWorkShiftDto, WorkShiftListDto } from './work-shift.dto.js';
+import {
+  CreateWorkShiftDto,
+  WorkShiftListDto,
+  ReverseWorkShiftDto,
+} from './work-shift.dto.js';
 
 const body = () => ({
   id: v7(),
@@ -62,5 +66,43 @@ describe('work shift validation', () => {
         }),
       ),
     ).toHaveLength(0);
+  });
+
+  it.each(['2026-10-05', '2026-10-05T12:00:00', '2026-10-05T12:00:00.1234Z'])(
+    'rejects unzoned or excessive precision correction instant %s',
+    async (occurredAt) => {
+      expect(
+        await validate(
+          plainToInstance(ReverseWorkShiftDto, {
+            id: v7(),
+            reason: 'Correction',
+            occurredAt,
+            createdByMemberId: v7(),
+            deviceId: v7(),
+          }),
+        ),
+      ).not.toHaveLength(0);
+    },
+  );
+  it('validates nested replacement and preserves optional durations', async () => {
+    const dto = {
+      id: v7(),
+      reason: 'Correction',
+      occurredAt: '2026-10-05T12:00:00.123Z',
+      createdByMemberId: v7(),
+      deviceId: v7(),
+      replacement: { ...body(), minutes: null },
+    };
+    expect(
+      await validate(plainToInstance(ReverseWorkShiftDto, dto)),
+    ).toHaveLength(0);
+    expect(
+      await validate(
+        plainToInstance(ReverseWorkShiftDto, {
+          ...dto,
+          replacement: { ...body(), minutes: 0 },
+        }),
+      ),
+    ).not.toHaveLength(0);
   });
 });

@@ -4,6 +4,8 @@ import {
   Get,
   Inject,
   Post,
+  Param,
+  ParseUUIDPipe,
   Query,
   Req,
   Res,
@@ -19,6 +21,7 @@ import {
   CreateWorkShiftDto,
   WorkShiftListDto,
   WorkShiftSummaryDto,
+  ReverseWorkShiftDto,
 } from './work-shift.dto.js';
 import { WorkShiftsService } from './work-shifts.service.js';
 const validate = (expectedType: new () => object) =>
@@ -62,5 +65,17 @@ export class WorkShiftsController {
     @Query(validate(WorkShiftSummaryDto)) query: WorkShiftSummaryDto,
   ) {
     return this.workShifts.summary(req, query);
+  }
+  @UseGuards(SocioGuard)
+  @Post(':id/reversals')
+  async reverse(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(ReverseWorkShiftDto)) dto: ReverseWorkShiftDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.workShifts.reverse(req, id, dto);
+    res.status(result.created ? 201 : 200);
+    return result.receipt;
   }
 }

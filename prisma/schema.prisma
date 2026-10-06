@@ -62,6 +62,8 @@ enum DeviceStatus {
 }
 
 model Account {
+  recordedWorkShifts WorkShift[]
+  workShiftReversals WorkShiftReversal[]
   id           String   @id @default(uuid()) @db.Uuid
   username     String   @unique
   passwordHash String
@@ -633,6 +635,7 @@ model WorkShift {
   member Member @relation("WorkShiftWorker", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
   createdByMember Member @relation("WorkShiftRecorder", fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
   device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
   reversal WorkShiftReversal? @relation("OriginalWorkShift")
   replacedByReversal WorkShiftReversal? @relation("ReplacementWorkShift")
   @@unique([id, contextId])
@@ -656,6 +659,7 @@ model WorkShiftReversal {
   replacementWorkShift WorkShift? @relation("ReplacementWorkShift", fields: [replacementWorkShiftId, contextId], references: [id, contextId], onDelete: Restrict)
   createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
   device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
   @@unique([workShiftId, contextId])
   @@unique([replacementWorkShiftId, contextId])
   @@index([contextId, occurredAt, id])
