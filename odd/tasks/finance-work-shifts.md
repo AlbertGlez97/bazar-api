@@ -1,0 +1,78 @@
+# Backend work shifts
+
+## Objective and authorized scope
+
+Record auditable work performed by business members, without assigning money, ownership, pay, distributions or reserves. Implement only the backend WorkShift domain in bazar-api. No frontend work. Contributions and Expenses remain unchanged; reuse their established patterns without refactoring their behavior. Shared schema/module/tenant wiring and route registration in the impersonation matrix are in scope.
+
+Local development only: no push, pull request creation, merge, deploy or remote operations. Do not reset/drop an existing database or delete its existing business data. Additive migrations may target only the isolated local test database; cleanup of newly created isolated test fixture rows is allowed.
+
+## Agreed contract
+
+- Independent immutable WorkShift and WorkShiftReversal models, tenant-scoped at the application and PostgreSQL layers.
+- WorkShift: client UUID v7 `id`, server-derived `contextId`, worker `memberId`, calendar `workDate`, nullable `minutes`, nullable `note`, `createdByMemberId`, server-derived `createdByAccountId`, `deviceId`, `receivedAt`, normalized `requestFingerprint`, immutable JSON `creationResponse`.
+- The worker and recorder are distinct concepts. New workers must be active members of the same business, either socio or colaborador. Historical records remain readable and original receipts replayable after worker deactivation.
+- `workDate` is a valid strict YYYY-MM-DD calendar date, stored as PostgreSQL DATE and returned as YYYY-MM-DD. Do not derive it from a timezone-converted instant. Audit `occurredAt` on a reversal is an explicitly zoned ISO instant, at most three fractional-second digits.
+- Omitted/null `minutes` means unknown; otherwise require a positive integer within PostgreSQL INTEGER bounds. No inferred duration, zero default, daily ceiling or pay calculation. Optional `note` is at most 1,000 characters. No invented work-type catalog.
+- All requests require authenticated account, active selected member and authorized device through existing guards. Creation/reversal require SocioGuard. GET list/summary use ContextGuard: socios may read the business; colaboradores may read only their own records, server-enforced. An explicit other-member filter from a colaborador returns 403. Collaborator self-creation is not part of this first implementation.
+- Body `createdByMemberId` and `deviceId` must match the validated selection; reject client tenant/account overrides. Reauthorize recorder/device inside the write transaction with row locks, matching the existing financial write pattern.
+- POST `/api/v1/finance/work-shifts`: 201 first creation, 200 exact replay of the immutable receipt, 409 changed normalized content or conflicting identity. Fingerprint binds tenant, account, operation and normalized payload. Do not expose fingerprint/internal receipt storage through list projections.
+- Multiple active records for the same worker/day are allowed, never blocked by a uniqueness rule. Creation receipt includes `warnings: []` or `[{ code: "MULTIPLE_SHIFTS_SAME_DAY", existingActiveShiftCount: N }]`. Persist this warning in the immutable receipt, so a replay never recomputes it after later creates/reversals.
+- Serialize identity operations with advisory identity locks and active worker/day evaluation with shared tenant+member+date advisory locks. All multi-key operations acquire locks in deterministic order. Reversal locks its original day; replacement locks original and replacement days. Replacement duplicate evaluation excludes the original being corrected.
+- GET `/api/v1/finance/work-shifts`: optional date-only `from` inclusive, `to` exclusive; `memberId`; `status=active|reversed` (omitted means both); `duration=known|unknown`; `limit` 1-100/default 20; validated cursor. Reject invalid ranges/cursors. Descending `(workDate, id)` keyset order. Response `{ items, nextCursor }`, with worker/audit fields and reversal/replacement traceability.
+- GET `/api/v1/finance/work-shifts/summary`: apply the same period/member/duration and permission scope; only non-reversed records count. Response `{ totals: { shiftCount, knownMinutes, unknownDurationCount }, members: [{ memberId, member, shiftCount, knownMinutes, unknownDurationCount }] }`. Count records, not distinct days. Known minutes are a measured subtotal; unknown durations remain explicitly counted, never silently presented as complete measured time.
+- POST `/api/v1/finance/work-shifts/:id/reversals`: client UUID v7, nonblank reason (max 1,000), audit `occurredAt`, recorder/device and optional nested replacement. Return immutable 201/200 receipt with original and optional replacement; changed reversal replay is 409. One unique reversal per original and unique replacement link; restrictive relations preserve originals. Reversal and replacement are atomic. No PATCH/DELETE or physical record correction.
+- Migration is additive, with positivity CHECK, indexes, restrictive foreign keys, unique reversal links and ENABLE plus FORCE ROW LEVEL SECURITY on both tables. Use the existing deny-by-default tenant policy, register both models in the tenant extension, and preserve runtime-role startup checks.
+
+## Execution and delivery
+
+- Feature branch: `feat/finance-work-shifts`, created from current `feat/finance-expenses` HEAD `6c9e823accc3f773b8197b6540294c214f8cb6ea`; no base-history rewrite or default-branch change.
+- TDD: ON. Explicit established policy: `doc/reglas-de-negocio.md` activates TDD from BE-05; `odd/tasks/finance-contributions.md` explicitly records ON for new financial behavior. The parent forwards ON for this work. Observe RED before implementation, GREEN and REFACTOR; do not infer mode merely from tests being present.
+- Exact runners: `npm.cmd test -- src/finance/work-shift.dto.spec.ts`; `npm.cmd run test:e2e -- test/work-shifts.e2e-spec.ts`. Expand focused behavioral tests as required; preserve actual RED/GREEN command/result evidence.
+- RDD: OFF, native `gentle-ai review mode status --cwd .` observed `off (decided by clone_local)`. Do not enable or launch native review; ordinary functional verification and applicable independent checks remain required.
+- Forecast: 1,100-1,600 authored additions plus deletions, generated client excluded from authored forecast but included in complete change inspection. About 400 lines per task is advisory, not an acceptance cap. No cosmetic compression, omitted tests/docs or artificial code shrinking.
+- Delivery strategy: `ask-on-risk`; user resolved chain strategy to `feature-branch-chain`. Local implementation remains authorized; future tracker/child PR creation, remote branches and integration are not authorized.
+- Future coherent slices: recording/list/summary (WS1), auditable correction/replacement (WS2), final verification and contract closure (WS3). Keep tests/docs with behavior. Record actual commits/counts before deciding final future PR boundaries. Child PR #1 would target the tracker branch, later children the immediately previous child branch; only the completed tracker would integrate to main after separate authorization.
+- Future PR policy: >400 authored changed lines requires an honest cohesive split or explicit maintainer `size:exception`; possible cohesive-slice exception is pending before an actual PR. Size alone does not stop authorized local implementation. No PR has been opened or approved.
+- Every completed implementation task closes with a Conventional Commit and tests/docs for that outcome, with no AI attribution. Commit creation is not authorized for this preparation-only handoff; the implementation executor records later commit identities.
+
+## Tasks and acceptance criteria
+
+- [x] WS1 - Deliver recording, permission-scoped list and summary with schema, additive test migration, tenant extension/RLS, DTO validation, immutable receipt/replay and concurrency-stable duplicate-day warnings. Include tests, route matrix registration and initial contract documentation.
+  - Acceptance: active same-tenant worker of either role; recorder/device binding and transactional authorization; strict calendar validation; nullable positive integer minutes; socio-only writes; collaborator own-only reads; filters/pagination and record-based summary; original receipts unchanged on replay.
+  - Acceptance: concurrent identical identities produce one row/one 201; distinct same-day identities serialize warning evaluation; changed payload/account conflicts; no cross-tenant reads/writes through ORM or raw RLS access.
+  - Checks: observed DTO/HTTP RED-GREEN, focused permission matrix, lint/typecheck/build, diff-check; record actual results and local migration target. Runtime harness is the isolated real HTTP/PostgreSQL suite.
+  - Rollback boundary: new recording/list/summary module and tests/docs, new WorkShift tables, explicit schema relations, tenant/module wiring and new matrix entries; preserve existing finance behavior/data.
+- [ ] WS2 - Deliver unique auditable reversal and atomic optional replacement with immutable replay, correction-chain traceability, day/identity lock ordering, rollback and race tests, and contract examples.
+  - Acceptance: original rows preserved; only one reversal wins; exact reversal retry returns stored receipt; changed retry conflicts; invalid/used replacement rolls back completely; same-day replacement excludes corrected original from duplicate count; new replacement itself remains independently reversible.
+  - Checks: observed correction RED-GREEN, focused work-shift HTTP/DTO tests and finance/matrix regressions, lint/typecheck/build and diff-check. Runtime harness is isolated HTTP/PostgreSQL concurrency/replay proof.
+  - Rollback boundary: new reversal endpoint/logic/relations/table and correction tests/docs while retaining WS1; do not destructively revert applied data.
+- [ ] WS3 - Independently verify the authorized backend outcome, perform parent spot check, reconcile final API documentation and tracker evidence, and report every failed/skipped/pending check honestly.
+  - Acceptance: required final checks observed on normalized final bytes; no frontend/Contributions/Expenses behavior changes or remote work; actual work-unit commit/count and future slice boundaries recorded; mirror status accurate.
+  - Checks: complete unit/e2e suites, lint/typecheck/build and diff-check plus independent focused authorization/RLS/replay/concurrency audit. No fabricated approval or native RDD transaction while OFF.
+  - Rollback boundary: final in-scope regression corrections and contract/evidence updates only; preserve valid completed WS1/WS2 work.
+
+## Required checks
+
+- `npm.cmd run prisma:generate` - generated client, before final normalization/checks.
+- `npm.cmd run db:migrate:test` - additive migration/provisioning only for isolated local bazar_test; never reset/drop.
+- `npm.cmd test -- src/finance/work-shift.dto.spec.ts`.
+- `npm.cmd run test:e2e -- test/work-shifts.e2e-spec.ts`.
+- `npm.cmd run test:e2e -- test/impersonation-matrix.e2e-spec.ts test/contributions.e2e-spec.ts test/expenses.e2e-spec.ts`.
+- `npm.cmd run lint`.
+- `npx.cmd tsc --noEmit -p tsconfig.build.json`.
+- `npm.cmd test`.
+- `npm.cmd run test:e2e`.
+- `npm.cmd run build`.
+- `git diff --check`.
+
+Run mutating normalization before final functional checks. Tests require only local bazar_test, runtime NOSUPERUSER/NOBYPASSRLS, and an owner migration URL on the same local host/port. Never print credentials or send real emails. The existing healthy postgres-test service is available on localhost:5433; deployed API/database services remain untouched.
+
+## Progress and evidence
+
+- Preparation: read-only exploration completed; clean starting worktree on feat/finance-expenses at the base above. Only this feature document and the new local branch are prepared before source writes. No implementation checks or migrations claimed.
+- WS1: recording/list/summary implemented. DTO RED missing import then 6 behavioral validation failures; GREEN 16/16. HTTP RED own-only collaborator read returned 403; GREEN 10/10. Combined work-shifts/matrix/contributions/expenses HTTP suite GREEN 317/317. Prisma generate and isolated local additive migrations GREEN; initial Prisma relation-key validation failed and was corrected with additive key migration. Local target verified 127.0.0.1:5433/bazar_test (no resets). Lint GREEN with only known base warnings; typecheck/build/diff-check GREEN. Runtime role NOSUPERUSER/NOBYPASSRLS, FORCE RLS and mixed-tenant raw FK rejection observed. Commit identity/count recorded after closure. Rollback boundary remains the new domain/wiring only; preserve all existing business data.
+- WS2: pending; commit, RED/GREEN evidence, checks, authored count and slice boundary pending.
+- WS3: pending; independent verification, parent spot check, final full-suite results and contract reconciliation pending.
+- Running authored implementation count: 0; actual tracker/preparation churn is separate from the implementation forecast.
+- Engram mirror: PENDING. Full-document save attempted under `odd/finance-work-shifts/tasks`, project `bazar-api`, locator `odd/tasks/finance-work-shifts.md`; PreToolUse blocked it because Codex host session registration could not be confirmed. No session ID invented, no successful save/readback claimed. Preserve this local canonical document and retry only after registration is restored.
+- Next step: implement WS2 correction with observed HTTP RED/GREEN; WS3 independent verification remains pending.

@@ -82,6 +82,7 @@ model Account {
   // are only ever deactivated (BE-10), so nothing legitimate needs the delete.
   memberId     String?  @unique @db.Uuid
   member       Member?  @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  @@unique([id, contextId])
 }
 
 model Member {
@@ -104,6 +105,9 @@ model Member {
   paidExpenses Expense[] @relation("ExpensePayer")
   recordedExpenses Expense[] @relation("ExpenseRecorder")
   expenseReversals ExpenseReversal[]
+  workShifts WorkShift[] @relation("WorkShiftWorker")
+  recordedWorkShifts WorkShift[] @relation("WorkShiftRecorder")
+  workShiftReversals WorkShiftReversal[]
   sales         Sale[]
   productAudits ProductAudit[]
   // Only ever populated for a Member whose role is "socio" (enforced in
@@ -137,6 +141,7 @@ model Member {
   createdMembers    Member[] @relation("MemberCreatedBy")
 
   @@index([createdByMemberId])
+  @@unique([id, contextId])
 }
 
 model Device {
@@ -164,7 +169,10 @@ model Device {
   contributionReversals ContributionReversal[]
   expenses Expense[]
   expenseReversals ExpenseReversal[]
+  workShifts WorkShift[]
+  workShiftReversals WorkShiftReversal[]
   sales      Sale[]
+  @@unique([id, contextId])
 }
 
 model Product {
@@ -605,5 +613,50 @@ model ExpenseReversal {
   createdByMember Member @relation(fields: [createdByMemberId], references: [id], onDelete: Restrict)
   device Device @relation(fields: [deviceId], references: [id], onDelete: Restrict)
 
+  @@index([contextId, occurredAt, id])
+}
+
+// Immutable work facts, not compensation or inferred sales activity.
+model WorkShift {
+  id String @id @db.Uuid
+  contextId String
+  memberId String @db.Uuid
+  workDate DateTime @db.Date
+  minutes Int?
+  note String?
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  requestFingerprint String
+  creationResponse Json
+  member Member @relation("WorkShiftWorker", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByMember Member @relation("WorkShiftRecorder", fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  reversal WorkShiftReversal? @relation("OriginalWorkShift")
+  replacedByReversal WorkShiftReversal? @relation("ReplacementWorkShift")
+  @@unique([id, contextId])
+  @@index([contextId, workDate, id])
+  @@index([contextId, memberId, workDate, id])
+}
+model WorkShiftReversal {
+  id String @id @db.Uuid
+  contextId String
+  workShiftId String @unique @db.Uuid
+  replacementWorkShiftId String? @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  workShift WorkShift @relation("OriginalWorkShift", fields: [workShiftId, contextId], references: [id, contextId], onDelete: Restrict)
+  replacementWorkShift WorkShift? @relation("ReplacementWorkShift", fields: [replacementWorkShiftId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  @@unique([workShiftId, contextId])
+  @@unique([replacementWorkShiftId, contextId])
   @@index([contextId, occurredAt, id])
 }

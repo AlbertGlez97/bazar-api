@@ -31,6 +31,7 @@ import { withTestTenant } from './tenant-scope.js';
 
 /** Handlers protected by SocioGuard: only an active socio may call them. */
 const SOCIO_ROUTES = [
+  'POST /finance/work-shifts',
   'POST /finance/contributions',
   'GET /finance/contributions',
   'POST /finance/contributions/:id/reversals',
@@ -71,7 +72,7 @@ const SOCIO_ROUTES = [
 ];
 
 /** Handlers protected by ContextGuard only: any active member of the context. */
-const CONTEXT_ROUTES = ['POST /sales', 'POST /deudas/:id/abonos'];
+const CONTEXT_ROUTES = ['POST /sales', 'POST /deudas/:id/abonos', 'GET /finance/work-shifts', 'GET /finance/work-shifts/summary'];
 
 /**
  * Handlers that only run AuthGuard. None reads `x-member-id` to authorize

@@ -14,6 +14,7 @@ import { ReportsModule } from './reports/reports.module.js';
 import { DeudasModule } from './deudas/deudas.module.js';
 import { BusinessRegistrationModule } from './business-registration/business-registration.module.js';
 import { ContributionsModule } from './finance/contributions.module.js';
+import { WorkShiftsModule } from './finance/work-shifts.module.js';
 import { ExpensesModule } from './finance/expenses.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 
@@ -33,6 +34,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
     DashboardModule,
     ContributionsModule,
     ExpensesModule,
+    WorkShiftsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

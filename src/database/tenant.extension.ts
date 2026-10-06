@@ -18,6 +18,8 @@ const TENANT_SCOPED_MODELS = new Set([
   'ContributionReversal',
   'Expense',
   'ExpenseReversal',
+  'WorkShift',
+  'WorkShiftReversal',
   'Product',
   'ProductAudit',
   'Sale',
