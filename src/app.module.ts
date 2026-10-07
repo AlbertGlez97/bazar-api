@@ -16,6 +16,7 @@ import { BusinessRegistrationModule } from './business-registration/business-reg
 import { ContributionsModule } from './finance/contributions.module.js';
 import { WorkShiftsModule } from './finance/work-shifts.module.js';
 import { ExpensesModule } from './finance/expenses.module.js';
+import { FinanceModule } from './finance/finance.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 
 @Module({
@@ -35,6 +36,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
     ContributionsModule,
     ExpensesModule,
     WorkShiftsModule,
+    FinanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
