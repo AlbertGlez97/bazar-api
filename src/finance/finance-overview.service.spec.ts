@@ -4,6 +4,7 @@ import type { PrismaService } from '../database/prisma.service.js';
 const period = { from: '2026-10-01', to: '2026-10-02' };
 function setup() {
   const tx = {
+    financeReserve: { findMany: vi.fn().mockResolvedValue([]) },
     sale: { findMany: vi.fn().mockResolvedValue([]) },
     expense: { findMany: vi.fn().mockResolvedValue([]) },
     contribution: { findMany: vi.fn().mockResolvedValue([]) },
@@ -230,6 +231,58 @@ describe('recorded finance overview', () => {
       response: expect.objectContaining({
         code: 'FINANCE_OVERVIEW_INVALID_EXPENSE_NATURE',
       }),
+    });
+  });
+  it('subtracts active exact-period planning inside the same tenant snapshot', async () => {
+    const { service, tx } = setup();
+    tx.financeReserve.findMany.mockResolvedValue([
+      { amountMinor: 500 },
+      { amountMinor: 200 },
+    ] as never);
+    const result = await service.overview('tenant', period);
+    expect(tx.financeReserve.findMany).toHaveBeenCalledWith({
+      where: {
+        contextId: 'tenant',
+        periodFrom: new Date('2026-10-01T00:00:00Z'),
+        periodTo: new Date('2026-10-02T00:00:00Z'),
+        reversal: { is: null },
+      },
+      select: { amountMinor: true },
+    });
+    expect(result.reserves).toEqual({
+      activeCount: 2,
+      plannedMinor: 700,
+      matching: 'EXACT_PERIOD',
+    });
+    expect(result.result.potentiallyAvailableMinor).toBe(-700);
+    expect(result.result.recordedOperatingResultMinor).toBe(0);
+    expect(result.warnings.map((w) => w.code)).not.toContain(
+      'RESERVES_PENDING',
+    );
+  });
+  it('keeps partial cost coverage after reserving and guards reserve sum overflow', async () => {
+    const { service, tx } = setup();
+    tx.sale.findMany.mockResolvedValue([
+      {
+        totalMinor: 100,
+        items: [{ quantity: 1, subtotalMinor: 100, unitCostMinor: null }],
+      },
+    ] as never);
+    tx.financeReserve.findMany.mockResolvedValue([
+      { amountMinor: 500 },
+    ] as never);
+    const result = await service.overview('tenant', period);
+    expect(result.result).toMatchObject({
+      recordedOperatingResultMinor: 100,
+      potentiallyAvailableMinor: -400,
+      status: 'partial',
+    });
+    tx.financeReserve.findMany.mockResolvedValue([
+      { amountMinor: Number.MAX_SAFE_INTEGER },
+      { amountMinor: 1 },
+    ] as never);
+    await expect(service.overview('tenant', period)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'FINANCE_OVERVIEW_OVERFLOW' }),
     });
   });
 });

@@ -79,6 +79,19 @@ export class FinanceOverviewService {
           },
           select: { minutes: true },
         });
+        const reserves = await tx.financeReserve.findMany({
+          where: {
+            contextId,
+            periodFrom: new Date(from + 'T00:00:00.000Z'),
+            periodTo: new Date(to + 'T00:00:00.000Z'),
+            reversal: { is: null },
+          },
+          select: { amountMinor: true },
+        });
+        const plannedMinor = reserves.reduce(
+          (sum, row) => sum + BigInt(row.amountMinor),
+          0n,
+        );
         let salesMinor = 0n,
           costMinor = 0n,
           missingUnits = 0n,
@@ -150,11 +163,6 @@ export class FinanceOverviewService {
             message:
               'Cash, commitments, capital recovery and compensation are not reconciled.',
           },
-          {
-            code: 'RESERVES_PENDING',
-            message:
-              'Reserve persistence and endpoints are pending; planned reserves are temporarily zero.',
-          },
         ];
         return {
           currency: 'MXN',
@@ -205,13 +213,15 @@ export class FinanceOverviewService {
               .length,
           },
           reserves: {
-            activeCount: 0,
-            plannedMinor: 0,
+            activeCount: reserves.length,
+            plannedMinor: safeNumber(plannedMinor),
             matching: 'EXACT_PERIOD',
           },
           result: {
             recordedOperatingResultMinor: safeNumber(operatingResult),
-            potentiallyAvailableMinor: safeNumber(operatingResult),
+            potentiallyAvailableMinor: safeNumber(
+              operatingResult - plannedMinor,
+            ),
             status,
             isCashBalance: false,
             isWithdrawableProfit: false,

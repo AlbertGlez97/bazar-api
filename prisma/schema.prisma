@@ -62,6 +62,8 @@ enum DeviceStatus {
 }
 
 model Account {
+  recordedFinanceReserves FinanceReserve[]
+  financeReserveReversals FinanceReserveReversal[]
   recordedWorkShifts WorkShift[]
   workShiftReversals WorkShiftReversal[]
   id           String   @id @default(uuid()) @db.Uuid
@@ -88,6 +90,8 @@ model Account {
 }
 
 model Member {
+  recordedFinanceReserves FinanceReserve[]
+  financeReserveReversals FinanceReserveReversal[]
   id            String         @id @default(uuid()) @db.Uuid
   name          String
   role          MemberRole     @default(colaborador)
@@ -147,6 +151,8 @@ model Member {
 }
 
 model Device {
+  recordedFinanceReserves FinanceReserve[]
+  financeReserveReversals FinanceReserveReversal[]
   id         String       @id @default(uuid()) @db.Uuid
   name       String
   // BE-12: for a device registered through POST /devices this is the
@@ -662,5 +668,52 @@ model WorkShiftReversal {
   createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
   @@unique([workShiftId, contextId])
   @@unique([replacementWorkShiftId, contextId])
+  @@index([contextId, occurredAt, id])
+}
+
+// Immutable exact-period planning, not an expense or cash movement.
+model FinanceReserve {
+  id String @id @db.Uuid
+  contextId String
+  name String
+  amountMinor Int
+  currency String @default("MXN") @db.Char(3)
+  periodFrom DateTime @db.Date
+  periodTo DateTime @db.Date
+  note String?
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  reversal FinanceReserveReversal?
+  @@unique([id, contextId])
+  @@index([contextId, periodFrom, periodTo, id])
+  @@index([contextId, receivedAt, id])
+}
+
+// Cancellation audit fact; HTTP reversal behavior is introduced in FR2.
+model FinanceReserveReversal {
+  id String @id @db.Uuid
+  contextId String
+  reserveId String @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  reserve FinanceReserve @relation(fields: [reserveId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  @@unique([reserveId, contextId])
   @@index([contextId, occurredAt, id])
 }
