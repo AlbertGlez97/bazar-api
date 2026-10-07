@@ -1,5 +1,9 @@
 # Finance overview and planned reserves
 
+## Final backend closure
+
+FR2 completed in local commit e0195005e087205f4cc870af172e21c9d141fddb (744 additions,15 deletions; cumulative2979 authored lines before this passive closure). Required final checks passed:51 focused unit,335 focused HTTP/impersonation,498 full unit across33 files,787 full HTTP across32 files,lint,build typecheck,build,diff check. Parent reran47 reserve HTTP tests. Native medium review was granted; reliability found no confirmed candidate-caused findings; exact acknowledgement burned authority for review-52bb320c5d144bfe. All three implementation units are verified and reviewed. No skipped tests or full-suite retries. Existing two unrelated lint warnings and pg deprecation persist. An additional full-project tsconfig.json check failed on pre-existing test typing errors; required build tsconfig check passed. Frontend queue/snapshot and atomic reserve replacement remain excluded: cancel and create are separate explicit operations. Engram persistence remains blocked by runtime registration; local tracker and final API contract are authoritative recovery artifacts.
+
 ## FR1 closure
 
 FR1 completed in local commit 6dac588ee9c13c4cc60b468947cda8cf6f1b3646 (1125 additions,16 deletions; cumulative2220 authored lines). Current checks:44 focused unit tests,312 HTTP/impersonation tests, generator/test migration/lint/build typecheck/build/diff check passed; parent reran44 unit tests. Native assessment medium/slice_budget_reached, user granted review; reliability no confirmed findings. Exact acknowledgement completed, authority burned for review-7dfc4a5bccb51036. Reviewed boundary6dac588ee9c13c4cc60b468947cda8cf6f1b3646. Reserves create/list and overview integration complete; FR2 reversals/full regressions next. Test-only additive migration and existing restricted test-role provisioning recorded; no development/production migration. Engram mirror pending.
@@ -32,7 +36,7 @@ Implement Phase 4 exclusively in bazar-api on feat/finance-overview-reserves. Ex
 
 - [x] FO1: Recorded overview with economic periods, cost coverage, financial/nonmonetary totals, permissions, coherent transaction snapshot and tests/docs.
 - [x] FR1: Persistent period reserves, tenant migration/RLS, create/list, immutable replay/conflict handling, overview reserve integration and tests/docs.
-- [ ] FR2: Reserve reversals, exact replay/double-reversal and concurrency checks; complete regressions and frontend contract documentation.
+- [x] FR2: Reserve reversals, exact replay/double-reversal and concurrency checks; complete regressions and frontend contract documentation.
 
 Each task uses delegated direct execution: unfamiliar financial flow plus multiple nontrivial files triggers preparation/writer delegation. Single writer only. Use deterministic RED -> GREEN -> REFACTOR when runnable; report environmental blocks honestly. A task closes only with observed checks and a conventional local commit, without AI attribution. Parent records risk/review status and commit after verification.
 
@@ -47,14 +51,14 @@ Each task uses delegated direct execution: unfamiliar financial flow plus multip
 ## Progress and boundaries
 
 - Branch point: 1df181e46a16e62a9a0df3b2f7adb1943f9979bc. FO1 committed/reviewed: 1c84f77e03561546b9ccddb192d896e627ab7d99. FR1 committed/reviewed: 6dac588ee9c13c4cc60b468947cda8cf6f1b3646.
-- Current reviewed boundary: 6dac588ee9c13c4cc60b468947cda8cf6f1b3646; cumulative committed authored lines: 2220, as parent recorded. FR2 is an uncommitted normalized work unit with observed passing checks; parent owns final count/commit/review accounting.
-- FO1 and FR1 are complete. FR2 writer scope is implemented and verified; its checkbox remains pending parent closure. Historical blocked/pending notes below are superseded by current closure/evidence sections, not current blockers.
+- Current reviewed functional boundary: e0195005e087205f4cc870af172e21c9d141fddb; cumulative committed authored lines:2979 before passive closure documentation.
+- FO1,FR1,FR2 are complete with local work-unit commits and acknowledged native reviews. Historical blocked/pending notes below are superseded by final closure, not current blockers.
 - FR2 changed no schema, migration, generated client, database configuration or infrastructure. The only applied feature migration remains the additive test-only reserve migration recorded in FR1.
 - Rollback: revert only feature work-unit commits under parent direction; never edit an applied historical migration or reset/drop the local database. Engram mirror remains pending parent session registration.
 
 ## Next step
 
-Parent readback/spot check, FR2 work-unit commit and native review accounting. All required focused/full functional checks passed; preserve reviewed boundary 6dac588ee9c13c4cc60b468947cda8cf6f1b3646 until parent advances it. Browser durable queue/local-pending/offline snapshot work remains outside this backend scope. No push/merge/deploy is authorized.
+Backend implementation is complete. No next implementation action is authorized by this closure. Browser durable queue/local-pending/offline snapshot work requires separate frontend authorization. Feature migration has only been applied to local bazar_test; development/production migration remains deliberately unapplied. Restore Engram mirror only after authoritative runtime registration. No push/merge/deploy is authorized.
 
 ## Historical FO1 writer evidence (closed above)
 
