@@ -5,6 +5,7 @@ import { v7 } from 'uuid';
 import { randomUUID } from 'node:crypto';
 import {
   CreateFinanceReserveDto,
+  ReverseFinanceReserveDto,
   FinanceReserveListDto,
 } from './finance-reserve.dto.js';
 const valid = () => ({
@@ -74,5 +75,34 @@ describe('reserve input contract', () => {
     });
     expect(await validate(dto)).toHaveLength(0);
     expect(dto.limit).toBe(10);
+  });
+});
+
+describe('reserve cancellation input', () => {
+  const valid = () => ({
+    id: v7(),
+    reason: '  Plan no longer needed  ',
+    occurredAt: '2026-10-07T12:00:00Z',
+    createdByMemberId: randomUUID(),
+    deviceId: randomUUID(),
+  });
+  it('accepts and trims a cancellation audit payload', async () => {
+    const dto = plainToInstance(ReverseFinanceReserveDto, valid());
+    expect(await validate(dto)).toHaveLength(0);
+    expect(dto.reason).toBe('Plan no longer needed');
+  });
+  it.each([
+    { id: randomUUID() },
+    { reason: '   ' },
+    { reason: 'x'.repeat(1001) },
+    { reason: 3 },
+    { occurredAt: '2026-10-07' },
+    { deviceId: 'not-a-uuid' },
+  ])('rejects malformed cancellation %j', async (changes) => {
+    expect(
+      await validate(
+        plainToInstance(ReverseFinanceReserveDto, { ...valid(), ...changes }),
+      ),
+    ).not.toHaveLength(0);
   });
 });

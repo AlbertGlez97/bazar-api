@@ -1,10 +1,14 @@
 # Finance overview and planned reserves
 
+## FR1 closure
+
+FR1 completed in local commit 6dac588ee9c13c4cc60b468947cda8cf6f1b3646 (1125 additions,16 deletions; cumulative2220 authored lines). Current checks:44 focused unit tests,312 HTTP/impersonation tests, generator/test migration/lint/build typecheck/build/diff check passed; parent reran44 unit tests. Native assessment medium/slice_budget_reached, user granted review; reliability no confirmed findings. Exact acknowledgement completed, authority burned for review-7dfc4a5bccb51036. Reviewed boundary6dac588ee9c13c4cc60b468947cda8cf6f1b3646. Reserves create/list and overview integration complete; FR2 reversals/full regressions next. Test-only additive migration and existing restricted test-role provisioning recorded; no development/production migration. Engram mirror pending.
+
 ## FO1 closure
 
 FO1 completed in local commit 1c84f77e03561546b9ccddb192d896e627ab7d99 (1079 authored additions). Current checks: 17 unit tests, 270 HTTP/impersonation tests, lint/build typecheck/build/diff check passed. Parent reran 8 overview HTTP tests. User authorized starting only existing postgres-test; no creation/recreation/provisioning occurred. Native assessment medium/slice_budget_reached; user granted review. Reliability review found no confirmed candidate-caused findings; exact acknowledgement succeeded with authority burned for review-8e7eada7a648c96e. Reviewed boundary now 1c84f77e03561546b9ccddb192d896e627ab7d99. Earlier blocked/partial notes are historical and superseded. Next task FR1 persisted create/list reserves; FR2 reversal behavior remains pending. Engram mirror pending.
 
-## Parent verification update
+## Historical parent verification update (superseded by closures above)
 
 FO1 remains partial: independent inspection found no confirmed code blocker and focused unit tests passed 17/17, also rerun by parent. Build typecheck passed independently. Required HTTP/RLS tests cannot run: local port 5433 unreachable, Docker Desktop Linux engine unavailable. Only the declared postgres-test service is relevant; existing container presence is unknown until engine recovery. Await user restoring Docker Desktop and resolve service authorization before infrastructure actions. FR1/FR2 not started; no commits, native review, frontend edits or remote operations. Engram mirror remains pending registration. This update supersedes any earlier next-step instruction to close FO1 without HTTP/RLS evidence.
 
@@ -27,7 +31,7 @@ Implement Phase 4 exclusively in bazar-api on feat/finance-overview-reserves. Ex
 ## Tasks and acceptance
 
 - [x] FO1: Recorded overview with economic periods, cost coverage, financial/nonmonetary totals, permissions, coherent transaction snapshot and tests/docs.
-- [ ] FR1: Persistent period reserves, tenant migration/RLS, create/list, immutable replay/conflict handling, overview reserve integration and tests/docs.
+- [x] FR1: Persistent period reserves, tenant migration/RLS, create/list, immutable replay/conflict handling, overview reserve integration and tests/docs.
 - [ ] FR2: Reserve reversals, exact replay/double-reversal and concurrency checks; complete regressions and frontend contract documentation.
 
 Each task uses delegated direct execution: unfamiliar financial flow plus multiple nontrivial files triggers preparation/writer delegation. Single writer only. Use deterministic RED -> GREEN -> REFACTOR when runnable; report environmental blocks honestly. A task closes only with observed checks and a conventional local commit, without AI attribution. Parent records risk/review status and commit after verification.
@@ -42,17 +46,17 @@ Each task uses delegated direct execution: unfamiliar financial flow plus multip
 
 ## Progress and boundaries
 
-- Branch created from 1df181e46a16e62a9a0df3b2f7adb1943f9979bc; initial worktree clean.
-- Read-only exploration and parent business-time/DTO spot check completed. FO1 implementation written; checkbox remains pending parent verification/commit/review accounting.
-- Current FO1 results and environmental limitations are recorded below; no historical result is treated as current proof.
-- Running authored line count: 0. Commits: none. Reviewed boundary: branch point above.
-- Rollback: revert only feature work-unit commits; additive reserve migration must not be applied outside isolated local test database in this task.
+- Branch point: 1df181e46a16e62a9a0df3b2f7adb1943f9979bc. FO1 committed/reviewed: 1c84f77e03561546b9ccddb192d896e627ab7d99. FR1 committed/reviewed: 6dac588ee9c13c4cc60b468947cda8cf6f1b3646.
+- Current reviewed boundary: 6dac588ee9c13c4cc60b468947cda8cf6f1b3646; cumulative committed authored lines: 2220, as parent recorded. FR2 is an uncommitted normalized work unit with observed passing checks; parent owns final count/commit/review accounting.
+- FO1 and FR1 are complete. FR2 writer scope is implemented and verified; its checkbox remains pending parent closure. Historical blocked/pending notes below are superseded by current closure/evidence sections, not current blockers.
+- FR2 changed no schema, migration, generated client, database configuration or infrastructure. The only applied feature migration remains the additive test-only reserve migration recorded in FR1.
+- Rollback: revert only feature work-unit commits under parent direction; never edit an applied historical migration or reset/drop the local database. Engram mirror remains pending parent session registration.
 
 ## Next step
 
-FR1 writer implementation and required checks pass; parent readback/spot check, work-unit commit and native review accounting are pending. Preserve FO1 reviewed boundary 1c84f77e03561546b9ccddb192d896e627ab7d99. FR2 cancellation HTTP/replay/double-cancellation/concurrency behavior remains unimplemented. Engram mirror remains pending.
+Parent readback/spot check, FR2 work-unit commit and native review accounting. All required focused/full functional checks passed; preserve reviewed boundary 6dac588ee9c13c4cc60b468947cda8cf6f1b3646 until parent advances it. Browser durable queue/local-pending/offline snapshot work remains outside this backend scope. No push/merge/deploy is authorized.
 
-## FO1 writer evidence (pending parent closure)
+## Historical FO1 writer evidence (closed above)
 
 - Route: delegated direct; preparation/new financial logic/multiple nontrivial files. No commit, remote action or native review was performed by the writer.
 - Implemented socio-only strict economic-period overview, tenant callback RepeatableRead snapshot, all completed revenue less known costs, cost coverage, separate active expenses/contributions/nonmonetary shifts and negative results. Reserves are temporarily zero with explicit pending warning; exact-period contract is documented, persistence/endpoints pending FR1/FR2.
@@ -69,7 +73,7 @@ FR1 writer implementation and required checks pass; parent readback/spot check, 
 - Rollback boundary: overview module/controller/DTO/service/tests/docs plus AppModule import and one impersonation route entry; existing reports and previous finance fact services remain unchanged.
 - Initial status was partial because required E2E was unavailable; the verified continuation below resolves that blocker. Commit/risk/review boundary and authored count remain parent-owned and pending.
 
-## FO1 authorized verification continuation
+## Historical FO1 authorized verification continuation (closed above)
 
 - User explicitly authorized starting only the existing local postgres-test container after opening Docker. `docker compose start postgres-test`: exit 0. Bounded `docker compose exec -T postgres-test pg_isready`: accepting connections, exit 0. No creation/recreation, other service, configuration change, migration or provisioning.
 - First reachable E2E run: 269 passed / 1 failed. The new fixture incorrectly used category merchandise for an inventory purchase; existing DTO and database require inventory. Corrected only that fixture category and normalized the touched test file. No production behavior change was needed.
@@ -78,7 +82,7 @@ FR1 writer implementation and required checks pass; parent readback/spot check, 
 - Status: FO1 writer implementation/required verification complete; checkbox stays pending parent commit/review accounting. Existing local postgres-test remains running, as explicitly authorized. Unique-context fixtures cleaned themselves up; no reset/drop or email calls.
 - Post-fixture-fix checks rerun: focused DTO/service tests 17 passed (exit 0); npm.cmd run lint exit 0 with same two unchanged warnings; npx.cmd tsc --noEmit -p tsconfig.build.json exit 0; npm.cmd run build exit 0; git diff --check exit 0.
 
-## FR1 writer evidence (pending parent closure)
+## Historical FR1 writer evidence (closed above)
 
 - Route: delegated direct, schema/audit/isolation design and multiple nontrivial files. User exception-ok remains in force; no artificial 400-line truncation. No commits, native review, remote operations or memory writes performed by the writer. Parent FO1 closure and its exact reviewed boundary are preserved; FR1 checkbox stays pending.
 - Added FinanceReserve and FinanceReserveReversal with UUIDv7 identities, period DATEs, MXN positive amount constraints, immutable stored fingerprint/receipt audit fields, unique one-cancellation-per-reserve relation, composite tenant-aware RESTRICT account/member/device/reference foreign keys, ENABLE/FORCE deny-by-default RLS and both tenant extension delegates.
@@ -95,3 +99,20 @@ FR1 writer implementation and required checks pass; parent readback/spot check, 
 - Normalized only changed finance sources/tests/docs and touched declaration ranges in tenant.extension.ts/impersonation-matrix; no repository-wide formatting. Prisma schema keeps existing formatting plus additive models.
 - Rollback boundary: FR1 API/module integration, reserve schema/migration/RLS/delegates, overview reserve deduction and associated tests/docs; keep FO1 overview/report semantics. Applied local additive schema must be treated as an applied migration, not edited/reapplied during rollback. Parent owns commit/review and running authored-line accounting.
 - Status: FR1 writer scope complete with observed required checks. FR2 remains pending; browser queue/local pending/offline snapshots, cash/commitment/capital/compensation/distribution reconciliation remain out of scope. Engram mirror is still pending parent session registration.
+
+## FR2 writer evidence (pending parent closure)
+
+- Route: delegated direct, one bounded writer. Existing FO1/FR1 hashes, closure records and review boundaries preserved. No commits, native review, memory mutations, remote operations, frontend changes or infrastructure/schema changes performed by the writer. The user exception-ok delivery choice remains in force; no test omission/code-golf to meet the advisory 400-line heuristic.
+- Added socio-only POST /api/v1/finance/reserves/:id/reversals with strict UUIDv7 audit DTO, trimmed reason, zoned occurredAt and selected member/device attribution. Existing account/member/device SHARE-lock authorization is reused; sorted tenant identity locks precede target FOR UPDATE. Stored reversal fingerprints bind target, normalized content, origin, account and context.
+- First cancellation 201; exact same normalized replay 200 with original immutable cancellation receipt; same identity with changed payload/account/device/target 409, double different cancellation 409, inaccessible/unknown target or global cancellation identity 404 generic. Original create replay stays immutable after cancellation; list/overview derive current exclusion and availability restoration, not receipt rewriting. No money flow, cost, capital, stock or compensation operation added.
+- Chose plain cancellation: existing schema has no replacement reference and applied migrations may not be widened/edited. Unsupported replacement input returns 400 without changes. No partial atomic-replacement claim; separate explicitly created future plan is a different operation. All failed cancellation tests prove no persisted reversal and active original unchanged.
+- Deterministic RED before implementation: focused unit command exit 1, 1 failed / 50 passed (51 tests, cancellation DTO placeholder rejected valid payload); finance-reserves-only HTTP command exit 1, expected first cancellation 201 but missing route returned 404 (1 failed / 30 passed). GREEN after implementation/refinement/normalization as below.
+- `npm.cmd test -- src/finance/finance-reserve.dto.spec.ts src/finance/finance-overview.dto.spec.ts src/finance/finance-overview.service.spec.ts`: exit 0, 51 passed in 3 files (32 reserve DTO, 7 overview DTO, 12 overview service).
+- `npm.cmd run test:e2e -- test/finance-reserves.e2e-spec.ts test/finance-overview.e2e-spec.ts test/impersonation-matrix.e2e-spec.ts`: exit 0, 335 passed in 3 files (47 reserve tests, 8 overview, 280 impersonation). Tests cover normalized replay/original replay after reversal, target/payload/account/device conflicts, double/self cancellation, unknown/foreign targets, foreign identity collision rollback, unsupported fields/replacement, permissions, stale account/member/device revocation recheck, raw reversal RLS/composite audit FKs, identical/conflicting concurrent create/reverse/target identity races and exact-period overview restoration.
+- Before full suites, verified existing runner config enforces localhost exact bazar_test and development/test isolation. Email delivery is mocked in email unit tests and registration/member/device HTTP suites; docs fetch uses the app's loopback ephemeral listener. Announced one full-unit/full-E2E foreground forecast with CPU/local fixture activity and targeted cleanup only; no external/email operation, migration/provision/reset/drop/container/config change.
+- `npm.cmd test`: exit 0, 498 passed in 33 files, 8.84 seconds. Expected mocked MembersService error logs exercise rollback; no failed/skipped tests.
+- `npm.cmd run test:e2e`: exit 0, 787 passed in 32 files, 49.39 seconds. Expected mocked registration/member/device email-failure/transaction logs and existing pg concurrent-query deprecation warnings are non-failing; no real mail sent, no failed/skipped tests, no blanket retry.
+- `npm.cmd run lint`: exit 0; only two unchanged test/sales-conflict.e2e-spec.ts warnings (unused resB, sort compare). Removed all new-code lint warnings before final suites.
+- `npx.cmd tsc --noEmit -p tsconfig.build.json`: exit 0. `npm.cmd run build`: exit 0. `git diff --check`: exit 0. Earlier unrelated full-project tsconfig.json test typing errors remain outside scope and were not modified; the required build typecheck is current passing proof.
+- Normalized only touched finance sources/test/doc files and the new impersonation route entry range before final checks. Contract docs enumerate all serialized response field types, create/list/cancel payloads/receipts/status/errors, economic interval/time bases, partial cost semantics/warnings, exact-period matching, confirmed-only sync/generatedAt metadata and explicit out-of-scope browser queue/snapshot/cash/distribution/compensation boundaries. Prior pending cancellation/RESERVES_PENDING statements are superseded.
+- Status: FR2 writer scope complete with required focused and full checks observed. Parent owns final commit/native review/task closure and Engram mirror. No deployment/production migration/remote action is authorized or performed.

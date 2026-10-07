@@ -65,3 +65,11 @@ export class FinanceReserveListDto {
   @Max(100)
   limit = 20;
 }
+
+export class ReverseFinanceReserveDto {
+  @IsUUID() @Matches(UUID_V7) id!: string;
+  @Transform(trim) @IsString() @MinLength(1) @MaxLength(1000) reason!: string;
+  @IsISO8601({ strict: true }) @Matches(ZONED_INSTANT) occurredAt!: string;
+  @IsUUID() createdByMemberId!: string;
+  @IsUUID() deviceId!: string;
+}

@@ -4,6 +4,8 @@ import {
   Get,
   Inject,
   Post,
+  Param,
+  ParseUUIDPipe,
   Query,
   Req,
   Res,
@@ -17,6 +19,7 @@ import { SocioGuard } from '../auth/socio.guard.js';
 import {
   CreateFinanceReserveDto,
   FinanceReserveListDto,
+  ReverseFinanceReserveDto,
 } from './finance-reserve.dto.js';
 import { FinanceReservesService } from './finance-reserves.service.js';
 const validate = (expectedType: new () => object) =>
@@ -51,5 +54,16 @@ export class FinanceReservesController {
     @Query(validate(FinanceReserveListDto)) query: FinanceReserveListDto,
   ) {
     return this.reserves.list(req.account.contextId, query);
+  }
+  @Post(':id/reversals')
+  async reverse(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(ReverseFinanceReserveDto)) dto: ReverseFinanceReserveDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.reserves.reverse(req, id, dto);
+    res.status(result.created ? 201 : 200);
+    return result.receipt;
   }
 }

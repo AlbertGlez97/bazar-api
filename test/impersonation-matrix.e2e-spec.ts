@@ -34,6 +34,7 @@ const SOCIO_ROUTES = [
   'GET /finance/overview',
   'POST /finance/reserves',
   'GET /finance/reserves',
+  'POST /finance/reserves/:id/reversals',
   'POST /finance/work-shifts',
   'POST /finance/work-shifts/:id/reversals',
   'POST /finance/contributions',

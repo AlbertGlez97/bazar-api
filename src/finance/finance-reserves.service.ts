@@ -16,6 +16,7 @@ import { UUID_V7 } from './contribution.dto.js';
 import type {
   CreateFinanceReserveDto,
   FinanceReserveListDto,
+  ReverseFinanceReserveDto,
 } from './finance-reserve.dto.js';
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 const date = (value: string) => new Date(value + 'T00:00:00.000Z');
@@ -113,6 +114,98 @@ export class FinanceReservesService {
     } catch (error) {
       // A same-tenant identity is serialized and handled above. Global UUID
       // collisions invisible under RLS disclose no foreign receipt or ownership.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      )
+        throw new NotFoundException('Reserve not found');
+      throw error;
+    }
+  }
+  async reverse(
+    actor: Actor,
+    reserveId: string,
+    dto: ReverseFinanceReserveDto,
+  ) {
+    if (
+      dto.createdByMemberId.toLowerCase() !== actor.selection?.memberId ||
+      dto.deviceId.toLowerCase() !== actor.selection?.deviceId
+    )
+      throw new ForbiddenException(
+        'Operation origin does not match the selected member and device',
+      );
+    const contextId = actor.account.contextId;
+    const id = dto.id.toLowerCase();
+    const targetId = reserveId.toLowerCase();
+    if (id === targetId)
+      throw new BadRequestException(
+        'Cancellation and reserve identities must be distinct',
+      );
+    const data = {
+      id,
+      reserveId: targetId,
+      reason: dto.reason.trim(),
+      occurredAt: new Date(dto.occurredAt).toISOString(),
+      createdByMemberId: dto.createdByMemberId.toLowerCase(),
+      deviceId: dto.deviceId.toLowerCase(),
+    };
+    const requestFingerprint = digest({
+      contextId,
+      accountId: actor.account.id,
+      operation: 'reverse',
+      ...data,
+    });
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.authorize(tx, actor);
+        // Same identity namespace as create. Sorted locks precede row locks,
+        // preventing cycles between concurrent replays, targets and creates.
+        for (const identity of [id, targetId].sort())
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`finance-reserve:identity:${contextId}:${identity}`}, 0))`;
+        const existing = await tx.financeReserveReversal.findFirst({
+          where: { id, contextId },
+        });
+        if (existing) {
+          if (existing.requestFingerprint !== requestFingerprint)
+            throw new ConflictException(
+              'Cancellation ID already has different content',
+            );
+          return { created: false, receipt: existing.creationResponse };
+        }
+        const locked = await tx.$queryRaw<
+          { id: string }[]
+        >`SELECT id FROM "FinanceReserve" WHERE id = ${targetId}::uuid AND "contextId" = ${contextId} FOR UPDATE`;
+        if (!locked.length) throw new NotFoundException('Reserve not found');
+        const original = await tx.financeReserve.findFirstOrThrow({
+          where: { id: targetId, contextId },
+          include: { reversal: true },
+        });
+        if (original.reversal)
+          throw new ConflictException('Reserve already reversed');
+        const receivedAt = new Date();
+        const receipt = {
+          ...data,
+          contextId,
+          createdByAccountId: actor.account.id,
+          receivedAt: receivedAt.toISOString(),
+          original: original.creationResponse,
+        };
+        await tx.financeReserveReversal.create({
+          data: {
+            ...data,
+            contextId,
+            createdByAccountId: actor.account.id,
+            occurredAt: new Date(data.occurredAt),
+            receivedAt,
+            requestFingerprint,
+            creationResponse: receipt,
+          },
+        });
+        return { created: true, receipt };
+      });
+    } catch (error) {
+      // Own-context races are resolved under identity and target row locks.
+      // An invisible global cancellation ID collision never exposes its receipt.
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
