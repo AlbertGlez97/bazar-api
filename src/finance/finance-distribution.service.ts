@@ -21,11 +21,11 @@ export const DISTRIBUTION_ERRORS = {
   noPartners: 'FINANCE_DISTRIBUTION_NO_PARTNERS',
 } as const;
 
-interface Warning {
+export interface DistributionWarning {
   code: string;
   message: string;
 }
-interface WorkAggregate {
+export interface WorkAggregate {
   shiftCount: number;
   knownMinutes: number;
   unknownDurationCount: number;
@@ -219,8 +219,8 @@ export class FinanceDistributionService {
     partnerPoolMinor: bigint,
     rows: { isActive: boolean; workAmountMinor: number }[],
     work: Map<string, WorkAggregate>,
-  ): Warning[] {
-    const warnings: Warning[] = [
+  ): DistributionWarning[] {
+    const warnings: DistributionWarning[] = [
       {
         code: 'SIMULATION_ONLY',
         message:

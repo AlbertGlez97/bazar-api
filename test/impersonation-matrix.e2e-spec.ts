@@ -32,6 +32,7 @@ import { withTestTenant } from './tenant-scope.js';
 /** Handlers protected by SocioGuard: only an active socio may call them. */
 const SOCIO_ROUTES = [
   'GET /finance/overview',
+  'POST /finance/distribution-simulations',
   'POST /finance/reserves',
   'GET /finance/reserves',
   'POST /finance/reserves/:id/reversals',
