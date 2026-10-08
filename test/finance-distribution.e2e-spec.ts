@@ -822,6 +822,23 @@ describe('finance distribution simulator HTTP', () => {
         'PARTNER_ELIGIBILITY_IS_CURRENT_STATE',
       ]);
     });
+    it('propagates actual overview cost overflow as HTTP 422', async () => {
+      const period = nextPeriod();
+      const created = await sale(0, instant(period.from), 100_000);
+      // Test-only legacy snapshot: each Int fits PostgreSQL, but their BigInt product exceeds safe money.
+      await tenant(0, () =>
+        prisma.saleItem.updateMany({
+          where: { saleId: created.id, contextId: contexts[0] },
+          data: { quantity: 2_147_483_647, unitCostMinor: 2_147_483_647 },
+        }),
+      );
+      const body = await simulate(
+        period,
+        { requestedAmountMinor: 1, partnerShareBps: 10000, workShareBps: 0 },
+        422,
+      );
+      expect(body.code).toBe('FINANCE_OVERVIEW_OVERFLOW');
+    });
     it('uses the overview base: reserves of the exact period are deducted once, other periods ignored', async () => {
       const period = nextPeriod();
       const other = nextPeriod();
