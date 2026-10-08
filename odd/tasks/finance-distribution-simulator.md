@@ -19,9 +19,9 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 ## Tasks and acceptance
 
 - [x] DS1: Extract overview computation into `compute(tx, contextId, from, to)` with zero behavior change.
-- [ ] DS2: Pure allocation engine (`splitPools`, `allocateEqual`, `allocateByWeight`) with exhaustive and property-style unit tests.
-- [ ] DS3: Request DTO (strict, bps sum, amount bounds, workBasis) and stable error codes.
-- [ ] DS4: Distribution service with unit tests.
+- [x] DS2: Pure allocation engine (`splitPools`, `allocateEqual`, `allocateByWeight`) with exhaustive and property-style unit tests.
+- [x] DS3: Request DTO (strict, bps sum, amount bounds, workBasis) and stable error codes.
+- [x] DS4: Distribution service with unit tests.
 - [ ] DS5: Controller, module registration and impersonation matrix entry.
 - [ ] DS6: End-to-end tests.
 - [ ] DS7: Contract documentation and full verification.
@@ -30,7 +30,9 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 
 | Task | Route | Trigger evidence | Checks observed | Commit |
 | --- | --- | --- | --- | --- |
-| DS1 | Delegated direct (single writer) | Refactor of a 200-line financial service | 12 overview unit tests green unchanged; tsc build config OK | pending |
+| DS1 | Delegated direct (single writer) | Refactor of a 200-line financial service | 12 overview unit tests green unchanged; tsc build config OK | f0332a0 |
+| DS2 | Delegated direct (single writer) | New pure engine with property tests | RED observed (module missing), then 23 allocation unit tests green | f6f9409 |
+| DS3+DS4 | Delegated direct (single writer) | DTO plus transactional service | 41 DTO + 15 service unit tests green; service/DTO written with tests together (RED not separately observed) | see git log |
 
 ## Progress and boundaries
 
@@ -39,4 +41,4 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 
 ## Next step
 
-DS2 allocation engine.
+DS5 controller, module and matrix.
