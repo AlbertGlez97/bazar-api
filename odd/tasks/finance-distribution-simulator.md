@@ -22,9 +22,9 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 - [x] DS2: Pure allocation engine (`splitPools`, `allocateEqual`, `allocateByWeight`) with exhaustive and property-style unit tests.
 - [x] DS3: Request DTO (strict, bps sum, amount bounds, workBasis) and stable error codes.
 - [x] DS4: Distribution service with unit tests.
-- [ ] DS5: Controller, module registration and impersonation matrix entry.
-- [ ] DS6: End-to-end tests.
-- [ ] DS7: Contract documentation and full verification.
+- [x] DS5: Controller, module registration and impersonation matrix entry.
+- [x] DS6: End-to-end tests.
+- [x] DS7: Contract documentation and full verification.
 
 ## Route, evidence and commit per task
 
@@ -32,7 +32,10 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 | --- | --- | --- | --- | --- |
 | DS1 | Delegated direct (single writer) | Refactor of a 200-line financial service | 12 overview unit tests green unchanged; tsc build config OK | f0332a0 |
 | DS2 | Delegated direct (single writer) | New pure engine with property tests | RED observed (module missing), then 23 allocation unit tests green | f6f9409 |
-| DS3+DS4 | Delegated direct (single writer) | DTO plus transactional service | 41 DTO + 15 service unit tests green; service/DTO written with tests together (RED not separately observed) | see git log |
+| DS3+DS4 | Delegated direct (single writer) | DTO plus transactional service | 41 DTO + 15 service unit tests green; service/DTO written with tests together (RED not separately observed) | d286659 |
+| DS5 | Inline (module wiring, one controller) | Mechanical wiring | Matrix suite 286 tests green; tsc OK | 22bed52 |
+| DS6 | Delegated direct (single writer) | 45 HTTP tests | 45 e2e green; NO_PARTNERS unreachable over HTTP (caller is always an active socio), covered by unit test | 6973780 |
+| DS7 | Delegated direct (single writer) | Docs plus full regression | npm test 577/36 files; test:e2e 838/33 files; lint 0 errors (2 pre-existing warnings); nest build OK; git diff --check clean | docs commit |
 
 ## Progress and boundaries
 
@@ -41,4 +44,4 @@ Expose a pure, non-persisted simulator, `POST /api/v1/finance/distribution-simul
 
 ## Next step
 
-DS5 controller, module and matrix.
+Feature complete locally; no push, merge or deploy. Baseline was 498 unit / 787 e2e; now 577 unit / 838 e2e.
