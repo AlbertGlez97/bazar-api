@@ -17,33 +17,33 @@ Phase 5.5: persist an immutable, auditable "Acuerdo de reparto" created from a d
 
 ## Tasks and acceptance
 
-- [ ] DA1: Canonical JSON helper, simulator refactor (`simulateInTx`) and `simulationFingerprint`.
-- [ ] DA2: Prisma models, migration, RLS and immutability triggers.
-- [ ] DA3: DTOs.
-- [ ] DA4: Agreements service (create, replay, drift, folio, replaces).
-- [ ] DA5: Reversal, list and detail.
-- [ ] DA6: Controller, module and impersonation matrix.
-- [ ] DA7: End-to-end tests.
-- [ ] DA8: Contract documentation and full verification.
+- [x] DA1: Canonical JSON helper, simulator refactor (`simulateInTx`) and `simulationFingerprint`.
+- [x] DA2: Prisma models, migration, RLS and immutability triggers.
+- [x] DA3: DTOs.
+- [x] DA4: Agreements service (create, replay, drift, folio, replaces).
+- [x] DA5: Reversal, list and detail.
+- [x] DA6: Controller, module and impersonation matrix.
+- [x] DA7: End-to-end tests.
+- [x] DA8: Contract documentation and full verification.
 
 ## Route, evidence and commit per task
 
-| Task | Route | Trigger evidence | Checks observed | Commit |
-| --- | --- | --- | --- | --- |
-| DA1 | pending | | | |
-| DA2 | pending | | | |
-| DA3 | pending | | | |
-| DA4 | pending | | | |
-| DA5 | pending | | | |
-| DA6 | pending | | | |
-| DA7 | pending | | | |
-| DA8 | pending | | | |
+| Task    | Route                 | Trigger evidence                                               | Checks observed                                                                                                                                                  | Commit           |
+| ------- | --------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| DA1     | Single bounded writer | Refactor of a financial service plus new helper                | 11 files/171 unit tests green (canonical-json 14, simulator 23 incl. 5 fingerprint cases); Phase 5 e2e 46 green                                                  | 7ca6645, 38866cf |
+| DA2     | Single bounded writer | New schema, migration, triggers                                | `prisma validate`, `db:migrate:test` applied, `migrate diff` against schema: no difference; all 26 migrations replay from scratch on an empty database; build OK | e7380df          |
+| DA3     | Single bounded writer | Strict DTOs                                                    | 59 DTO unit tests green (incl. strict-pipe rejection of server-owned properties)                                                                                 | 09f059f          |
+| DA4+DA5 | Single bounded writer | Transactional service with retry/queue; reversal, list, detail | 36 service + 16 snapshot unit tests green (replay-before-drift, drift persists nothing, year rollover, retry, queueing)                                          | 9f275c8          |
+| DA6     | Inline (wiring)       | Controller, module, matrix routes                              | build OK; impersonation matrix green                                                                                                                             | a3515b4          |
+| DA7     | Single bounded writer | HTTP end to end                                                | 43 e2e green, repeated 3x full and 6x concurrency-only without flakiness                                                                                         | b7d23ee          |
+| DA8     | Single bounded writer | Docs and full regression                                       | unit 693/40 files (baseline 577/36), e2e 906/34 files (baseline 839/33), lint 0 errors (2 pre-existing warnings), nest build OK, git diff --check clean          | docs commit      |
 
 ## Progress and boundaries
 
 - Rollback: revert only this branch's work-unit commits.
 - Engram mirror pending (the single bounded writer has no memory tooling in this run).
+- Deviations: in-process per-context creation queue added on top of the bounded retry (10 simultaneous creates otherwise produced 503 BUSY with 5 attempts); backend messages stay in English (repo convention), only the document `notice` is Spanish; `voidedAt` in the list is the reversal `occurredAt`.
 
 ## Next step
 
-DA1.
+Feature complete locally; no push, merge or deploy.

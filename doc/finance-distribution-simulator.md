@@ -5,6 +5,7 @@
 ## What it does NOT do
 
 - It does not save, approve, schedule or pay anything. The response says `simulation: true` and `persisted: false`, and repeated calls with the same data return identical bodies.
+- Persisting an accepted simulation is a separate, explicit step: see [finance-distribution-agreements.md](finance-distribution-agreements.md). The simulator itself stays pure.
 - It does not create obligations, member balances, withdrawals, capital recovery, taxes or compensation records.
 - Capital contributions never influence the result (they are not income and not a share basis).
 - It does not look at current cash. The base is the overview's `potentiallyAvailableMinor`, which is a recorded, not a cash, figure.
