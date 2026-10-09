@@ -44,6 +44,11 @@ Phase 5.5: persist an immutable, auditable "Acuerdo de reparto" created from a d
 - Engram mirror pending (the single bounded writer has no memory tooling in this run).
 - Deviations: in-process per-context creation queue added on top of the bounded retry (10 simultaneous creates otherwise produced 503 BUSY with 5 attempts); backend messages stay in English (repo convention), only the document `notice` is Spanish; `voidedAt` in the list is the reversal `occurredAt`.
 
+## Review follow-ups
+
+- Native review found three weak tests, fixed in the commit `test(finance): prove check constraints, retry re-simulation and tenant isolation for agreements` (hash in git log): (1) the DB-check e2e now uses a distinct folio per insert and asserts the exact Postgres CHECK name for pools, distributed, bps and participant sums; (2) the retry unit test now fails the first attempt after the simulation and proves the retry re-simulates (2 calls, fresh data persisted, drift decided on the fresh fingerprint); (3) the tenant-isolation e2e compares counts of both contexts before and after the foreign reversal attempt.
+- The impersonation matrix probes POST routes with `{}` (400 before any insert), so it creates no agreement rows; verified 0 leftover rows after the suite.
+
 ## Next step
 
 Feature complete locally; no push, merge or deploy.

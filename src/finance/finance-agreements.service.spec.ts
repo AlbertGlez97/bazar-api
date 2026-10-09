@@ -448,14 +448,69 @@ describe('FinanceAgreementsService.create', () => {
     });
   });
 
-  it('retries the whole transaction, re-simulating, after a serialization failure', async () => {
-    const { service, transaction, simulateInTx } = setup();
-    transaction.mockRejectedValueOnce(serializationFailure());
+  it('retries the whole transaction and persists the FRESH simulation after a serialization failure', async () => {
+    const first = simulation();
+    const second = simulation();
+    second.financialBase.potentiallyAvailableMinor = 1_100_000;
+    const simulate = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const { service, tx, transaction, simulateInTx } = setup({ simulate });
+    // The first attempt simulates, then fails on the counter statement.
+    const counterQuery = tx.$queryRaw.getMockImplementation()!;
+    let failed = false;
+    tx.$queryRaw.mockImplementation((strings: TemplateStringsArray) => {
+      if (
+        !failed &&
+        strings.join('?').includes('DistributionAgreementCounter')
+      ) {
+        failed = true;
+        return Promise.reject(serializationFailure());
+      }
+      return counterQuery(strings);
+    });
     vi.useRealTimers();
     const result = await service.create(actor, dto());
     expect(result.created).toBe(true);
+    expect(failed).toBe(true);
     expect(transaction).toHaveBeenCalledTimes(2);
-    expect(simulateInTx).toHaveBeenCalledTimes(1);
+    expect(simulateInTx).toHaveBeenCalledTimes(2);
+    expect(tx.distributionAgreement.create).toHaveBeenCalledTimes(1);
+    expect(
+      tx.distributionAgreement.create.mock.calls[0][0].data
+        .potentiallyAvailableMinor,
+    ).toBe(1_100_000);
+  });
+
+  it('decides drift on the fresh simulation of the retry, not on the stale one', async () => {
+    const current = 'sim1:' + 'e'.repeat(64);
+    const simulate = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValueOnce(simulation())
+      .mockResolvedValueOnce(simulation(current));
+    const { service, tx, simulateInTx } = setup({ simulate });
+    const original = tx.$queryRaw.getMockImplementation()!;
+    let failed = false;
+    tx.$queryRaw.mockImplementation((strings: TemplateStringsArray) => {
+      if (
+        !failed &&
+        strings.join('?').includes('DistributionAgreementCounter')
+      ) {
+        failed = true;
+        return Promise.reject(serializationFailure());
+      }
+      return original(strings);
+    });
+    vi.useRealTimers();
+    await expect(service.create(actor, dto())).rejects.toMatchObject({
+      response: {
+        code: 'FINANCE_AGREEMENT_SIMULATION_CHANGED',
+        currentSimulationFingerprint: current,
+      },
+    });
+    expect(simulateInTx).toHaveBeenCalledTimes(2);
+    expect(tx.distributionAgreement.create).not.toHaveBeenCalled();
   });
 });
 

@@ -1152,11 +1152,11 @@ describe('finance distribution agreements HTTP', () => {
         created.id,
       );
       await get(`${endpoint}/${created.id}`, {}, 1).expect(404);
+      const before = [await counts(0), await counts(1)];
       await reverse(created.id, {}, 1).expect(404);
-      const stillThere = await counts();
-      expect(stillThere.reversals).toBe(
-        await tenant(0, () => prisma.distributionAgreementReversal.count()),
-      );
+      // The foreign attempt wrote nothing in either context.
+      expect([await counts(0), await counts(1)]).toEqual(before);
+      expect(before[0].agreements).toBeGreaterThan(0);
     });
 
     it('does not disclose a foreign agreement through a global id collision', async () => {
@@ -1265,16 +1265,65 @@ describe('finance distribution agreements HTTP', () => {
     it('enforces the database checks on direct inserts', async () => {
       const sc = await scenario();
       const created = (await create(sc).expect(201)).body;
-      const insert = (patch: string, sums = true) =>
-        tenant(0, () =>
+      const actor = actors[0];
+      let folioSeq = 90000;
+      const agreementId = v7();
+      // Every insert is valid in every respect (unique id AND folio) except
+      // for the one column group the override breaks, so only the targeted
+      // CHECK can reject it.
+      const insert = (
+        overrides: Partial<Record<string, number>> = {},
+        id = v7(),
+      ) => {
+        const v = {
+          requested: 100,
+          partnerBps: 5000,
+          workBps: 5000,
+          partnerPool: 50,
+          workPool: 50,
+          distributed: 100,
+          undistributed: 0,
+          ...overrides,
+        };
+        const folio = `AC-2026-${++folioSeq}`;
+        return tenant(0, () =>
           prisma.$transaction((tx) =>
             tx.$executeRawUnsafe(
-              `INSERT INTO "DistributionAgreement" ("id","contextId","folio","periodFrom","periodTo","requestedAmountMinor","partnerShareBps","workShareBps","workBasis","financialStatus","potentiallyAvailableMinor","partnerPoolMinor","workPoolMinor","distributedMinor","undistributedMinor","algorithmVersion","title","createdByMemberId","createdByMemberName","createdByAccountId","deviceId","occurredAt","requestFingerprint","snapshotFingerprint","warningsSnapshot","creationResponse") VALUES ('${v7()}','${contexts[0]}','AC-2026-90001','2033-06-01','2033-06-02',100,5000,5000,'WORK_SHIFTS','complete',100,${sums ? '50,50,100,0' : '50,40,100,0'},1,'t','${actors[0].s1}','n','${actors[0].accountId}','${actors[0].deviceId}',now(),'f','s','[]','{}')${patch}`,
+              `INSERT INTO "DistributionAgreement" ("id","contextId","folio","periodFrom","periodTo","requestedAmountMinor","partnerShareBps","workShareBps","workBasis","financialStatus","potentiallyAvailableMinor","partnerPoolMinor","workPoolMinor","distributedMinor","undistributedMinor","algorithmVersion","title","createdByMemberId","createdByMemberName","createdByAccountId","deviceId","occurredAt","requestFingerprint","snapshotFingerprint","warningsSnapshot","creationResponse") VALUES ('${id}','${contexts[0]}','${folio}','2033-06-01','2033-06-02',${v.requested},${v.partnerBps},${v.workBps},'WORK_SHIFTS','complete',${v.requested},${v.partnerPool},${v.workPool},${v.distributed},${v.undistributed},1,'t','${actor.s1}','n','${actor.accountId}','${actor.deviceId}',now(),'f','s','[]','{}')`,
             ),
           ),
         );
-      await expect(insert('')).resolves.toBe(1);
-      await expect(insert('', false)).rejects.toThrow();
+      };
+      const insertParticipant = (
+        partner: number,
+        work: number,
+        total: number,
+      ) =>
+        tenant(0, () =>
+          prisma.$transaction((tx) =>
+            tx.$executeRawUnsafe(
+              `INSERT INTO "DistributionAgreementParticipant" ("agreementId","contextId","memberId","memberName","role","isActive","partnerEligible","partnerAmountMinor","workUnits","shiftCount","knownMinutes","unknownDurationCount","workAmountMinor","totalMinor") VALUES ('${agreementId}','${contexts[0]}','${actor.s1}','n','socio',true,true,${partner},1,1,0,0,${work},${total})`,
+            ),
+          ),
+        );
+      // Unnamed table-level CHECKs get Postgres-generated names: check2 = bps
+      // sum, check3 = pool sum, check4 = distributed sum, participant check =
+      // partner + work = total.
+      // A constraint name only appears in the error of that very CHECK (23514).
+      await expect(insert({}, agreementId)).resolves.toBe(1);
+      await expect(insertParticipant(50, 50, 100)).resolves.toBe(1);
+      await expect(insert({ partnerPool: 50, workPool: 40 })).rejects.toThrow(
+        'DistributionAgreement_check3',
+      );
+      await expect(
+        insert({ distributed: 90, undistributed: 0 }),
+      ).rejects.toThrow('DistributionAgreement_check4');
+      await expect(insert({ partnerBps: 5000, workBps: 4000 })).rejects.toThrow(
+        'DistributionAgreement_check2',
+      );
+      await expect(insertParticipant(50, 40, 100)).rejects.toThrow(
+        'DistributionAgreementParticipant_check',
+      );
       expect(created.folio).toMatch(/^AC-\d{4}-\d{5,}$/);
     });
 
