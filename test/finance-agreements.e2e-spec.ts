@@ -4,6 +4,11 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { v7 } from 'uuid';
 import request from 'supertest';
+import { vi } from 'vitest';
+import { Prisma } from '../src/generated/prisma/client.js';
+import { FinanceAgreementsService } from '../src/finance/finance-agreements.service.js';
+import { FinanceDistributionService } from '../src/finance/finance-distribution.service.js';
+import type { CreateDistributionAgreementDto } from '../src/finance/finance-agreements.dto.js';
 import { AppModule } from '../src/app.module.js';
 import { currentBusinessDate } from '../src/common/business-time.js';
 import { PrismaService } from '../src/database/prisma.service.js';
@@ -358,6 +363,8 @@ describe('finance distribution agreements HTTP', () => {
     if (prisma)
       for (const contextId of contexts) {
         await withTestTenant(contextId, async () => {
+          await prisma.expense.deleteMany({ where: { contextId } });
+          await prisma.contribution.deleteMany({ where: { contextId } });
           await prisma.financeReserve.deleteMany({ where: { contextId } });
           await prisma.workShift.deleteMany({ where: { contextId } });
           await prisma.saleItem.deleteMany({ where: { contextId } });
@@ -569,6 +576,25 @@ describe('finance distribution agreements HTTP', () => {
   describe('simulation drift', () => {
     const drifts: [string, (sc: Scenario) => Promise<unknown>][] = [
       ['a new sale', (sc) => fund(sc.period, 10_000)],
+      [
+        'a new operating expense in the exact period',
+        (sc) =>
+          tenant(0, () =>
+            prisma.expense.create({
+              data: {
+                ...origin(0),
+                id: v7(),
+                amountMinor: 1000,
+                occurredAt: instant(sc.period.from),
+                nature: 'OPERATING_EXPENSE',
+                category: 'transport',
+                description: 'Agreement drift fixture',
+                paidByMemberId: actors[0].s1,
+                fundsSource: 'BUSINESS',
+              },
+            }),
+          ),
+      ],
       ['a new reserve', (sc) => reserve(sc.period, 1_000)],
       ['a new work shift', (sc) => shift(actors[0].s1, sc.period.from)],
       ['a deactivated socio', () => setPartners(0, [])],
@@ -619,6 +645,24 @@ describe('finance distribution agreements HTTP', () => {
         await create({ ...sc, sim: fresh }).expect(201);
       },
     );
+
+    it('excludes capital contributions from the available base and fingerprint', async () => {
+      const sc = await scenario();
+      await tenant(0, () =>
+        prisma.contribution.create({
+          data: {
+            ...origin(0),
+            id: v7(),
+            memberId: actors[0].s1,
+            amountMinor: 100000,
+            occurredAt: instant(sc.period.from),
+          },
+        }),
+      );
+      const fresh = await simulate(sc.period, sc.rule);
+      expect(fresh).toEqual(sc.sim);
+      await create(sc).expect(201);
+    });
 
     it('uses the same fingerprint for an unchanged period (stable across calls)', async () => {
       const sc = await scenario();
@@ -863,6 +907,67 @@ describe('finance distribution agreements HTTP', () => {
       );
     });
 
+    it('rolls back the allocated counter and inserted agreement when participant persistence fails', async () => {
+      const sc = await scenario();
+      const before = await counts();
+      const dto = body(sc) as CreateDistributionAgreementDto;
+      const failure = new Error('Controlled participant persistence failure');
+      const downstream = vi.fn(async (tx: Prisma.TransactionClient) => {
+        const row = await tx.distributionAgreement.findFirstOrThrow({
+          where: { id: dto.id },
+        });
+        const counter = await tx.distributionAgreementCounter.findFirstOrThrow({
+          where: { contextId: contexts[0], year },
+        });
+        expect(row.folio).toBe(
+          folio((before.counters[0]?.lastNumber ?? 0) + 1),
+        );
+        expect(counter.lastNumber).toBe(
+          (before.counters[0]?.lastNumber ?? 0) + 1,
+        );
+        throw failure;
+      });
+      // Only the downstream delegate is substituted; authorization, simulation,
+      // counter allocation and agreement insertion run in the real DB transaction.
+      const db = {
+        $transaction: (
+          fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          options: { isolationLevel: Prisma.TransactionIsolationLevel },
+        ) =>
+          prisma.$transaction(
+            (tx) =>
+              fn(
+                new Proxy(tx, {
+                  get(target, key) {
+                    return key === 'distributionAgreementParticipant'
+                      ? { createMany: () => downstream(tx) }
+                      : Reflect.get(target, key);
+                  },
+                }),
+              ),
+            options,
+          ),
+      } as unknown as PrismaService;
+      const service = new FinanceAgreementsService(
+        db,
+        app.get(FinanceDistributionService),
+      );
+      const a = actors[0];
+      const selected = {
+        account: { id: a.accountId, contextId: contexts[0], memberId: null },
+        selection: { memberId: a.s1, deviceId: a.deviceId },
+      } as Parameters<FinanceAgreementsService['create']>[0];
+      await expect(tenant(0, () => service.create(selected, dto))).rejects.toBe(
+        failure,
+      );
+      expect(downstream).toHaveBeenCalledTimes(1);
+      expect(await counts()).toEqual(before);
+      const retry = await post(endpoint, dto).expect(201);
+      expect(retry.body.folio).toBe(
+        folio((before.counters[0]?.lastNumber ?? 0) + 1),
+      );
+    });
+
     it('releases the folio when the creation fails, keeping numbers gapless', async () => {
       const sc = await scenario();
       const before = await counts();
@@ -883,7 +988,8 @@ describe('finance distribution agreements HTTP', () => {
   describe('replacement', () => {
     it('lets a new agreement replace a voided one and exposes both links', async () => {
       const sc = await scenario();
-      const original = (await create(sc).expect(201)).body;
+      const originalBody = body(sc);
+      const original = (await post(endpoint, originalBody).expect(201)).body;
       const replaced = await create(sc, {
         replacesAgreementId: original.id,
       }).expect(422);
@@ -899,6 +1005,14 @@ describe('finance distribution agreements HTTP', () => {
       });
       const oldDetail = (await get(`${endpoint}/${original.id}`).expect(200))
         .body;
+      const beforeReplay = await counts();
+      const replay = await post(endpoint, originalBody).expect(200);
+      expect(replay.body).toEqual(oldDetail);
+      expect(replay.body.snapshotFingerprint).toBe(
+        original.snapshotFingerprint,
+      );
+      expect(verifyAgreementDocument(replay.body)).toBe(true);
+      expect(await counts()).toEqual(beforeReplay);
       expect(oldDetail.status).toBe('voided');
       expect(oldDetail.replacedBy).toEqual({
         id: replacement.id,
@@ -995,6 +1109,70 @@ describe('finance distribution agreements HTTP', () => {
       );
       expect(row.receivedAt.toISOString()).toBe(created.receivedAt);
     });
+
+    it('replays creation immediately after void with the current status and unchanged snapshot', async () => {
+      const sc = await scenario();
+      const dto = body(sc);
+      const original = (await post(endpoint, dto).expect(201)).body;
+      await reverse(original.id).expect(201);
+      const before = await counts();
+      const replay = await post(endpoint, dto).expect(200);
+      expect(replay.body).toEqual(
+        (await get(endpoint + '/' + dto.id).expect(200)).body,
+      );
+      expect(replay.body.status).toBe('voided');
+      expect(replay.body.snapshotFingerprint).toBe(
+        original.snapshotFingerprint,
+      );
+      expect(verifyAgreementDocument(replay.body)).toBe(true);
+      expect(await counts()).toEqual(before);
+    });
+
+    it('enforces chronological reversal bounds at the HTTP boundary', async () => {
+      const created = (await create(await scenario()).expect(201)).body;
+      const before = await counts();
+      for (const occurredAt of [
+        new Date(new Date(created.occurredAt).getTime() - 1).toISOString(),
+        new Date(Date.now() + 60000).toISOString(),
+      ]) {
+        const response = await reverse(created.id, { occurredAt }).expect(422);
+        expect(response.body.code).toBe(
+          'FINANCE_AGREEMENT_REVERSAL_TIME_INVALID',
+        );
+      }
+      expect(await counts()).toEqual(before);
+      await reverse(created.id, { occurredAt: created.occurredAt }).expect(201);
+    });
+
+    it.each([false, true])(
+      'serializes concurrent reversals (same identity: %s)',
+      async (sameId) => {
+        const created = (await create(await scenario()).expect(201)).body;
+        const first = reversalBody();
+        const second = sameId ? first : reversalBody();
+        const before = await counts();
+        const responses = await Promise.all([
+          post(endpoint + '/' + created.id + '/reversals', first),
+          post(endpoint + '/' + created.id + '/reversals', second),
+        ]);
+        expect(responses.map((r) => r.status).sort((a, b) => a - b)).toEqual(
+          sameId ? [200, 201] : [201, 409],
+        );
+        if (sameId) expect(responses[0].body).toEqual(responses[1].body);
+        else
+          expect(responses.find((r) => r.status === 409)?.body.code).toBe(
+            'FINANCE_AGREEMENT_ALREADY_VOIDED',
+          );
+        expect((await counts()).reversals).toBe(before.reversals + 1);
+        expect(
+          await tenant(0, () =>
+            prisma.distributionAgreementReversal.count({
+              where: { agreementId: created.id },
+            }),
+          ),
+        ).toBe(1);
+      },
+    );
 
     it('rejects reversals of unknown or foreign agreements with 404 and a self id with 400', async () => {
       const sc = await scenario();
@@ -1274,6 +1452,7 @@ describe('finance distribution agreements HTTP', () => {
       const insert = (
         overrides: Partial<Record<string, number>> = {},
         id = v7(),
+        existingFolio?: string,
       ) => {
         const v = {
           requested: 100,
@@ -1285,7 +1464,7 @@ describe('finance distribution agreements HTTP', () => {
           undistributed: 0,
           ...overrides,
         };
-        const folio = `AC-2026-${++folioSeq}`;
+        const folio = existingFolio ?? `AC-2026-${++folioSeq}`;
         return tenant(0, () =>
           prisma.$transaction((tx) =>
             tx.$executeRawUnsafe(
@@ -1306,23 +1485,22 @@ describe('finance distribution agreements HTTP', () => {
             ),
           ),
         );
-      // Unnamed table-level CHECKs get Postgres-generated names: check2 = bps
-      // sum, check3 = pool sum, check4 = distributed sum, participant check =
-      // partner + work = total.
-      // A constraint name only appears in the error of that very CHECK (23514).
+      await expect(insert({}, v7(), created.folio)).rejects.toThrow(
+        /unique constraint/,
+      );
       await expect(insert({}, agreementId)).resolves.toBe(1);
       await expect(insertParticipant(50, 50, 100)).resolves.toBe(1);
       await expect(insert({ partnerPool: 50, workPool: 40 })).rejects.toThrow(
-        'DistributionAgreement_check3',
+        /check constraint/,
       );
       await expect(
         insert({ distributed: 90, undistributed: 0 }),
-      ).rejects.toThrow('DistributionAgreement_check4');
+      ).rejects.toThrow(/check constraint/);
       await expect(insert({ partnerBps: 5000, workBps: 4000 })).rejects.toThrow(
-        'DistributionAgreement_check2',
+        /check constraint/,
       );
       await expect(insertParticipant(50, 40, 100)).rejects.toThrow(
-        'DistributionAgreementParticipant_check',
+        /check constraint/,
       );
       expect(created.folio).toMatch(/^AC-\d{4}-\d{5,}$/);
     });

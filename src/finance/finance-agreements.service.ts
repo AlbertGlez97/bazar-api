@@ -36,6 +36,7 @@ export const AGREEMENT_ERRORS = {
   replacementInvalid: 'FINANCE_AGREEMENT_REPLACEMENT_INVALID',
   alreadyVoided: 'FINANCE_AGREEMENT_ALREADY_VOIDED',
   busy: 'FINANCE_AGREEMENT_BUSY',
+  reversalTimeInvalid: 'FINANCE_AGREEMENT_REVERSAL_TIME_INVALID',
 } as const;
 
 export const MAX_CREATE_ATTEMPTS = 5;
@@ -155,6 +156,26 @@ const reversalSelect = {
   deviceId: true,
 } as const;
 
+const liveDocumentSelect = {
+  creationResponse: true,
+  reversal: { select: reversalSelect },
+  replacedBy: { select: { id: true, folio: true } },
+} as const;
+
+/** Overlay live lifecycle facts without changing the immutable document hash. */
+function liveDocument(
+  row: Prisma.DistributionAgreementGetPayload<{
+    select: typeof liveDocumentSelect;
+  }>,
+) {
+  return {
+    ...(row.creationResponse as Record<string, unknown>),
+    status: row.reversal ? 'voided' : 'active',
+    reversal: row.reversal ? reversalProjection(row.reversal) : null,
+    replacedBy: row.replacedBy ?? null,
+  };
+}
+
 @Injectable()
 export class FinanceAgreementsService {
   constructor(
@@ -252,7 +273,7 @@ export class FinanceAgreementsService {
     // Replay comes first: it must not depend on current data nor consume a folio.
     const existing = await tx.distributionAgreement.findFirst({
       where: { contextId, id: data.id },
-      select: { requestFingerprint: true, creationResponse: true },
+      select: { requestFingerprint: true, ...liveDocumentSelect },
     });
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint)
@@ -260,7 +281,7 @@ export class FinanceAgreementsService {
           code: AGREEMENT_ERRORS.idConflict,
           message: 'Agreement ID already has different content',
         });
-      return { created: false as const, receipt: existing.creationResponse };
+      return { created: false as const, receipt: liveDocument(existing) };
     }
 
     const replacesAgreement = data.replacesAgreementId
@@ -483,6 +504,13 @@ export class FinanceAgreementsService {
             message: 'Agreement is already voided',
           });
         const receivedAt = new Date();
+        const occurredAt = new Date(data.occurredAt);
+        if (occurredAt < original.occurredAt || occurredAt > receivedAt)
+          throw new UnprocessableEntityException({
+            code: AGREEMENT_ERRORS.reversalTimeInvalid,
+            message:
+              'Reversal time must be on or after the agreement time and not in the future',
+          });
         const receipt = {
           ...data,
           contextId,
@@ -515,19 +543,10 @@ export class FinanceAgreementsService {
   async findOne(contextId: string, id: string) {
     const row = await this.prisma.distributionAgreement.findFirst({
       where: { id: id.toLowerCase(), contextId },
-      select: {
-        creationResponse: true,
-        reversal: { select: reversalSelect },
-        replacedBy: { select: { id: true, folio: true } },
-      },
+      select: liveDocumentSelect,
     });
     if (!row) throw new NotFoundException('Agreement not found');
-    return {
-      ...(row.creationResponse as Record<string, unknown>),
-      status: row.reversal ? 'voided' : 'active',
-      reversal: row.reversal ? reversalProjection(row.reversal) : null,
-      replacedBy: row.replacedBy,
-    };
+    return liveDocument(row);
   }
 
   async list(contextId: string, query: DistributionAgreementListDto) {

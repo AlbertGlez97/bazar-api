@@ -79,7 +79,12 @@ const simulation = (fingerprint = FINGERPRINT) => ({
 
 function setup(
   options: {
-    existing?: { requestFingerprint: string; creationResponse: unknown } | null;
+    existing?: {
+      requestFingerprint: string;
+      creationResponse: unknown;
+      reversal?: unknown;
+      replacedBy?: unknown;
+    } | null;
     fingerprint?: string;
     counter?: number;
     authorized?: boolean;
@@ -300,6 +305,49 @@ describe('FinanceAgreementsService.create', () => {
     expect(replay.tx.distributionAgreement.create).not.toHaveBeenCalled();
   });
 
+  it('replays a voided and replaced agreement with current links and the original hash', async () => {
+    const first = setup();
+    const created = await first.service.create(actor, dto());
+    const stored = first.tx.distributionAgreement.create.mock.calls[0][0].data;
+    const reversal = {
+      id: DEVICE,
+      agreementId: ID,
+      reason: 'Correction',
+      occurredAt: new Date(),
+      receivedAt: new Date(),
+      createdByMemberId: MEMBER,
+      createdByAccountId: ACCOUNT,
+      deviceId: DEVICE,
+    };
+    const replacedBy = { id: ACCOUNT, folio: 'AC-2026-00002' };
+    const replay = setup({
+      existing: {
+        requestFingerprint: stored.requestFingerprint as string,
+        creationResponse: created.receipt,
+        reversal,
+        replacedBy,
+      },
+    });
+    const result = await replay.service.create(actor, dto());
+    expect(result).toMatchObject({
+      created: false,
+      receipt: {
+        ...created.receipt,
+        status: 'voided',
+        reversal: {
+          ...reversal,
+          occurredAt: reversal.occurredAt.toISOString(),
+          receivedAt: reversal.receivedAt.toISOString(),
+        },
+        replacedBy,
+      },
+    });
+    expect(replay.simulateInTx).not.toHaveBeenCalled();
+    expect(
+      replay.queries.some((q) => q.includes('DistributionAgreementCounter')),
+    ).toBe(false);
+  });
+
   it('rejects the same id with different content as an id conflict', async () => {
     const { service, simulateInTx } = setup({
       existing: { requestFingerprint: 'other', creationResponse: {} },
@@ -515,3 +563,81 @@ describe('FinanceAgreementsService.create', () => {
 });
 
 const service = (setupResult: ReturnType<typeof setup>) => setupResult.service;
+
+describe('FinanceAgreementsService.reverse chronology', () => {
+  const createdAt = '2026-10-09T18:00:00.000Z';
+  const now = '2026-10-09T19:00:00.000Z';
+  const reversalDto = (occurredAt: string) => ({
+    id: DEVICE,
+    reason: 'Correction',
+    occurredAt,
+    createdByMemberId: MEMBER,
+    deviceId: DEVICE,
+  });
+  function reversalSetup() {
+    const base = setup();
+    const reversal = {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+    };
+    const original = vi.fn().mockResolvedValue({
+      occurredAt: new Date(createdAt),
+      reversal: null,
+      creationResponse: { id: ID },
+    });
+    Object.assign(base.tx, { distributionAgreementReversal: reversal });
+    Object.assign(base.tx.distributionAgreement, {
+      findFirstOrThrow: original,
+    });
+    return { ...base, reversal, original };
+  }
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+  });
+  afterEach(() => vi.useRealTimers());
+  it.each(['2026-10-09T17:59:59.999Z', '2026-10-09T19:00:00.001Z'])(
+    'rejects %s with structured 422 and no write',
+    async (occurredAt) => {
+      const { service, reversal } = reversalSetup();
+      await expect(
+        service.reverse(actor, ID, reversalDto(occurredAt)),
+      ).rejects.toMatchObject({
+        status: 422,
+        response: { code: 'FINANCE_AGREEMENT_REVERSAL_TIME_INVALID' },
+      });
+      expect(reversal.create).not.toHaveBeenCalled();
+    },
+  );
+  it.each([createdAt, '2026-10-09T18:30:00.000Z', now])(
+    'accepts inclusive backend-clock boundary %s',
+    async (occurredAt) => {
+      const { service, reversal } = reversalSetup();
+      const result = await service.reverse(actor, ID, reversalDto(occurredAt));
+      expect(result).toMatchObject({
+        created: true,
+        receipt: { occurredAt, receivedAt: now },
+      });
+      expect(reversal.create).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('replays before time checks after the backend clock changes', async () => {
+    const { service, reversal, original } = reversalSetup();
+    const dto = reversalDto(now);
+    const first = await service.reverse(actor, ID, dto);
+    const saved = reversal.create.mock.calls[0][0].data;
+    reversal.findFirst.mockResolvedValue(saved);
+    vi.setSystemTime(new Date('2026-10-10T19:00:00Z'));
+    expect(await service.reverse(actor, ID, dto)).toEqual({
+      created: false,
+      receipt: first.receipt,
+    });
+    vi.setSystemTime(new Date(createdAt)); // Accepted retries also survive a backend clock correction.
+    expect(await service.reverse(actor, ID, dto)).toEqual({
+      created: false,
+      receipt: first.receipt,
+    });
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(reversal.create).toHaveBeenCalledTimes(1);
+  });
+});

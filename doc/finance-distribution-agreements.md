@@ -43,7 +43,7 @@ All routes are socio-only (`SocioGuard`): colaboradores, inactive members, forei
 
 Rejected with `400` if present: `contextId`, `createdByAccountId`, `folio`, `status`, `participants`, `members`, `pools`, `totals`, amounts per member or any other unknown property.
 
-Responses: `201` the first time, `200` for an exact replay (same id and same content from the same account) with the original stored document. A replay is answered BEFORE drift detection and never consumes a folio, so a retry after a lost response always works, even if the data changed meanwhile. JSON key order of a replay can differ from the first response (it is read back from JSONB); compare by value.
+Responses: `201` the first time, `200` for an exact replay (same id and same content from the same account) with the original stored snapshot and its current live `status`, `reversal` and `replacedBy` projection (the same projection as detail). The snapshot and its fingerprint remain unchanged, even after voiding or replacement. A replay is answered BEFORE drift detection and never consumes a folio, so a retry after a lost response always works, even if the data changed meanwhile. JSON key order of a replay can differ from the first response (it is read back from JSONB); compare by value.
 
 ### Document of record (the response body)
 
@@ -52,7 +52,7 @@ interface DistributionAgreement {
   id: string;
   contextId: string;
   folio: string; // "AC-2026-00001"
-  status: 'active' | 'voided'; // creation always answers 'active'
+  status: 'active' | 'voided'; // first creation answers 'active'; replay uses current status
   title: string;
   note: string | null;
   replacesAgreementId: string | null;
@@ -103,8 +103,17 @@ interface DistributionAgreement {
     accountId: string;
     deviceId: string;
   };
-  reversal: null; // live projection, see the detail endpoint
-  replacedBy: null;
+  reversal: {
+    id: string;
+    agreementId: string;
+    reason: string;
+    occurredAt: string;
+    receivedAt: string;
+    createdByMemberId: string;
+    createdByAccountId: string;
+    deviceId: string;
+  } | null; // live projection; null on first creation
+  replacedBy: { id: string; folio: string } | null;
 }
 ```
 
@@ -141,6 +150,8 @@ Creation runs in one `RepeatableRead` transaction: live authorization (`FOR SHAR
 ## Void (reversal)
 
 `POST /finance/distribution-agreements/:id/reversals` with `{ id (UUIDv7, different from the agreement id), reason (trimmed, 1..1000), occurredAt, createdByMemberId, deviceId }`. `201` first time, `200` replay of the same reversal, `409 FINANCE_AGREEMENT_ID_CONFLICT` if the reversal id exists with different content, `409 FINANCE_AGREEMENT_ALREADY_VOIDED` if the agreement was already voided by another reversal, `404` for unknown or foreign agreements. The receipt is `{ id, agreementId, reason, occurredAt, createdByMemberId, deviceId, contextId, createdByAccountId, receivedAt, original }` where `original` is the frozen agreement document. Voiding never modifies the agreement row.
+
+For a new reversal, `occurredAt` must be greater than or equal to the original agreement's `occurredAt` and less than or equal to the backend clock captured as `receivedAt` immediately before insertion. Both boundaries are inclusive; no future-clock tolerance is granted. Invalid chronology returns `422 FINANCE_AGREEMENT_REVERSAL_TIME_INVALID` without inserting a reversal. Exact reversal replay is resolved before chronology validation, so an accepted retry remains valid after the backend clock advances or is corrected. The client clock never defines the upper bound.
 
 To correct an agreement: void it, simulate again, and create a new one with `replacesAgreementId` pointing at the voided one. Each voided agreement can be replaced once; the old document then shows `replacedBy` and the new one `replacesAgreement`.
 
