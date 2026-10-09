@@ -1,6 +1,9 @@
 import { vi } from 'vitest';
 import type { PrismaService } from '../database/prisma.service.js';
-import { FinanceDistributionService } from './finance-distribution.service.js';
+import {
+  FinanceDistributionService,
+  simulationFingerprint,
+} from './finance-distribution.service.js';
 import type { FinanceDistributionSimulationDto } from './finance-distribution.dto.js';
 import type { FinanceOverviewService } from './finance-overview.service.js';
 
@@ -54,18 +57,22 @@ function setup(
     member: { findMany: vi.fn().mockResolvedValue(options.members ?? []) },
   };
   const status = options.status ?? 'complete';
-  const compute = vi.fn().mockResolvedValue({
-    currency: 'MXN',
-    period: { from: base.from, to: base.to, interval: '[from,to)' },
-    result: {
-      potentiallyAvailableMinor: options.available ?? 1_000_000,
-      status,
-    },
-    warnings:
-      status === 'partial'
-        ? [{ code: 'MISSING_SALE_COST', message: 'missing' }]
-        : [],
-  });
+  const compute = vi
+    .fn()
+    .mockImplementation((_tx: unknown, _id: string, from: string, to: string) =>
+      Promise.resolve({
+        currency: 'MXN',
+        period: { from, to, interval: '[from,to)' },
+        result: {
+          potentiallyAvailableMinor: options.available ?? 1_000_000,
+          status,
+        },
+        warnings:
+          status === 'partial'
+            ? [{ code: 'MISSING_SALE_COST', message: 'missing' }]
+            : [],
+      }),
+    );
   const transaction = vi.fn(
     async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx),
   );
@@ -353,6 +360,107 @@ describe('FinanceDistributionService', () => {
     );
     await expect(service.simulate('tenant', dto())).rejects.toMatchObject({
       code: 'FINANCE_OVERVIEW_OVERFLOW',
+    });
+  });
+
+  describe('simulationFingerprint', () => {
+    const run = (
+      options: Parameters<typeof setup>[0] = worked,
+      patch: Partial<FinanceDistributionSimulationDto> = {},
+    ) => setup(options).service.simulate('tenant', dto(patch));
+
+    it('is a versioned sha256 and identical for identical data', async () => {
+      const first = await run();
+      const second = await run();
+      expect(first.simulationFingerprint).toMatch(/^sim1:[0-9a-f]{64}$/);
+      expect(second.simulationFingerprint).toBe(first.simulationFingerprint);
+    });
+
+    it('does not depend on key order and excludes itself and the simulation markers', async () => {
+      const result = await run();
+      const reordered = {
+        warnings: [...result.warnings],
+        totals: { ...result.totals },
+        members: result.members.map((m) =>
+          Object.fromEntries(Object.entries(m).reverse()),
+        ),
+        pools: { ...result.pools },
+        rule: Object.fromEntries(Object.entries(result.rule).reverse()),
+        financialBase: result.financialBase,
+        currency: result.currency,
+        period: result.period,
+      };
+      expect(simulationFingerprint(reordered)).toBe(
+        result.simulationFingerprint,
+      );
+    });
+
+    it.each([
+      ['period', { from: '2026-10-02', to: '2026-10-03' }, worked],
+      ['rule', { partnerShareBps: 4000, workShareBps: 6000 }, worked],
+      ['requested amount', { requestedAmountMinor: 600001 }, worked],
+      [
+        'work basis',
+        { workBasis: 'KNOWN_MINUTES' as const },
+        {
+          ...worked,
+          shifts: [
+            { memberId: A, count: 2, minutes: 60 },
+            { memberId: B, count: 3, minutes: 90 },
+          ],
+        },
+      ],
+    ])('changes when the %s changes', async (_label, patch, options) => {
+      const baseline = await run();
+      const changed = await run(options, patch);
+      expect(changed.simulationFingerprint).not.toBe(
+        baseline.simulationFingerprint,
+      );
+    });
+
+    it('changes when a member name, a shift count, the status or a warning changes', async () => {
+      const baseline = await run();
+      const renamed = await run({
+        ...worked,
+        members: [{ ...member(A), name: 'Renamed' }, member(B)],
+      });
+      const moreShifts = await run({
+        ...worked,
+        shifts: [
+          { memberId: A, count: 3, minutes: null },
+          { memberId: B, count: 3, minutes: null },
+        ],
+      });
+      const partial = await run({ ...worked, status: 'partial' });
+      const inactiveWorker = await run({
+        ...worked,
+        members: [member(A), member(B, 'colaborador', false)],
+      });
+      const prints = new Set(
+        [baseline, renamed, moreShifts, partial, inactiveWorker].map(
+          (r) => r.simulationFingerprint,
+        ),
+      );
+      expect(prints.size).toBe(5);
+    });
+
+    it('keeps the response shape additive and pure', async () => {
+      const result = await run();
+      expect(result.simulation).toBe(true);
+      expect(result.persisted).toBe(false);
+      expect(Object.keys(result)).toEqual([
+        'period',
+        'simulation',
+        'persisted',
+        'currency',
+        'financialBase',
+        'rule',
+        'pools',
+        'members',
+        'totals',
+        'warnings',
+        'simulationFingerprint',
+      ]);
     });
   });
 });

@@ -72,6 +72,7 @@ All amounts are integer minor units.
 | `members`       | Sorted by `memberId` ascending. Contains every eligible partner (even with no work) and every member with at least one active shift in the period                                  |
 | `totals`        | `distributedMinor`, `undistributedMinor`                                                                                                                                           |
 | `warnings`      | Array of `{code, message}`; codes are stable, messages are informational English                                                                                                   |
+| `simulationFingerprint` | `sim1:` followed by the sha256 hex of the canonical JSON of `period`, `currency`, `financialBase`, `rule`, `pools`, `members`, `totals` and `warnings` (it excludes itself, `simulation`, `persisted` and any timestamp). Identical data always yields the same value; any change of the data the participants saw changes it. Phase 5.5 agreements require it to detect drift |
 
 Each `members` item: `memberId`, `name`, `role` (`socio`/`colaborador`), `isActive`, `partnerEligible`, `partnerAmountMinor`, `workUnits` (weight in the chosen basis), `shiftCount`, `knownMinutes`, `unknownDurationCount`, `workAmountMinor`, `totalMinor`.
 
@@ -176,6 +177,7 @@ interface DistributionSimulationResponse {
   members: DistributionMember[];
   totals: { distributedMinor: number; undistributedMinor: number };
   warnings: { code: string; message: string }[];
+  simulationFingerprint: string; // 'sim1:' + 64 hex chars
 }
 ```
 

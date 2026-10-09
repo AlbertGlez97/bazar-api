@@ -402,6 +402,10 @@ describe('finance distribution simulator HTTP', () => {
       await shift(actors[0].s1, period.from, 30);
       for (let i = 0; i < 3; i++) await shift(actors[0].s2, period.from, 45);
       const body = await simulate(period);
+      expect(body.simulationFingerprint).toMatch(/^sim1:[0-9a-f]{64}$/);
+      expect((await simulate(period)).simulationFingerprint).toBe(
+        body.simulationFingerprint,
+      );
       expect(body).toMatchObject({
         simulation: true,
         persisted: false,
