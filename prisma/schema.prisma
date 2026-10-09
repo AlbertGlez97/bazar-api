@@ -62,6 +62,8 @@ enum DeviceStatus {
 }
 
 model Account {
+  recordedDistributionAgreements DistributionAgreement[]
+  distributionAgreementReversals DistributionAgreementReversal[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   recordedWorkShifts WorkShift[]
@@ -90,6 +92,9 @@ model Account {
 }
 
 model Member {
+  recordedDistributionAgreements DistributionAgreement[]
+  distributionAgreementReversals DistributionAgreementReversal[]
+  distributionAgreementParticipations DistributionAgreementParticipant[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   id            String         @id @default(uuid()) @db.Uuid
@@ -151,6 +156,8 @@ model Member {
 }
 
 model Device {
+  recordedDistributionAgreements DistributionAgreement[]
+  distributionAgreementReversals DistributionAgreementReversal[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   id         String       @id @default(uuid()) @db.Uuid
@@ -716,4 +723,105 @@ model FinanceReserveReversal {
   device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
   @@unique([reserveId, contextId])
   @@index([contextId, occurredAt, id])
+}
+
+// Phase 5.5: immutable "Acuerdo de reparto" frozen from a distribution simulation.
+// Not a payment, withdrawal, debt or obligation. UPDATE/DELETE are rejected by
+// database triggers on the agreement, participant and reversal tables.
+model DistributionAgreement {
+  id String @id @db.Uuid
+  contextId String
+  folio String
+  periodFrom DateTime @db.Date
+  periodTo DateTime @db.Date
+  requestedAmountMinor Int
+  partnerShareBps Int
+  workShareBps Int
+  workBasis String
+  partnerMode String @default("EQUAL")
+  currency String @default("MXN") @db.Char(3)
+  financialStatus String
+  potentiallyAvailableMinor Int
+  partnerPoolMinor Int
+  workPoolMinor Int
+  distributedMinor Int
+  undistributedMinor Int
+  algorithmVersion Int
+  title String
+  note String?
+  replacesAgreementId String? @db.Uuid
+  createdByMemberId String @db.Uuid
+  createdByMemberName String
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  requestFingerprint String
+  snapshotFingerprint String
+  warningsSnapshot Json
+  creationResponse Json
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  replacesAgreement DistributionAgreement? @relation("AgreementReplacement", fields: [replacesAgreementId, contextId], references: [id, contextId], onDelete: Restrict)
+  replacedBy DistributionAgreement? @relation("AgreementReplacement")
+  participants DistributionAgreementParticipant[]
+  reversal DistributionAgreementReversal?
+  @@unique([id, contextId])
+  @@unique([contextId, folio])
+  @@unique([replacesAgreementId, contextId])
+  @@index([contextId, receivedAt, id])
+  @@index([contextId, periodFrom, periodTo, id])
+}
+
+// Frozen per-member line of an agreement: name, role and flags are snapshots.
+model DistributionAgreementParticipant {
+  agreementId String @db.Uuid
+  contextId String
+  memberId String @db.Uuid
+  memberName String
+  role String
+  isActive Boolean
+  partnerEligible Boolean
+  partnerAmountMinor Int
+  workUnits Int
+  shiftCount Int
+  knownMinutes Int
+  unknownDurationCount Int
+  workAmountMinor Int
+  totalMinor Int
+  agreement DistributionAgreement @relation(fields: [agreementId, contextId], references: [id, contextId], onDelete: Restrict)
+  member Member @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  @@id([agreementId, memberId])
+  @@index([contextId, memberId])
+}
+
+// Voiding fact; the agreement row itself never changes.
+model DistributionAgreementReversal {
+  id String @id @db.Uuid
+  contextId String
+  agreementId String @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  agreement DistributionAgreement @relation(fields: [agreementId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  @@unique([agreementId, contextId])
+  @@index([contextId, occurredAt, id])
+}
+
+// Gapless folio sequence per context and business-time year; allocated with an
+// atomic upsert inside the creating transaction. The only mutable agreement table.
+model DistributionAgreementCounter {
+  contextId String
+  year Int
+  lastNumber Int
+  @@id([contextId, year])
 }

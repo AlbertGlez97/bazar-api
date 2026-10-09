@@ -14,6 +14,10 @@ import {
  * each one specifically cannot be scoped this way.
  */
 const TENANT_SCOPED_MODELS = new Set([
+  'DistributionAgreement',
+  'DistributionAgreementParticipant',
+  'DistributionAgreementReversal',
+  'DistributionAgreementCounter',
   'FinanceReserve',
   'FinanceReserveReversal',
   'Contribution',
