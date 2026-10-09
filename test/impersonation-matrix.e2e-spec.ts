@@ -33,6 +33,10 @@ import { withTestTenant } from './tenant-scope.js';
 const SOCIO_ROUTES = [
   'GET /finance/overview',
   'POST /finance/distribution-simulations',
+  'POST /finance/distribution-agreements',
+  'GET /finance/distribution-agreements',
+  'GET /finance/distribution-agreements/:id',
+  'POST /finance/distribution-agreements/:id/reversals',
   'POST /finance/reserves',
   'GET /finance/reserves',
   'POST /finance/reserves/:id/reversals',
