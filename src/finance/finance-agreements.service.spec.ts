@@ -407,6 +407,47 @@ describe('FinanceAgreementsService.create', () => {
     ).toBe('01939000-0000-7000-8000-0000000000ff');
   });
 
+  it('queues creations of one context in this process so they never overlap', async () => {
+    const { service, transaction, tx } = setup();
+    let running = 0;
+    let peak = 0;
+    transaction.mockImplementation(
+      async (fn: (client: typeof tx) => unknown) => {
+        running++;
+        peak = Math.max(peak, running);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        try {
+          return await fn(tx);
+        } finally {
+          running--;
+        }
+      },
+    );
+    vi.useRealTimers();
+    const results = await Promise.all(
+      [1, 2, 3].map((n) =>
+        service.create(
+          actor,
+          dto({ id: `01939000-0000-7000-8000-00000000000${n}` }),
+        ),
+      ),
+    );
+    expect(results.every((r) => r.created)).toBe(true);
+    expect(peak).toBe(1);
+  });
+
+  it('keeps queueing after a failed creation', async () => {
+    const { service, transaction } = setup();
+    vi.useRealTimers();
+    transaction.mockRejectedValueOnce(new ConflictException('boom'));
+    await expect(service.create(actor, dto())).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    await expect(service.create(actor, dto())).resolves.toMatchObject({
+      created: true,
+    });
+  });
+
   it('retries the whole transaction, re-simulating, after a serialization failure', async () => {
     const { service, transaction, simulateInTx } = setup();
     transaction.mockRejectedValueOnce(serializationFailure());

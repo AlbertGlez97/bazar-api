@@ -163,6 +163,24 @@ export class FinanceAgreementsService {
     private readonly distribution: FinanceDistributionService,
   ) {}
 
+  // Creations of one context queue up inside this process so they do not fight
+  // over the folio counter; the retry above remains the cross-process guarantee.
+  private readonly createQueues = new Map<string, Promise<unknown>>();
+
+  private serialized<T>(key: string, unit: () => Promise<T>): Promise<T> {
+    const previous = this.createQueues.get(key) ?? Promise.resolve();
+    const run = previous.then(unit, unit);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.createQueues.set(key, tail);
+    void tail.then(() => {
+      if (this.createQueues.get(key) === tail) this.createQueues.delete(key);
+    });
+    return run;
+  }
+
   private assertOrigin(
     actor: Actor,
     dto: { createdByMemberId: string; deviceId: string },
@@ -212,10 +230,12 @@ export class FinanceAgreementsService {
       operation: 'create',
       ...data,
     });
-    return runWithRetry(() =>
-      this.prisma.$transaction(
-        (tx) => this.createInTx(tx, actor, data, requestFingerprint),
-        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    return this.serialized(contextId, () =>
+      runWithRetry(() =>
+        this.prisma.$transaction(
+          (tx) => this.createInTx(tx, actor, data, requestFingerprint),
+          { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+        ),
       ),
     );
   }
