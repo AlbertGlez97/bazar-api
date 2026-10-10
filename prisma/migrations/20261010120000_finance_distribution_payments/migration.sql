@@ -5,7 +5,7 @@
 
 -- FK target for the payment -> participant composite reference. Index only; the
 -- participant table stays immutable (the primary key is already unique on a subset).
-ALTER TABLE "DistributionAgreementParticipant" ADD CONSTRAINT "DistributionAgreementParticipant_agreementId_memberId_contextId_key" UNIQUE ("agreementId", "memberId", "contextId");
+ALTER TABLE "DistributionAgreementParticipant" ADD CONSTRAINT "DistributionAgreementParticipant_agreementId_memberId_conte_key" UNIQUE ("agreementId", "memberId", "contextId");
 
 CREATE TABLE "DistributionPayment" (
  "id" UUID NOT NULL,
@@ -30,12 +30,12 @@ CREATE TABLE "DistributionPayment" (
  CONSTRAINT "DistributionPayment_requestFingerprint_check" CHECK (length("requestFingerprint") > 0),
  CONSTRAINT "DistributionPayment_id_contextId_key" UNIQUE ("id", "contextId"),
  CONSTRAINT "DistributionPayment_agreementId_contextId_fkey" FOREIGN KEY ("agreementId", "contextId") REFERENCES "DistributionAgreement"("id", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
- CONSTRAINT "DistributionPayment_participant_fkey" FOREIGN KEY ("agreementId", "participantMemberId", "contextId") REFERENCES "DistributionAgreementParticipant"("agreementId", "memberId", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
+ CONSTRAINT "DistributionPayment_agreementId_participantMemberId_contex_fkey" FOREIGN KEY ("agreementId", "participantMemberId", "contextId") REFERENCES "DistributionAgreementParticipant"("agreementId", "memberId", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
  CONSTRAINT "DistributionPayment_createdByMemberId_contextId_fkey" FOREIGN KEY ("createdByMemberId", "contextId") REFERENCES "Member"("id", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
  CONSTRAINT "DistributionPayment_createdByAccountId_contextId_fkey" FOREIGN KEY ("createdByAccountId", "contextId") REFERENCES "Account"("id", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
  CONSTRAINT "DistributionPayment_deviceId_contextId_fkey" FOREIGN KEY ("deviceId", "contextId") REFERENCES "Device"("id", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE
 );
-CREATE INDEX "DistributionPayment_contextId_agreementId_participantMemberId_idx" ON "DistributionPayment"("contextId", "agreementId", "participantMemberId");
+CREATE INDEX "DistributionPayment_contextId_agreementId_participantMember_idx" ON "DistributionPayment"("contextId", "agreementId", "participantMemberId");
 CREATE INDEX "DistributionPayment_contextId_receivedAt_id_idx" ON "DistributionPayment"("contextId", "receivedAt", "id");
 
 CREATE TABLE "DistributionPaymentReversal" (

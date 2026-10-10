@@ -1134,7 +1134,7 @@ describe('finance distribution payments HTTP', () => {
       );
       expect(fk).toMatchObject({
         code: '23503',
-        constraint: 'DistributionPayment_participant_fkey',
+        constraint: 'DistributionPayment_agreementId_participantMemberId_contex_fkey',
       });
       // One reversal per payment, enforced by the database too.
       const dup = await variant('reversal', rid, { id: v7() }).then(
