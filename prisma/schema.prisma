@@ -64,6 +64,8 @@ enum DeviceStatus {
 model Account {
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
+  recordedDistributionPayments DistributionPayment[]
+  distributionPaymentReversals DistributionPaymentReversal[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   recordedWorkShifts WorkShift[]
@@ -95,6 +97,8 @@ model Member {
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
   distributionAgreementParticipations DistributionAgreementParticipant[]
+  recordedDistributionPayments DistributionPayment[]
+  distributionPaymentReversals DistributionPaymentReversal[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   id            String         @id @default(uuid()) @db.Uuid
@@ -158,6 +162,8 @@ model Member {
 model Device {
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
+  recordedDistributionPayments DistributionPayment[]
+  distributionPaymentReversals DistributionPaymentReversal[]
   recordedFinanceReserves FinanceReserve[]
   financeReserveReversals FinanceReserveReversal[]
   id         String       @id @default(uuid()) @db.Uuid
@@ -767,6 +773,7 @@ model DistributionAgreement {
   replacedBy DistributionAgreement? @relation("AgreementReplacement")
   participants DistributionAgreementParticipant[]
   reversal DistributionAgreementReversal?
+  payments DistributionPayment[]
   @@unique([id, contextId])
   @@unique([contextId, folio])
   @@unique([replacesAgreementId, contextId])
@@ -792,7 +799,9 @@ model DistributionAgreementParticipant {
   totalMinor Int
   agreement DistributionAgreement @relation(fields: [agreementId, contextId], references: [id, contextId], onDelete: Restrict)
   member Member @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  payments DistributionPayment[]
   @@id([agreementId, memberId])
+  @@unique([agreementId, memberId, contextId])
   @@index([contextId, memberId])
 }
 
@@ -824,4 +833,54 @@ model DistributionAgreementCounter {
   year Int
   lastNumber Int
   @@id([contextId, year])
+}
+
+// Phase 6: a REAL payment recorded against one participant of an agreement.
+// La Marchanta does not move money; it records what was actually paid.
+// Immutable (database trigger): the only correction is a reversal.
+model DistributionPayment {
+  id String @id @db.Uuid
+  contextId String
+  agreementId String @db.Uuid
+  participantMemberId String @db.Uuid
+  amountMinor Int
+  currency String @db.Char(3)
+  occurredAt DateTime @db.Timestamptz(3)
+  note String?
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  requestFingerprint String
+  creationResponse Json
+  agreement DistributionAgreement @relation(fields: [agreementId, contextId], references: [id, contextId], onDelete: Restrict)
+  participant DistributionAgreementParticipant @relation(fields: [agreementId, participantMemberId, contextId], references: [agreementId, memberId, contextId], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  reversal DistributionPaymentReversal?
+  @@unique([id, contextId])
+  @@index([contextId, agreementId, participantMemberId])
+  @@index([contextId, receivedAt, id])
+}
+
+// Voiding fact for one payment; the payment row itself never changes.
+model DistributionPaymentReversal {
+  id String @id @db.Uuid
+  contextId String
+  paymentId String @unique @db.Uuid
+  reason String
+  occurredAt DateTime @db.Timestamptz(3)
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdByMemberId String @db.Uuid
+  createdByAccountId String @db.Uuid
+  deviceId String @db.Uuid
+  requestFingerprint String
+  creationResponse Json
+  payment DistributionPayment @relation(fields: [paymentId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByMember Member @relation(fields: [createdByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  createdByAccount Account @relation(fields: [createdByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  device Device @relation(fields: [deviceId, contextId], references: [id, contextId], onDelete: Restrict)
+  @@unique([paymentId, contextId])
+  @@index([contextId, occurredAt, id])
 }

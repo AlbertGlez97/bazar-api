@@ -18,6 +18,8 @@ const TENANT_SCOPED_MODELS = new Set([
   'DistributionAgreementParticipant',
   'DistributionAgreementReversal',
   'DistributionAgreementCounter',
+  'DistributionPayment',
+  'DistributionPaymentReversal',
   'FinanceReserve',
   'FinanceReserveReversal',
   'Contribution',
