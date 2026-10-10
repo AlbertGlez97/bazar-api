@@ -4,7 +4,7 @@ A distribution agreement ("Acuerdo de reparto") is a persisted, immutable and au
 
 ## What it is NOT
 
-- It is not a payment, withdrawal, settlement or transfer, and it creates no debt, obligation or member balance. No `Payment`, `Settlement`, `Withdrawal` or `AgreementPayment` table exists.
+- It is not a payment, withdrawal, settlement or transfer, and it creates no debt, obligation or member balance. Real payments recorded against an agreement (Phase 6) live in separate tables and never modify the agreement; see `finance-distribution-payments.md`. `GET /finance/distribution-agreements/:id` additionally returns a live `paymentSummary`; the immutable creation receipt and its replay do not carry it.
 - It is not a legal contract and carries no digital signature. The document says so in its `notice`.
 - It generates and stores no PDF and does not work offline: the frontend renders the JSON and may print it.
 - The simulator stays pure: `POST /finance/distribution-simulations` persists nothing, ever. The only new field it returns is `simulationFingerprint`.

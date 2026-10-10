@@ -42,7 +42,7 @@ PowerShell users should use `npm.cmd` and `npx.cmd` instead of blocked .ps1 shim
    the first migration and whenever the password changes). The app refuses to
    start on a superuser or BYPASSRLS connection.
 
-   The committed migrations (26, through the Phase 5.5 distribution agreements)
+   The committed migrations (27, through the Phase 6 distribution payments)
    are listed in `prisma/migrations`. Do not reset a database to resolve
    drift; inspect the migration history and back up its data first.
 
@@ -171,7 +171,7 @@ bound to its own member and can only act as that person.
 | Commissions | Selected socio: `GET /commissions`, `PATCH /settings/commission-rate`, `PATCH /members/:id/commission-rate`.                          |
 | Reports     | Selected socio: `GET /reports/sales-by-period`, `GET /reports/sales-by-member`.                                                       |
 | Debts       | Selected socio: `POST /deudas`, `GET /deudas`, `GET /deudas/:id`. Any selected member/device: `POST /deudas/:id/abonos`.              |
-| Finance     | Contributions, expenses, work shifts, overview, reserves, distribution simulator and agreements under `/finance/*`. See `doc/finance-architecture.md`. |
+| Finance     | Contributions, expenses, work shifts, overview, reserves, distribution simulator, agreements and agreement payments under `/finance/*`. See `doc/finance-architecture.md` and `doc/finance-distribution-payments.md`. |
 
 ### Products and images
 
