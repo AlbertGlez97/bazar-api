@@ -25,6 +25,7 @@ import {
   formatFolio,
   type SimulationShape,
 } from './finance-agreements.snapshot.js';
+import { loadPaymentSummary } from './finance-payments.summary.js';
 import { FinanceDistributionService } from './finance-distribution.service.js';
 import { isCalendarDate } from './work-shift.dto.js';
 
@@ -202,7 +203,7 @@ export class FinanceAgreementsService {
     return run;
   }
 
-  private assertOrigin(
+  assertOrigin(
     actor: Actor,
     dto: { createdByMemberId: string; deviceId: string },
   ) {
@@ -216,7 +217,7 @@ export class FinanceAgreementsService {
   }
 
   /** Re-checks, under FOR SHARE locks, that the origin is still authorized. */
-  private async authorize(
+  async authorize(
     tx: Prisma.TransactionClient,
     actor: Actor,
   ): Promise<{ memberName: string }> {
@@ -541,12 +542,22 @@ export class FinanceAgreementsService {
 
   /** The frozen document of record plus the live status projection. */
   async findOne(contextId: string, id: string) {
-    const row = await this.prisma.distributionAgreement.findFirst({
-      where: { id: id.toLowerCase(), contextId },
-      select: liveDocumentSelect,
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.distributionAgreement.findFirst({
+        where: { id: id.toLowerCase(), contextId },
+        select: liveDocumentSelect,
+      });
+      if (!row) throw new NotFoundException('Agreement not found');
+      // Live payments overlay; the immutable creation receipt never carries it.
+      return {
+        ...liveDocument(row),
+        paymentSummary: await loadPaymentSummary(
+          tx,
+          contextId,
+          id.toLowerCase(),
+        ),
+      };
     });
-    if (!row) throw new NotFoundException('Agreement not found');
-    return liveDocument(row);
   }
 
   async list(contextId: string, query: DistributionAgreementListDto) {
