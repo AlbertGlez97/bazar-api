@@ -803,7 +803,9 @@ describe('finance distribution payments HTTP', () => {
           pay(a.id, a.members[0], 800),
           pay(a.id, a.members[0], 800),
         ]);
-        expect(results.map((r) => r.status).sort()).toEqual([201, 422]);
+        expect(results.map((r) => r.status).sort((x, y) => x - y)).toEqual([
+          201, 422,
+        ]);
         const loser = results.find((r) => r.status === 422)!;
         expect(loser.body).toMatchObject({
           code: 'FINANCE_PAYMENT_EXCEEDS_PENDING',
@@ -869,7 +871,9 @@ describe('finance distribution payments HTTP', () => {
         reversePayment(paid.body.id),
         reversePayment(paid.body.id),
       ]);
-      expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+      expect(results.map((r) => r.status).sort((x, y) => x - y)).toEqual([
+        201, 409,
+      ]);
       expect(results.find((r) => r.status === 409)!.body.code).toBe(
         'FINANCE_PAYMENT_ALREADY_VOIDED',
       );
@@ -1134,7 +1138,8 @@ describe('finance distribution payments HTTP', () => {
       );
       expect(fk).toMatchObject({
         code: '23503',
-        constraint: 'DistributionPayment_agreementId_participantMemberId_contex_fkey',
+        constraint:
+          'DistributionPayment_agreementId_participantMemberId_contex_fkey',
       });
       // One reversal per payment, enforced by the database too.
       const dup = await variant('reversal', rid, { id: v7() }).then(

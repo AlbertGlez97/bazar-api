@@ -261,6 +261,10 @@ describe('finance distribution agreements HTTP', () => {
       reversalBody(overrides, index),
       index,
     );
+  const withoutPayments = ({
+    paymentSummary: _paymentSummary,
+    ...document
+  }: Record<string, unknown>) => document;
   const counts = (index = 0) =>
     tenant(index, async () => ({
       agreements: await prisma.distributionAgreement.count(),
@@ -447,6 +451,7 @@ describe('finance distribution agreements HTTP', () => {
       expect(codes).not.toContain('NOT_A_PAYMENT_OR_OBLIGATION');
       expect(res.body).not.toHaveProperty('simulation');
       expect(res.body).not.toHaveProperty('requestFingerprint');
+      expect(res.body).not.toHaveProperty('paymentSummary');
       expect(verifyAgreementDocument(res.body)).toBe(true);
 
       const second = await create(await scenario()).expect(201);
@@ -691,8 +696,14 @@ describe('finance distribution agreements HTTP', () => {
       await fund(sc.period, 77_000);
       await fund(nextPeriod(), 11_000);
       const detail = await get(`${endpoint}/${created.body.id}`).expect(200);
-      expect(detail.body).toEqual(created.body);
-      expect(verifyAgreementDocument(detail.body)).toBe(true);
+      // The detail adds the live paymentSummary; the document itself is unchanged.
+      expect(detail.body.paymentSummary).toMatchObject({
+        status: 'UNPAID',
+        paidMinor: 0,
+        hasPayments: false,
+      });
+      expect(withoutPayments(detail.body)).toEqual(created.body);
+      expect(verifyAgreementDocument(withoutPayments(detail.body))).toBe(true);
       expect(
         detail.body.participants.map((p: Participant) => [
           p.name,
@@ -1007,7 +1018,7 @@ describe('finance distribution agreements HTTP', () => {
         .body;
       const beforeReplay = await counts();
       const replay = await post(endpoint, originalBody).expect(200);
-      expect(replay.body).toEqual(oldDetail);
+      expect(replay.body).toEqual(withoutPayments(oldDetail));
       expect(replay.body.snapshotFingerprint).toBe(
         original.snapshotFingerprint,
       );
@@ -1020,7 +1031,7 @@ describe('finance distribution agreements HTTP', () => {
       });
       const newDetail = (await get(`${endpoint}/${replacement.id}`).expect(200))
         .body;
-      expect(newDetail).toEqual(replacement);
+      expect(withoutPayments(newDetail)).toEqual(replacement);
       const list = (
         await get(endpoint, { from: sc.period.from, to: sc.period.to }).expect(
           200,
@@ -1091,7 +1102,13 @@ describe('finance distribution agreements HTTP', () => {
       expect(second.body.code).toBe('FINANCE_AGREEMENT_ALREADY_VOIDED');
 
       const detail = (await get(`${endpoint}/${created.id}`).expect(200)).body;
-      const { status, reversal, replacedBy, ...document } = detail;
+      const {
+        status,
+        reversal,
+        replacedBy,
+        paymentSummary: _payments,
+        ...document
+      } = detail;
       const { status: _s, reversal: _r, replacedBy: _b, ...original } = created;
       expect(status).toBe('voided');
       expect(replacedBy).toBeNull();
@@ -1101,7 +1118,7 @@ describe('finance distribution agreements HTTP', () => {
         reason: 'Captured with a wrong period',
       });
       expect(document).toEqual(original);
-      expect(verifyAgreementDocument(detail)).toBe(true);
+      expect(verifyAgreementDocument(withoutPayments(detail))).toBe(true);
       const row = await tenant(0, () =>
         prisma.distributionAgreement.findFirstOrThrow({
           where: { id: created.id },
@@ -1118,7 +1135,7 @@ describe('finance distribution agreements HTTP', () => {
       const before = await counts();
       const replay = await post(endpoint, dto).expect(200);
       expect(replay.body).toEqual(
-        (await get(endpoint + '/' + dto.id).expect(200)).body,
+        withoutPayments((await get(endpoint + '/' + dto.id).expect(200)).body),
       );
       expect(replay.body.status).toBe('voided');
       expect(replay.body.snapshotFingerprint).toBe(
@@ -1505,11 +1522,14 @@ describe('finance distribution agreements HTTP', () => {
       expect(created.folio).toMatch(/^AC-\d{4}-\d{5,}$/);
     });
 
-    it('creates no payment, settlement or withdrawal structures', async () => {
+    it('creates no settlement or withdrawal structures, and payments live only in the Phase 6 tables', async () => {
       const tables = await prisma.$queryRaw<
         { table_name: string }[]
       >`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND (table_name ILIKE '%payment%' OR table_name ILIKE '%settlement%' OR table_name ILIKE '%withdrawal%')`;
-      expect(tables).toEqual([]);
+      expect(tables.map((t) => t.table_name).sort()).toEqual([
+        'DistributionPayment',
+        'DistributionPaymentReversal',
+      ]);
     });
   });
 

@@ -35,14 +35,14 @@ const isUniqueViolation = (error: unknown) =>
   error instanceof Prisma.PrismaClientKnownRequestError &&
   error.code === 'P2002';
 
-interface Origin {
+export interface Origin {
   memberId: string;
   name: string;
   accountId: string;
   deviceId: string;
 }
 
-interface PaymentCore {
+export interface PaymentCore {
   id: string;
   contextId: string;
   agreementId: string;
@@ -56,7 +56,7 @@ interface PaymentCore {
   createdBy: Origin;
 }
 
-interface ReversalCore {
+export interface ReversalCore {
   id: string;
   paymentId: string;
   reason: string;
