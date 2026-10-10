@@ -75,11 +75,11 @@ Errors: 400 validation; 401/403; 404 unknown/foreign agreement, payment or non-p
 - [x] P6-B3 Controller endpoints and agreement detail `paymentSummary` (ec3973d)
 - [x] P6-B4 Backend tests (unit, e2e, concurrency, tenant/RLS, overview regression) (bbc156c, b24e439)
 - [x] P6-B5 Backend docs (e8ea07e)
-- [ ] P6-F1 Frontend contract, service, store (online only)
-- [ ] P6-F2 Agreement detail Pagos section, register payment, reversal, states
-- [ ] P6-F3 Help, docs, tests (offline blocked, permissions, session)
-- [ ] P6-V1 Real integrated validation (cases, concurrency, overview, offline, responsive, a11y)
-- [ ] P6-V2 Full suites, docs, merge to main, push
+- [x] P6-F1 Frontend contract, service, store (online only)
+- [x] P6-F2 Agreement detail Pagos section, register payment, reversal, states
+- [x] P6-F3 Help, docs, tests (offline blocked, permissions, session)
+- [x] P6-V1 Real integrated validation (cases, concurrency, overview, offline, responsive, a11y)
+- [x] P6-V2 Full suites, docs, merge to main, push
 
 ## Route
 Delegated direct: one writer per repo (backend first, then frontend against the real contract); parent runs real integration and final verification.
@@ -93,3 +93,15 @@ Backend (branch `feat/finance-distribution-payments`), verified in the foregroun
 - Concurrency proof: 800 vs 800 against 1000 pending (3 rounds), 12 parallel of 300 (exactly 3 accepted), payment racing a reversal, two reversals of one payment (201 + 409), payment racing an agreement void (5 rounds). Mutation check: removing the participant `FOR UPDATE` makes the 800/800 and N-parallel tests fail.
 - RED evidence: the summary unit spec was run before `finance-payments.summary.ts` existed and failed (module missing). The DTO spec and the e2e suite were written after the implementation (no RED run); the race tests were validated by the mutation check above.
 - Deviation/clarification: `FinanceAgreementsService.authorize` and `assertOrigin` became public so the payments service reuses them; the agreement detail runs in a transaction to compute `paymentSummary`; the existing agreements e2e tests now strip `paymentSummary` when comparing the detail with the immutable receipt.
+
+### Integrated validation (parent, real Chrome, isolated local stack)
+- Stack: dev API image rebuilt from this branch, `prisma migrate deploy` applied the payments migration on an existing database, context recreated with a UUIDv7 (the first stack used a non-UUID context id and the frontend correctly rejected every receipt; not a product defect).
+- Agreement AC-2026-00001 (6,000: Alberto 1,500, Adid 4,500) from the real simulator. Alberto: 600 then "Usar pendiente completo" 900 -> PAID. Adid: 2,000; overpayment 3,000 rejected client-side; stale-tab 2,500 rejected by the server (422 EXCEEDS_PENDING with real numbers); exact pending paid -> PAID; agreement PAID. Reversal of a payment (reason, ANULADO visible, pending up, agreement PARTIALLY_PAID), then a corrected payment.
+- Two tabs as two devices: second 100 against the last 100 pending -> 201 and 422. Payment against an agreement voided elsewhere -> server 409 FINANCE_PAYMENT_AGREEMENT_VOIDED, no row added.
+- Voided agreement with payments: notice shown, no Registrar pago buttons, history kept, reversal of a payment still allowed (voided + PARTIALLY_PAID).
+- Overview before/after payments identical (sales 10,000, cost 4,000, margin 6,000, expenses 0, operating result 6,000, potentially available 6,000); 0 Expense rows; agreement and participant rows unchanged.
+- Offline: page-level navigator.onLine=false -> exact message, submit disabled, 0 requests, storage identical (IndexedDB v4, no payment store or key). Secondary: API stopped for real -> "Pago sin confirmar", same-attempt retry created exactly one payment.
+- Responsive 320/390/768 without horizontal overflow (iframes). Keyboard with real keys: Tab/Shift+Tab trapped in the dialog, Escape closes, focus returns to the trigger.
+- Bug found and fixed (frontend 61a5ed1): after a server rejection that proves a stale snapshot the screen kept stale balances; re-verified in the browser.
+- Not exercised in the browser: tenant isolation (e2e/RLS suites), collaborator 403 (e2e/jsdom), millisecond-level concurrency (e2e), DevTools Offline mode (not controllable here).
+- Native review: RFC (14 advisory findings, amendments applied), backend slice (11 advisory findings, one operational warning documented above), docs edit (5 advisory suggestions).

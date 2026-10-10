@@ -132,3 +132,14 @@ A payment is not an operating expense. `Expense`, `operatingResult`, margin, sal
 - Automatic payment, notification or any real movement of money.
 - Pagination of the payments list.
 - Production migration: `20261010120000_finance_distribution_payments` is applied only when the operator deploys.
+
+## Operational notes and accepted limitations
+
+- Deploy order: `GET /finance/distribution-agreements/:id` reads the payment tables to build `paymentSummary`, so it requires the tables created by migration `20261010120000_finance_distribution_payments`. Code deployed before that migration is applied makes the endpoint fail with a 500, and with it the agreement detail and the frontend PDF flow. Apply the migration first.
+- A participant whose active paid amount exceeds the agreed amount (manual data repair, restore) makes the summary derivation throw (`participantPaymentStatus` in `finance-payments.summary.ts`), which fails reads and writes of that agreement until the data is repaired. The immutability triggers and the participant row lock make this state unreachable through the API.
+- Every correction (reverse, then pay again) adds rows permanently, so the unpaginated list grows with corrections; this is accepted for the expected volume.
+- No clock tolerance: a device clock ahead of the server gets `422 FINANCE_PAYMENT_TIME_INVALID` for a payment stamped "now".
+
+## Verification
+
+Concurrency is proven by `test/finance-distribution-payments.e2e-spec.ts` (800 against 1000 pending, 12 parallel payments, payment versus reversal, two reversals of one payment, payment versus agreement void). The Phase 6 real-browser run used two tabs as two devices; their requests were roughly 0.4 s apart because background tabs are throttled, so that run shows the stale-snapshot rejection across devices, not millisecond-level concurrency.
