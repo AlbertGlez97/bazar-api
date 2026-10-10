@@ -7,6 +7,8 @@ import { FinanceDistributionController } from './finance-distribution.controller
 import { FinanceDistributionService } from './finance-distribution.service.js';
 import { FinanceOverviewController } from './finance-overview.controller.js';
 import { FinanceOverviewService } from './finance-overview.service.js';
+import { FinancePaymentsController } from './finance-payments.controller.js';
+import { FinancePaymentsService } from './finance-payments.service.js';
 import { FinanceReservesController } from './finance-reserves.controller.js';
 import { FinanceReservesService } from './finance-reserves.service.js';
 @Module({
@@ -16,12 +18,14 @@ import { FinanceReservesService } from './finance-reserves.service.js';
     FinanceReservesController,
     FinanceDistributionController,
     FinanceAgreementsController,
+    FinancePaymentsController,
   ],
   providers: [
     FinanceOverviewService,
     FinanceReservesService,
     FinanceDistributionService,
     FinanceAgreementsService,
+    FinancePaymentsService,
   ],
 })
 export class FinanceModule {}
