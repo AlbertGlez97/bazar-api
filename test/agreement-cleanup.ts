@@ -2,6 +2,8 @@ import pg from 'pg';
 import { selectTestMigrationDatabase } from '../scripts/test-environment.js';
 
 const IMMUTABLE_TABLES = [
+  'DistributionPaymentReversal',
+  'DistributionPayment',
   'DistributionAgreementParticipant',
   'DistributionAgreementReversal',
   'DistributionAgreement',
@@ -10,7 +12,7 @@ const IMMUTABLE_TABLES = [
 /**
  * Test-only cleanup of distribution agreements.
  *
- * The three agreement tables reject UPDATE and DELETE for the runtime role by
+ * The agreement and payment tables reject UPDATE and DELETE for the runtime role by
  * trigger, so a test cannot delete its own fixtures through the application
  * connection. This helper connects as the table owner (the migrator URL of the
  * isolated bazar_test database, never the runtime role), disables the
@@ -34,6 +36,15 @@ export async function purgeAgreementData(contextIds: string[]): Promise<void> {
       await client.query("SELECT set_config('app.context_id', $1, true)", [
         contextId,
       ]);
+      // Payments reference participants: children first.
+      await client.query(
+        'DELETE FROM "DistributionPaymentReversal" WHERE "contextId" = $1',
+        [contextId],
+      );
+      await client.query(
+        'DELETE FROM "DistributionPayment" WHERE "contextId" = $1',
+        [contextId],
+      );
       await client.query(
         'DELETE FROM "DistributionAgreementReversal" WHERE "contextId" = $1',
         [contextId],
