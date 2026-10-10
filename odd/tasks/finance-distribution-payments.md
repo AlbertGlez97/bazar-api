@@ -70,11 +70,11 @@ Errors: 400 validation; 401/403; 404 unknown/foreign agreement, payment or non-p
 - Money is real: payments cannot be edited or deleted, only reversed.
 
 ## Tasks
-- [x] P6-B1 Prisma models, migration (FORCE RLS, CHECKs, triggers, composite FKs), tenant extension, from-scratch `migrate deploy` proof (c9c2187, identifier alignment fix b24e439)
+- [x] P6-B1 Prisma models, migration (FORCE RLS, CHECKs, triggers, composite FKs), tenant extension, from-scratch `migrate deploy` proof (c9c2187, identifier alignment fix f6fe080)
 - [x] P6-B2 DTOs and service (create, replay, overpayment, concurrency, reversal, summary, list) (05b1308)
 - [x] P6-B3 Controller endpoints and agreement detail `paymentSummary` (ec3973d)
 - [x] P6-B4 Backend tests (unit, e2e, concurrency, tenant/RLS, overview regression) (bbc156c, b24e439)
-- [x] P6-B5 Backend docs (`docs(finance): document distribution payments`)
+- [x] P6-B5 Backend docs (e8ea07e)
 - [ ] P6-F1 Frontend contract, service, store (online only)
 - [ ] P6-F2 Agreement detail Pagos section, register payment, reversal, states
 - [ ] P6-F3 Help, docs, tests (offline blocked, permissions, session)
