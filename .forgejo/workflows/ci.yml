@@ -1,0 +1,75 @@
+name: CI/CD bazar-api
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: self-hosted
+    env:
+      # PostgreSQL 16 local del runner (LXC 106, 127.0.0.1:5433). Las pruebas
+      # exigen una base bazar_test en localhost (scripts/test-environment.ts).
+      DATABASE_URL_TEST: postgresql://bazar_test_app:${{ secrets.TEST_APP_DB_PASSWORD }}@127.0.0.1:5433/bazar_test
+      DATABASE_URL_TEST_MIGRATE: postgresql://bazar_test:${{ secrets.TEST_DB_OWNER_PASSWORD }}@127.0.0.1:5433/bazar_test
+      APP_DB_TEST_USER: bazar_test_app
+      APP_DB_TEST_PASSWORD: ${{ secrets.TEST_APP_DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma client
+        # src/generated/prisma está en .gitignore; prisma.config.ts exige una URL
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: npx prisma generate
+      - run: npm run db:migrate:test
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  sonar:
+    needs: test
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarQube analysis
+        uses: https://github.com/SonarSource/sonarqube-scan-action@v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - name: Quality Gate
+        uses: https://github.com/SonarSource/sonarqube-quality-gate-action@v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  deploy:
+    needs: sonar
+    runs-on: self-hosted
+    steps:
+      - name: Deploy al LXC 108
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+        run: |
+          set -eu
+          umask 077
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$WORK/key"
+          printf '%s\n' "$DEPLOY_HOST_KEY" > "$WORK/known_hosts"
+          ssh -i "$WORK/key" -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$WORK/known_hosts" -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd /srv/marchanta/bazar-api && git pull --ff-only forgejo main \
+             && cd /srv/marchanta && docker compose -f docker-compose.prod.yml up -d --build api"
