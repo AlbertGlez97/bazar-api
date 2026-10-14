@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: host
     env:
       # PostgreSQL 16 local del runner (LXC 106, 127.0.0.1:5433). Las pruebas
       # exigen una base bazar_test en localhost (scripts/test-environment.ts).
@@ -34,7 +34,7 @@ jobs:
 
   sonar:
     needs: test
-    runs-on: self-hosted
+    runs-on: host
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +53,7 @@ jobs:
 
   deploy:
     needs: sonar
-    runs-on: self-hosted
+    runs-on: host
     steps:
       - name: Deploy al LXC 108
         env:
