@@ -81,13 +81,40 @@ describe('LocalStorageService#save JPEG mimetype handling', () => {
     });
   });
 
-  it('still rejects a JPEG whose declared mimetype names another format', async () => {
+  it('accepts a JPEG whose declared mimetype names another format', async () => {
     await withTempService(async (service) => {
       await expect(
         service.save({ buffer: await jpegBuffer(), mimetype: 'image/png' }),
-      ).rejects.toMatchObject({
-        message: 'Unsupported image format. Only PNG, JPEG or WebP images are accepted.',
-      });
+      ).resolves.toMatchObject({ path: expect.stringMatching(/\.png$/) });
     });
   });
+
+  it('accepts a WebP declared as image/jpg', async () => {
+    await withTempService(async (service) => {
+      const webp = await sharp({
+        create: { width: 8, height: 8, channels: 3, background: '#0033cc' },
+      })
+        .webp()
+        .toBuffer();
+      await expect(
+        service.save({ buffer: webp, mimetype: 'image/jpg' }),
+      ).resolves.toMatchObject({ path: expect.stringMatching(/\.png$/) });
+    });
+  });
+
+  it.each(['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'])(
+    'rejects a non-PNG/JPEG/WebP file regardless of declared mimetype (%s)',
+    async (mimetype) => {
+      await withTempService(async (service) => {
+        const gif = await sharp({
+          create: { width: 8, height: 8, channels: 3, background: '#00cc33' },
+        })
+          .gif()
+          .toBuffer();
+        await expect(service.save({ buffer: gif, mimetype })).rejects.toMatchObject({
+          message: 'Unsupported image format. Only PNG, JPEG or WebP images are accepted.',
+        });
+      });
+    },
+  );
 });

@@ -97,12 +97,13 @@ export class LocalStorageService extends StorageService {
    * Validates and normalizes an uploaded image before it is ever written to
    * disk, then saves it under a fresh random name.
    *
-   * The declared MIME type from the client is never trusted alone: the
-   * byte signature and the actual decoded format (via sharp) must agree
-   * with it, so a file renamed/relabeled to look like an image (e.g. an
+   * The declared MIME type from the client is ignored: only the byte
+   * signature and the actual decoded format (via sharp) decide what is
+   * accepted, so a file renamed/relabeled to look like an image (e.g. an
    * SVG or HTML payload served with an `image/png` content-type) is
-   * rejected rather than stored and served back with an image
-   * content-type. Animated images (`pages > 1`) are rejected because the
+   * rejected rather than stored, while a legitimate image mislabeled by
+   * the client (e.g. a WebP sent as `image/jpg`) is still accepted.
+   * Animated images (`pages > 1`) are rejected because the
    * product photo is a single still image, not a slideshow/GIF-like asset.
    * The image is always re-encoded to PNG (`.rotate().png()`) rather than
    * stored byte-for-byte, both to strip embedded metadata/orientation
@@ -151,11 +152,8 @@ export class LocalStorageService extends StorageService {
       });
       const metadata = await image.metadata();
       const format = metadata.format;
-      const normalizedMimetype =
-        file.mimetype === 'image/jpg' ? 'image/jpeg' : file.mimetype;
       if (
         !['png', 'jpeg', 'webp'].includes(format ?? '') ||
-        normalizedMimetype !== `image/${format}` ||
         (metadata.pages ?? 1) !== 1
       ) {
         throw new InvalidImageError(ACCEPTED_FORMATS_MESSAGE);
