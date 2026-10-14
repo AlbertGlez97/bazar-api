@@ -151,9 +151,11 @@ export class LocalStorageService extends StorageService {
       });
       const metadata = await image.metadata();
       const format = metadata.format;
+      const normalizedMimetype =
+        file.mimetype === 'image/jpg' ? 'image/jpeg' : file.mimetype;
       if (
         !['png', 'jpeg', 'webp'].includes(format ?? '') ||
-        file.mimetype !== `image/${format}` ||
+        normalizedMimetype !== `image/${format}` ||
         (metadata.pages ?? 1) !== 1
       ) {
         throw new InvalidImageError(ACCEPTED_FORMATS_MESSAGE);

@@ -1,4 +1,7 @@
-import { resolve } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import sharp from 'sharp';
 import { LocalStorageService } from './storage.service.js';
 
 it('uses the safe default upload directory for a blank example environment value', () => {
@@ -44,6 +47,47 @@ describe('LocalStorageService#save image format rejection', () => {
       }),
     ).rejects.toMatchObject({
       message: 'Unsupported image format. Only PNG, JPEG or WebP images are accepted.',
+    });
+  });
+});
+
+describe('LocalStorageService#save JPEG mimetype handling', () => {
+  async function jpegBuffer() {
+    return sharp({
+      create: { width: 8, height: 8, channels: 3, background: '#cc3300' },
+    })
+      .jpeg()
+      .toBuffer();
+  }
+
+  async function withTempService(run: (service: LocalStorageService) => Promise<void>) {
+    const dir = await mkdtemp(join(tmpdir(), 'bazar-storage-'));
+    const saved = process.env.PRODUCT_UPLOAD_DIR;
+    process.env.PRODUCT_UPLOAD_DIR = dir;
+    try {
+      await run(new LocalStorageService());
+    } finally {
+      if (saved === undefined) delete process.env.PRODUCT_UPLOAD_DIR;
+      else process.env.PRODUCT_UPLOAD_DIR = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts a JPEG declared as image/jpg as an alias of image/jpeg', async () => {
+    await withTempService(async (service) => {
+      await expect(
+        service.save({ buffer: await jpegBuffer(), mimetype: 'image/jpg' }),
+      ).resolves.toMatchObject({ path: expect.stringMatching(/\.png$/) });
+    });
+  });
+
+  it('still rejects a JPEG whose declared mimetype names another format', async () => {
+    await withTempService(async (service) => {
+      await expect(
+        service.save({ buffer: await jpegBuffer(), mimetype: 'image/png' }),
+      ).rejects.toMatchObject({
+        message: 'Unsupported image format. Only PNG, JPEG or WebP images are accepted.',
+      });
     });
   });
 });
