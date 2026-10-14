@@ -30,7 +30,13 @@ jobs:
       - run: npm run db:migrate:test
       - run: npm run lint
       - run: npm run build
-      - run: npm test
+      - run: npm run test:cov
+      - name: Publish coverage report
+        # v3: Forgejo/Gitea runners do not support the v4 artifact protocol
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage
+          path: coverage/
 
   sonar:
     needs: test
@@ -39,6 +45,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Download coverage report
+        uses: actions/download-artifact@v3
+        with:
+          name: coverage
+          path: coverage
       - name: SonarQube analysis
         uses: https://github.com/SonarSource/sonarqube-scan-action@v8.3.0
         env:

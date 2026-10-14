@@ -12,5 +12,12 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
+    coverage: {
+      provider: 'v8',
+      // lcov is the report SonarQube reads (see sonar-project.properties).
+      reporter: ['text', 'lcov'],
+      include: ['src/**'],
+      exclude: ['src/generated/**', '**/*.spec.ts'],
+    },
   },
 });
