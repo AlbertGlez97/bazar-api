@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsString,
@@ -13,6 +14,21 @@ import { Transform, Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_MINOR_UNITS } from '../../common/money.js';
 import { ProductPriceDto } from './product-price.dto.js';
+
+/**
+ * Query strings arrive as text. `'true'`/`'false'` become real booleans and
+ * an empty/whitespace value becomes `undefined` (absent, for `@IsOptional`);
+ * anything else is passed through unchanged so `@IsBoolean` rejects it with
+ * a 400 instead of silently coercing it.
+ */
+function toOptionalBoolean(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  return value;
+}
 
 export class ProductMetadataDto {
   @IsOptional() @IsString() @Length(1, 100) category?: string | null;
@@ -126,6 +142,37 @@ export class ProductListDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsIn([true, false])
   includeInactive = false;
+  // Catalog filters (panel "Filtros" of the Productos screen). Like `umbral`
+  // they have NO default: absent means "no filter", and an explicit `false`
+  // is the same as absent (it never means "only products that are in stock /
+  // have a cost"). They combine with each other and with `umbral`/`search`.
+  @ApiProperty({
+    required: false,
+    description:
+      'Only out-of-stock products (stock = 0). `false` or omitted: no filter.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => toOptionalBoolean(value))
+  @IsBoolean()
+  agotados?: boolean;
+  @ApiProperty({
+    required: false,
+    description:
+      'Only products without a purchase cost (purchaseCostMinor is null). `false` or omitted: no filter.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => toOptionalBoolean(value))
+  @IsBoolean()
+  sinCosto?: boolean;
+  @ApiProperty({
+    required: false,
+    enum: ['unica', 'cantidad'],
+    description: 'Only products of this tipo. Omit for both.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsIn(['unica', 'cantidad'])
+  tipo?: 'unica' | 'cantidad';
   @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000) page = 1;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
 }

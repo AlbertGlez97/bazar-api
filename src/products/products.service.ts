@@ -240,6 +240,11 @@ export class ProductsService {
    * `umbral`, but with no server-applied default: absent means unfiltered,
    * only the caller opts into a threshold.
    *
+   * `agotados` (stock = 0), `sinCosto` (no purchase cost) and `tipo` follow
+   * the same opt-in rule: they only narrow the result when truthy/present
+   * (`false` is the same as omitted) and are applied in the database, never
+   * on the returned page, so `total` and pagination stay correct.
+   *
    * Deactivated products are excluded by default (BE-10). `includeInactive:
    * true` is only honored when the request also identifies an active
    * socio via the optional `x-member-id` header ({@link isRequestingSocio})
@@ -275,7 +280,15 @@ export class ProductsService {
       ...(query.search
         ? { name: { contains: query.search, mode: 'insensitive' as const } }
         : {}),
-      ...(query.umbral !== undefined ? { stock: { lte: query.umbral } } : {}),
+      // `agotados` (stock = 0) wins over `umbral`: umbral is validated >= 0,
+      // so "stock <= umbral AND stock = 0" is always just "stock = 0".
+      ...(query.agotados
+        ? { stock: 0 }
+        : query.umbral !== undefined
+          ? { stock: { lte: query.umbral } }
+          : {}),
+      ...(query.sinCosto ? { purchaseCostMinor: null } : {}),
+      ...(query.tipo ? { tipo: query.tipo } : {}),
     };
     const [items, total] = await this.prisma.$transaction(
       [

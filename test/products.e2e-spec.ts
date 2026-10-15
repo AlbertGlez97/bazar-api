@@ -474,6 +474,65 @@ describe('context-scoped products', () => {
         .expect(400);
     },
   );
+  it('filters by agotados, sinCosto and tipo in the database (total stays correct)', async () => {
+    const prefix = randomUUID();
+    const soldOut = await create({ ...body(`${prefix} a`), initialStock: 0 });
+    const stocked = await create({ ...body(`${prefix} b`), initialStock: 4 });
+    // purchaseCostMinor is mandatory on create (BE-13), so a product without
+    // cost only exists through a direct write (legacy rows).
+    const noCost = await create({ ...body(`${prefix} c`), initialStock: 4 });
+    await prisma.product.update({
+      where: { id: noCost.id },
+      data: { purchaseCostMinor: null },
+    });
+    const unique = await create({
+      name: `${prefix} d`,
+      tipo: 'unica',
+      unitPriceMinor: 12550,
+      purchaseCostMinor: 8000,
+    });
+    const ids = async (query: Record<string, string | number>) => {
+      const res = await request(app.getHttpServer())
+        .get('/products')
+        .query({ search: prefix, ...query })
+        .auth(token, { type: 'bearer' })
+        .expect(200);
+      return {
+        total: res.body.total as number,
+        ids: new Set(res.body.items.map((p: { id: string }) => p.id)),
+      };
+    };
+
+    expect((await ids({ agotados: 'true' })).ids).toEqual(
+      new Set([soldOut.id]),
+    );
+    expect((await ids({ sinCosto: 'true' })).ids).toEqual(
+      new Set([noCost.id]),
+    );
+    const onlyUnique = await ids({ tipo: 'unica' });
+    expect(onlyUnique.ids).toEqual(new Set([unique.id]));
+    expect(onlyUnique.total).toBe(1);
+    // `false` is "no filter", never "only in stock / only with cost".
+    expect((await ids({ agotados: 'false', sinCosto: 'false' })).total).toBe(4);
+    // Filters combine (AND).
+    expect(
+      (await ids({ tipo: 'cantidad', agotados: 'true' })).ids,
+    ).toEqual(new Set([soldOut.id]));
+    expect((await ids({ tipo: 'unica', agotados: 'true' })).total).toBe(0);
+    expect(stocked.id).toBeDefined();
+  });
+  it.each([
+    { agotados: 'yes' },
+    { sinCosto: '1' },
+    { tipo: 'otro' },
+    { agotado: 'true' },
+  ])('rejects an invalid catalog filter %j with 400', async (query) => {
+    await request(app.getHttpServer())
+      .get('/products')
+      .query(query)
+      .auth(token, { type: 'bearer' })
+      .expect(400);
+  });
   it('rejects anonymous access and isolates foreign product/audit/upload paths', async () => {
     await request(app.getHttpServer()).get('/products').expect(401);
     const list = await request(app.getHttpServer())

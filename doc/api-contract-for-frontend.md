@@ -166,7 +166,7 @@ Parámetros por endpoint (todos en query string; `page`/`limit` son enteros, cua
 
 | Endpoint | `page` | `limit` | Otros parámetros | Orden |
 |---|---|---|---|---|
-| `GET /api/v1/products` | 1..1000000, def. 1 | 1..100, def. 20 | `search` (0..200 car., busca en el nombre, sin distinguir mayúsculas), `includeInactive` (bool, def. `false`), `umbral` (integer, 0..100000, **sin default**; ver más abajo) | `createdAt` asc, `id` asc (fijo) |
+| `GET /api/v1/products` | 1..1000000, def. 1 | 1..100, def. 20 | `search` (0..200 car., busca en el nombre, sin distinguir mayúsculas), `includeInactive` (bool, def. `false`), `umbral` (integer, 0..100000, **sin default**; ver más abajo), `agotados` (bool), `sinCosto` (bool), `tipo` (`unica`/`cantidad`) | `createdAt` asc, `id` asc (fijo) |
 | `GET /api/v1/products/:id/audit` | 1..1000000, def. 1 | 1..100, def. 20 | acepta `search`, `includeInactive` y `umbral` (mismo DTO) pero los **ignora** | `changedAt` asc, `id` asc (fijo) |
 | `GET /api/v1/sales` | 1..1000000, def. 1 | 1..100, def. 20 | `status`, `search` (0..200, nombre del vendedor), `sort` (`asc`/`desc`, def. `desc`) | `receivedAt` según `sort`, `id` asc |
 | `GET /api/v1/incidencias` | 1..1000000, def. 1 | 1..100, def. 20 | `type`, `resolutionStatus`, `search` (0..200, nombre del vendedor de la venta), `sort` (def. `desc`) | `detectedAt` según `sort`, `id` asc |
@@ -1036,9 +1036,9 @@ Fuente: `src/products/products.controller.ts:56-64`, `src/products/dto/product.d
 | Headers | `Authorization`. `x-member-id` **opcional** (solo para `includeInactive`); `x-device-id` no requerido |
 | Éxito | **200**, `{ items, total, page, limit }` |
 
-**Query** (desconocidos = 400): `search` (0..200; coincidencia parcial sin distinguir mayúsculas en `name`), `includeInactive` (`true`/`false`, def. `false`), `umbral` (integer, 0..100000; **sin default** — mismo nombre y semántica que el `umbral` de [`GET /dashboard/summary`](#ep-dashboard-summary), `stock <= umbral`, pero aquí ausente significa "sin filtro", nunca el default 2 del dashboard; solo el frontend decide enviarlo cuando su toggle de "poca existencia" está activo), `page` (1..1000000, def. 1), `limit` (1..100, def. 20). Orden fijo: `createdAt` asc, `id` asc. Por defecto solo productos `active: true`; los de `stock: 0` **sí** aparecen (y, con `umbral` presente, cuentan si `0 <= umbral`).
+**Query** (desconocidos = 400): `search` (0..200; coincidencia parcial sin distinguir mayúsculas en `name`), `includeInactive` (`true`/`false`, def. `false`), `umbral` (integer, 0..100000; **sin default** — mismo nombre y semántica que el `umbral` de [`GET /dashboard/summary`](#ep-dashboard-summary), `stock <= umbral`, pero aquí ausente significa "sin filtro", nunca el default 2 del dashboard; solo el frontend decide enviarlo cuando su toggle de "poca existencia" está activo), `agotados` (`true`/`false`; `true` = solo `stock = 0`; **sin default**, `false` o ausente = sin filtro, nunca "solo con existencia"), `sinCosto` (`true`/`false`; `true` = solo productos sin `purchaseCostMinor`; mismo criterio de ausente/`false`), `tipo` (`unica` o `cantidad`; ausente = ambos), `page` (1..1000000, def. 1), `limit` (1..100, def. 20). Los filtros se combinan con AND y se aplican en la base de datos (`total` y la paginación siguen siendo correctos); `agotados` junto con `umbral` equivale a `stock = 0`. Orden fijo: `createdAt` asc, `id` asc. Por defecto solo productos `active: true`; los de `stock: 0` **sí** aparecen (y, con `umbral` presente, cuentan si `0 <= umbral`).
 
-**Errores**: 400 (`page`/`limit` no enteros o fuera de rango, p. ej. `limit=101`; `umbral` no entero, negativo o mayor a 100000; parámetro desconocido); 401.
+**Errores**: 400 (`page`/`limit` no enteros o fuera de rango, p. ej. `limit=101`; `umbral` no entero, negativo o mayor a 100000; `agotados`/`sinCosto` distintos de `true`/`false`; `tipo` distinto de `unica`/`cantidad`; parámetro desconocido); 401.
 
 **Ejemplo**
 
