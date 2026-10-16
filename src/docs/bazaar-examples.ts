@@ -92,6 +92,7 @@ export const sale = {
   currency: 'MXN',
   status: 'completada',
   totalMinor: 210000,
+  paymentMethod: 'EFECTIVO',
   cashReceivedMinor: 250000,
   changeMinor: 40000,
   requestFingerprint: 'example-sha256-fingerprint-generated-by-server',

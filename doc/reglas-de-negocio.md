@@ -55,6 +55,16 @@
 - El memberId y deviceId del body deben coincidir con el contexto autenticado (ContextGuard); si no coinciden, se rechaza con 403.
 - Descuento de existencia: única pasa de 1 a 0; cantidad resta las unidades vendidas.
 
+## Métodos de pago (efectivo, transferencia y tarjeta)
+- **Tres métodos**: `EFECTIVO`, `TRANSFERENCIA` y `TARJETA` (enum `PaymentMethod`, mayúsculas en español como `StockMovementType`). Aplican a las **ventas** y a los **abonos** de fiado/apartado (el abono inicial de `POST /deudas` incluido). Solo se registra el medio: **no se guarda folio ni referencia de la terminal**.
+- **Por defecto EFECTIVO.** Un `paymentMethod` ausente (o `null`) vale `EFECTIVO`. Es deliberado: hay ventas en la cola offline de dispositivos sin actualizar que no traen el campo. Un valor desconocido (también `efectivo` en minúsculas) es 400.
+- **Venta en efectivo**: las reglas de siempre. `cashReceivedMinor` es obligatorio, un efectivo menor al total es 400 y el cambio se calcula en el servidor.
+- **Venta por transferencia o tarjeta**: se cobra el **total completo**. No aplican efectivo recibido ni cambio: se guardan como **`null`, nunca como `0`** ("no aplica" no es "no recibió nada"). Enviar `cashReceivedMinor` con estos métodos (incluso `0`) es 400, para no descartar en silencio un dato de dinero. La columna `Sale.cashReceivedMinor` pasó a admitir `NULL` y un CHECK de base de datos impide guardar efectivo o cambio en una venta que no sea `EFECTIVO`.
+- **El método no cambia nada más**: ni el inventario, ni el total, ni el saldo o el estado de una deuda, ni las comisiones, ni la ganancia. Tampoco se edita después de registrarse.
+- **Filas existentes**: toda venta y todo abono anterior se hizo en efectivo, así que quedan como `EFECTIVO` (migración `20261016120000_payment_methods`, solo aditiva: ninguna fila cambia de significado).
+- **Idempotencia**: para `POST /sales` y `POST /deudas`, un método ausente y `EFECTIVO` se comparan **igual**. El método solo entra a la huella (`requestFingerprint`) cuando es `TRANSFERENCIA` o `TARJETA`, así que la huella de una venta o deuda en efectivo es idéntica byte por byte a la guardada antes de existir el campo: reenviar algo encolado por una versión anterior responde lo guardado (200 en ventas, el mismo recibo en deudas), nunca 409. Reenviar el mismo `id` con **otro** método sí es 409.
+- **Reporte por método**: `GET /reports/sales-by-period` agrega `porMetodoPago` con `EFECTIVO`, `TRANSFERENCIA` y `TARJETA` (siempre las tres llaves), cada uno con `ventasMinor`, `abonosMinor` y `totalMinor` = ventas completadas + abonos recibidos, con el mismo criterio de fechas que `totalIngresadoMinor` (`receivedAt`). La suma de los tres `totalMinor` es siempre `totalIngresadoMinor`. El dato sirve para saber **dónde está el dinero** (caja, cuenta bancaria o terminal).
+
 ## Explícitamente fuera de alcance de E0 (pendiente para entregas futuras)
 - Resolución automática de conflictos de sincronización offline (reembolso, reasignación de stock a la venta perdedora): permanece una decisión humana fuera del sistema (ver BE-06).
 - Migración de almacenamiento de imágenes de disco local a object storage (MinIO en home-lab). No implementado.

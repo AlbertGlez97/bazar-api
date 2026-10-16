@@ -199,7 +199,7 @@ Consecuencias para el cliente:
 - Un stock ya agotado al llegar la venta (p. ej. al sincronizar una cola offline) da **400**, **no** un conflicto persistido. Solo la carrera concurrente produce el 201 con conflicto. El cliente no debe reintentar indefinidamente una venta que devuelve 400.
 - No se resuelve automáticamente ningún conflicto (reembolso, reasignación de stock): la revisión es humana desde `GET /api/v1/incidencias`.
 
-**Idempotencia**: no hay header de idempotencia. La clave es el campo **`id` del cuerpo** (UUID generado por el cliente antes de enviar; se recomienda UUIDv7). Reintentar tras un timeout o una respuesta perdida: reenviar **exactamente el mismo `id` y el mismo payload**. Se considera "mismo payload" si coinciden `memberId`, `deviceId`, `currency`, `cashReceivedMinor`, `occurredAt` (comparado como instante) y el conjunto de `{productId, quantity}` (sin importar el orden); el `unitPriceMinor` opcional de cada partida **no** cuenta. Si dudas del resultado, `GET /api/v1/sales/:id` devuelve lo persistido (404 si no llegó a guardarse).
+**Idempotencia**: no hay header de idempotencia. La clave es el campo **`id` del cuerpo** (UUID generado por el cliente antes de enviar; se recomienda UUIDv7). Reintentar tras un timeout o una respuesta perdida: reenviar **exactamente el mismo `id` y el mismo payload**. Se considera "mismo payload" si coinciden `memberId`, `deviceId`, `currency`, `cashReceivedMinor`, `occurredAt` (comparado como instante) y el conjunto de `{productId, quantity}` (sin importar el orden); el `unitPriceMinor` opcional de cada partida **no** cuenta. **`paymentMethod` ausente y `EFECTIVO` comparan igual**, y reenviar una venta guardada antes de existir el campo responde 200 (nunca 409); reenviar el mismo `id` con otro método sí es 409. Si dudas del resultado, `GET /api/v1/sales/:id` devuelve lo persistido (404 si no llegó a guardarse).
 
 Fuente: `src/sales/sales.controller.ts:50-65`, `src/sales/sales.service.ts:135-173,279-507`, `test/sales-conflict.e2e-spec.ts:112-260`, `doc/reglas-de-negocio.md:73-78,151-153`.
 
@@ -1388,8 +1388,9 @@ Forma de una venta en las respuestas (`POST /sales`, `GET /sales`, `GET /sales/:
 | `currency` | string | `"MXN"` |
 | `status` | `"completada"` \| `"rechazada_por_conflicto"` | **leerlo siempre** |
 | `totalMinor` | integer \| null | `null` si está rechazada |
-| `cashReceivedMinor` | integer | |
-| `changeMinor` | integer \| null | cambio; `null` si está rechazada |
+| `paymentMethod` | `"EFECTIVO"` \| `"TRANSFERENCIA"` \| `"TARJETA"` | cómo se pagó. Las ventas anteriores a esta versión son `EFECTIVO` |
+| `cashReceivedMinor` | integer \| null | efectivo recibido; `null` si se pagó con `TRANSFERENCIA`/`TARJETA` (no aplica; **no** es `0`) |
+| `changeMinor` | integer \| null | cambio; `null` si está rechazada o si no se pagó en efectivo |
 | `requestFingerprint` | string \| null | hash interno, ignorable |
 | `conflictReason` | string \| null | solo en rechazadas, p. ej. `"stock insuficiente al sincronizar: producto <id>, solicitado 1, disponible 0"` |
 | `conflictDetectedAt` | string \| null | solo en rechazadas |
@@ -1413,7 +1414,8 @@ Forma de una venta en las respuestas (`POST /sales`, `GET /sales`, `GET /sales/:
 | `deviceId` | string (UUID) | requerido; igual a `x-device-id` |
 | `occurredAt` | string | requerido; ISO 8601 estricto. Envía el instante completo (`2026-09-23T12:00:00.000Z`). Una fecha simple (`2026-09-23`) también se acepta y se guarda como `2026-09-23T00:00:00.000Z` (verificado en vivo) |
 | `currency` | string | requerido; solo `"MXN"` |
-| `cashReceivedMinor` | integer | requerido; 0..2147483647 (centavos) |
+| `paymentMethod` | string | opcional; `EFECTIVO` \| `TRANSFERENCIA` \| `TARJETA`. **Ausente (o `null`) = `EFECTIVO`**: así siguen funcionando los dispositivos y las ventas de la cola offline que no traen el campo. Cualquier otro valor (incluido `efectivo` en minúsculas) = 400 |
+| `cashReceivedMinor` | integer | **requerido solo con `EFECTIVO`** (o sin `paymentMethod`); 0..2147483647 (centavos). Con `TRANSFERENCIA`/`TARJETA` se cobra el total completo: el campo **no aplica y debe omitirse** (enviarlo, incluso `0`, es 400) |
 | `items` | array | requerido; 1..500 elementos |
 | `items[].productId` | string (UUID) | requerido |
 | `items[].quantity` | integer | requerido; 1..100000 |
@@ -1427,7 +1429,8 @@ Forma de una venta en las respuestas (`POST /sales`, `GET /sales`, `GET /sales/:
 | 400 | Un `productId` no existe en el negocio (o es de otro negocio) | `"Product <id> does not exist in this context"` |
 | 400 | Producto desactivado | `"Product <id> is deactivated and cannot be sold"` |
 | 400 | `quantity` mayor al stock ya visible al inicio (para `unica`, cualquier cantidad > 1) | `"Insufficient stock for product <id>"` |
-| 400 | `cashReceivedMinor` menor al total calculado | `"Cash received is insufficient for the calculated total"` |
+| 400 | `cashReceivedMinor` menor al total calculado (solo `EFECTIVO`) | `"Cash received is insufficient for the calculated total"` |
+| 400 | `paymentMethod` desconocido, `cashReceivedMinor` enviado con `TRANSFERENCIA`/`TARJETA`, o ausente con `EFECTIVO` | array de validación |
 | 401 | Token ausente/inválido/expirado | `"Unauthorized"` |
 | 403 | Faltan/son inválidos los headers, o el Member/Device no está autorizado en el negocio | `"Valid member and device selection required"` / `"Selection is not authorized for this context"` |
 | 403 | `memberId`/`deviceId` del body distinto de los headers | `"Sale attribution must match the authenticated selection"` |
@@ -1439,6 +1442,7 @@ Notas de comportamiento:
 - **200** solo en reenvío idempotente; el cuerpo es el registro ya guardado.
 - El 403 por atribución se evalúa **antes** de la comprobación de idempotencia: reenviar con otros headers es 403, no 200.
 - Cuando el total es `0` (producto con precio 0) y `cashReceivedMinor` es `0`, la venta es válida.
+- **Método de pago**: solo registra el medio (no hay folio ni referencia de la terminal). **No** cambia el inventario, el total ni la comisión. Con `TRANSFERENCIA`/`TARJETA` la respuesta trae `cashReceivedMinor: null` y `changeMinor: null`. Una venta que pierde la carrera de stock conserva su `paymentMethod`.
 
 **Ejemplo de request** (fixtures de `src/docs/bazaar-examples.ts`, coherentes con `test/sales-conflict.e2e-spec.ts`)
 
@@ -1885,16 +1889,17 @@ Tres reportes de solo lectura más el dashboard de resumen (`GET /dashboard/summ
 
 **Query** (ambos requeridos; desconocidos = 400): `from`, `to` (fecha `YYYY-MM-DD` o ISO 8601).
 
-**Respuesta 200**: `{ from, to, totalSoldMinor, saleCount, abonosRecibidos, abonosRecibidosMinor, deudasLiquidadas, totalIngresadoMinor }` — extendido en BE-15 (D7) con dos tablas de deudas y un total combinado, en vez de crear un endpoint nuevo (ver `doc/reglas-de-negocio.md`, sección "Abono inicial, cuotas planeadas..." para por qué se extendió este endpoint y no otro).
+**Respuesta 200**: `{ from, to, totalSoldMinor, saleCount, abonosRecibidos, abonosRecibidosMinor, deudasLiquidadas, totalIngresadoMinor, porMetodoPago }` — extendido en BE-15 (D7) con dos tablas de deudas y un total combinado, en vez de crear un endpoint nuevo (ver `doc/reglas-de-negocio.md`, sección "Abono inicial, cuotas planeadas..." para por qué se extendió este endpoint y no otro).
 
 | Campo | Tipo | Notas |
 |---|---|---|
 | `totalSoldMinor` | integer | suma de `totalMinor` de las ventas completadas del periodo, de cualquier vendedor; `0` si no hubo |
 | `saleCount` | integer | |
-| `abonosRecibidos` | array | **BE-15**. Todo `Abono` real con `receivedAt` en el periodo, sea su Deuda activa o ya saldada. Cada uno: `{ fecha: string (ISO 8601, = receivedAt), deudor: string, montoMinor: integer, type: "fiado" \| "apartado" }` |
+| `abonosRecibidos` | array | **BE-15**. Todo `Abono` real con `receivedAt` en el periodo, sea su Deuda activa o ya saldada. Cada uno: `{ fecha: string (ISO 8601, = receivedAt), deudor: string, montoMinor: integer, paymentMethod: "EFECTIVO" \| "TRANSFERENCIA" \| "TARJETA", type: "fiado" \| "apartado" }` |
 | `abonosRecibidosMinor` | integer | **BE-15**. Suma de `abonosRecibidos[].montoMinor`; `0` si no hubo |
 | `deudasLiquidadas` | array | **BE-15**. Deudas cuyo `saldadaAt` cae en el periodo (no `createdAt`). Cada una: `{ id, type, deudor: string, totalMinor: integer, saldadaAt: string, gananciaMinor: integer \| null, gananciaDisponible: boolean }`. `gananciaMinor = totalMinor - unitCostMinor × cantidad` solo si `unitCostMinor` no es null; si no, `gananciaDisponible: false` y `gananciaMinor: null` (nunca estimado, mismo criterio que `sales-detail`) |
 | `totalIngresadoMinor` | integer | **BE-15**. `totalSoldMinor + abonosRecibidosMinor`, ya sumado — "dinero total ingresado en el periodo" (ventas de contado + abonos reales) |
+| `porMetodoPago` | object | **Métodos de pago**. Dónde está el dinero: `{ EFECTIVO, TRANSFERENCIA, TARJETA }`, **siempre las tres llaves** (en `0` si no hubo), cada una `{ ventasMinor, abonosMinor, totalMinor }`: ventas completadas + abonos recibidos con el **mismo criterio de fechas** de arriba (`receivedAt`). La suma de los tres `totalMinor` es siempre `totalIngresadoMinor` (y las sumas de `ventasMinor` y `abonosMinor` son `totalSoldMinor` y `abonosRecibidosMinor`). Las ventas rechazadas por conflicto no cuentan. Comisiones, ganancia y totales por vendedor **no** dependen del método |
 
 **Errores**: 400 (falta `from` o `to`, valor que no es una fecha ISO 8601, parámetro desconocido; mensaje del tipo `"from must be a valid ISO 8601 date string"`), 401, 403. No se valida `from` <= `to`: con el orden invertido responde **200** con todos los totales en `0` (verificado en vivo). Los formatos ISO 8601 raros (semana u ordinal) responden 400 con el `message` como **string** `"Invalid date: <valor>"`, no como array.
 
@@ -1915,6 +1920,7 @@ GET /api/v1/reports/sales-by-period?from=2026-09-20&to=2026-09-26 HTTP/1.1
       "fecha": "2026-09-22T15:30:00.000Z",
       "deudor": "Lucía (example customer)",
       "montoMinor": 20000,
+      "paymentMethod": "TRANSFERENCIA",
       "type": "apartado"
     }
   ],
@@ -1930,7 +1936,12 @@ GET /api/v1/reports/sales-by-period?from=2026-09-20&to=2026-09-26 HTTP/1.1
       "gananciaDisponible": true
     }
   ],
-  "totalIngresadoMinor": 230000
+  "totalIngresadoMinor": 230000,
+  "porMetodoPago": {
+    "EFECTIVO": { "ventasMinor": 210000, "abonosMinor": 0, "totalMinor": 210000 },
+    "TRANSFERENCIA": { "ventasMinor": 0, "abonosMinor": 20000, "totalMinor": 20000 },
+    "TARJETA": { "ventasMinor": 0, "abonosMinor": 0, "totalMinor": 0 }
+  }
 }
 ```
 
@@ -2123,7 +2134,7 @@ Forma de una deuda (registro crudo; `deudor`, `abonos` y `cuotasPlaneadas` segú
 | `saldadaAt` | string (ISO 8601) \| null | BE-15; instante exacto de liquidación, `null` si no liquidada (o si se liquidó antes de BE-15) |
 | `createdByMemberId` | string | socio que la creó |
 | `createdAt` | string (ISO 8601) | |
-| `abonos` | array | cada uno `{ id, deudaId, contextId, montoMinor, receivedByMemberId, receivedAt, nota }` |
+| `abonos` | array | cada uno `{ id, deudaId, contextId, montoMinor, paymentMethod, receivedByMemberId, receivedAt, nota }`. `paymentMethod`: `"EFECTIVO"` \| `"TRANSFERENCIA"` \| `"TARJETA"` (los abonos anteriores a esta versión son `EFECTIVO`); no se edita después |
 | `deudor` | objeto | `{ id, nombre, telefono, notas, contextId, createdAt }`. **No** viene en la respuesta de `POST /deudas`; sí en el listado, el detalle y el abono |
 | `cuotasPlaneadas` | array | BE-15; cada una `{ id, deudaId, contextId, fechaEsperada, montoEsperadoMinor, createdAt }`. Presente en todas las respuestas que incluyen `abonos` |
 
@@ -2149,6 +2160,7 @@ Forma de una deuda (registro crudo; `deudor`, `abonos` y `cuotasPlaneadas` segú
 | `deudor.telefono` | string | opcional; 1..50 |
 | `deudor.notas` | string | opcional; 0..2000 |
 | `abonoInicialMinor` | integer | **requerido (BE-15)**, 0..2147483647. `0` = sin abono inicial. `> 0` crea el primer `Abono` (fecha de hoy) en la misma transacción; si por sí solo cubre `totalMinor`, la deuda nace `saldada` |
+| `abonoInicialPaymentMethod` | string | opcional; `EFECTIVO` \| `TRANSFERENCIA` \| `TARJETA`. Ausente (o `null`) = `EFECTIVO`. Es el método del abono inicial; se ignora si `abonoInicialMinor` es `0`. No cambia inventario ni saldo. Otro valor = 400. **Reenviar una deuda con el mismo `id`**: método ausente y `EFECTIVO` comparan igual (una deuda guardada antes de existir el campo responde el mismo recibo, nunca 409); otro método = 409 |
 | `cuotasPlaneadas` | array | opcional (BE-15); calendario informativo, creado en la misma transacción. **Nunca** afecta el saldo/`status` |
 | `cuotasPlaneadas[].fechaEsperada` | string (YYYY-MM-DD, fecha real) | requerida dentro de cada cuota |
 | `cuotasPlaneadas[].montoEsperadoMinor` | integer | requerido dentro de cada cuota; 1..2147483647 |
@@ -2317,6 +2329,7 @@ Registra un pago contra la deuda. Quien recibe el abono queda como `receivedByMe
 |---|---|---|
 | `montoMinor` | integer | requerido; 1..2147483647 (centavos) |
 | `nota` | string | opcional; 0..2000 |
+| `paymentMethod` | string | opcional; `EFECTIVO` \| `TRANSFERENCIA` \| `TARJETA`. Ausente (o `null`) = `EFECTIVO`. No cambia el saldo, el estado ni el inventario y **no se edita después**. Otro valor = 400 |
 
 **Errores**
 
