@@ -30,6 +30,7 @@ const TENANT_SCOPED_MODELS = new Set([
   'WorkShiftReversal',
   'Product',
   'ProductAudit',
+  'StockMovement',
   'Sale',
   'SaleItem',
   'Incidencia',

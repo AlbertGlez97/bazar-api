@@ -120,6 +120,7 @@ model Member {
   paidExpenses Expense[] @relation("ExpensePayer")
   recordedExpenses Expense[] @relation("ExpenseRecorder")
   expenseReversals ExpenseReversal[]
+  stockMovements StockMovement[]
   workShifts WorkShift[] @relation("WorkShiftWorker")
   recordedWorkShifts WorkShift[] @relation("WorkShiftRecorder")
   workShiftReversals WorkShiftReversal[]
@@ -219,9 +220,42 @@ model Product {
   active            Boolean        @default(true)
   saleItems         SaleItem[]
   audits            ProductAudit[]
+  stockMovements    StockMovement[]
   deudas            Deuda[]
 
   @@index([contextId, createdAt, id])
+}
+
+enum StockMovementType {
+  // Only restocking exists today. Kept as an enum (not a boolean/free text)
+  // so a later "Corregir existencia" (set the stock to a counted value) can
+  // be added as another value without reshaping the table.
+  REPOSICION
+}
+
+// Append-only fact: one row per change a socio makes to a product's stock
+// outside of sales/deudas ("who added how many pieces, when, from what to
+// what"). Never updated or deleted — the runtime role only gets INSERT and
+// SELECT on it (scripts/provision-app-role.mjs). Sales and deudas, which
+// decrement stock, do not write here.
+model StockMovement {
+  id            String            @id @default(uuid()) @db.Uuid
+  contextId     String
+  productId     String            @db.Uuid
+  memberId      String            @db.Uuid
+  type          StockMovementType
+  // Pieces added (> 0); stockAfter - stockBefore always equals it.
+  quantity      Int
+  stockBefore   Int
+  stockAfter    Int
+  // Unit cost of this purchase in cents; null when the socio left it empty.
+  unitCostMinor Int?
+  note          String?
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  product       Product           @relation(fields: [productId], references: [id])
+  member        Member            @relation(fields: [memberId], references: [id])
+
+  @@index([contextId, productId, createdAt, id])
 }
 
 model ProductAudit {

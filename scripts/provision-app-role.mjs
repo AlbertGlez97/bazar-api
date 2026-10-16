@@ -18,6 +18,8 @@ import {
 
 const MIN_PASSWORD_LENGTH = 16;
 const MIGRATIONS_TABLE = '_prisma_migrations';
+// Tables the runtime role can only INSERT into and SELECT from.
+const APPEND_ONLY_TABLES = ['StockMovement'];
 
 const TARGETS = {
   dev: {
@@ -130,6 +132,22 @@ async function provisionAppRole(client, { roleName, password }) {
   for (const [sql, message] of statements) {
     await client.query(sql);
     log(message);
+  }
+
+  // Append-only facts: the runtime role may add and read them, never rewrite
+  // or delete. The blanket grants above (and the default privileges for new
+  // tables) include UPDATE/DELETE, so this runs after them on every
+  // provisioning — which the entrypoint does after every `migrate deploy`.
+  for (const table of APPEND_ONLY_TABLES) {
+    const exists = await client.query(
+      `SELECT to_regclass($1) IS NOT NULL AS present`,
+      [`public.${client.escapeIdentifier(table)}`],
+    );
+    if (!exists.rows[0].present) continue;
+    await client.query(
+      `REVOKE UPDATE, DELETE ON TABLE public.${client.escapeIdentifier(table)} FROM ${role}`,
+    );
+    log(`revoked UPDATE, DELETE on ${table} from ${roleName} (append-only)`);
   }
 
   const migrations = await client.query(
