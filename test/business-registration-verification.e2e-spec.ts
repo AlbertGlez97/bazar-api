@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
 import { TurnstileService } from '../src/business-registration/turnstile.service.js';
+import { RegistrationLimits } from '../src/business-registration/registration-limits.js';
 import { RegistrationCleanupService } from '../src/business-registration/registration-cleanup.service.js';
 import { createServerId } from '../src/common/server-id.js';
 import { withTestTenant } from './tenant-scope.js';
@@ -560,15 +561,22 @@ describe('business registration v2: email verification', () => {
       expect(sendVerification).toHaveBeenCalledTimes(1);
     });
 
-    it('máximo 3 correos por solicitud (el primero cuenta)', async () => {
-      await submit(body({ correo: mail('tope3') })).expect(202);
-      for (let i = 0; i < 4; i += 1) {
-        await age(mail('tope3'));
-        await resend(mail('tope3')).expect(202);
-      }
+    it('máximo 3 correos por solicitud (el primero cuenta), aun sin el límite por hora del correo', async () => {
+      // El límite por correo (3/hora) coincide en número con este tope: se apaga para que
+      // solo el tope por SOLICITUD pueda detener el cuarto correo.
+      const perCorreo = vi.spyOn(app.get(RegistrationLimits), 'allowVerificationEmail').mockReturnValue(true);
+      try {
+        await submit(body({ correo: mail('tope3') })).expect(202);
+        for (let i = 0; i < 4; i += 1) {
+          await age(mail('tope3'));
+          await resend(mail('tope3')).expect(202);
+        }
 
-      expect(sendVerification).toHaveBeenCalledTimes(3);
-      expect((await rowOf(mail('tope3')))!.verificationEmailsSent).toBe(3);
+        expect(sendVerification).toHaveBeenCalledTimes(3);
+        expect((await rowOf(mail('tope3')))!.verificationEmailsSent).toBe(3);
+      } finally {
+        perCorreo.mockRestore();
+      }
     });
 
     it('POST /resend valida el correo (400 si no es un correo)', async () => {
