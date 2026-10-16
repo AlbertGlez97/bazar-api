@@ -1,0 +1,36 @@
+// Caracteres de control: C0 (0x00-0x1F, incluye salto de línea y tabulador), DEL y C1 (0x7F-0x9F).
+// Se quitan los de dirección de texto (U+202A-202E, U+2066-2069) y los de ancho cero
+// (U+200B-200F, U+2060, U+FEFF): sirven para disfrazar nombres en correos y pantallas.
+const SPACING_CONTROLS = /[\t\n\r\v\f]+/g;
+const CONTROLS = /[\u0000-\u001F\u007F-\u009F]/g;
+const INVISIBLES = /[​-‏‪-‮⁠⁦-⁩﻿]/g;
+
+/**
+ * Limpia texto libre NO CONFIABLE que escribe una persona: sin caracteres de control ni
+ * invisibles, con los saltos de línea y tabuladores convertidos en un espacio, los espacios
+ * repetidos juntos y recortado. NO escapa HTML: el escape se hace al mostrarlo (correos y
+ * páginas), nunca al guardar. Lo que no es texto se devuelve igual para que lo rechace el
+ * validador.
+ */
+export function cleanText<T>(value: T): T | string {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(SPACING_CONTROLS, ' ')
+    .replace(CONTROLS, '')
+    .replace(INVISIBLES, '')
+    .replace(/ {2,}/g, ' ')
+    .trim();
+}
+
+/** "alberto@example.com" -> "a***@e***.com": para los logs, nunca el correo completo. */
+export function maskEmail(email: string): string {
+  const match = /^([^@\s])[^@\s]*@([^@\s.])[^@\s]*(\.[^@\s]+)$/.exec(email);
+  return match ? `${match[1]}***@${match[2]}***${match[3]}` : '***';
+}
+
+/** "5512345678" -> "********78": para los logs, nunca el teléfono completo. */
+export function maskPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 4) return '***';
+  return `${'*'.repeat(digits.length - 2)}${digits.slice(-2)}`;
+}
