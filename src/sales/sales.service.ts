@@ -9,6 +9,7 @@ import {
 import { add, multiply, subtract } from 'dinero.js';
 import { createHash } from 'node:crypto';
 import { toDinero, toMinorUnits } from '../common/money.js';
+import { isCashPayment, resolvePaymentMethod } from '../common/payment-method.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { Sale, SaleItem } from '../generated/prisma/client.js';
@@ -134,6 +135,7 @@ function sameItems(
  * an additional copy of the customer's request.
  */
 function requestFingerprint(dto: CreateSaleDto): string {
+  const cash = isCashPayment(dto.paymentMethod);
   const items = dto.items
     .map(({ productId, quantity }) => ({ productId, quantity }))
     .sort(
@@ -146,9 +148,16 @@ function requestFingerprint(dto: CreateSaleDto): string {
         memberId: dto.memberId,
         deviceId: dto.deviceId,
         currency: dto.currency,
-        cashReceivedMinor: dto.cashReceivedMinor,
+        // Omitted (not null) when it does not apply, so the key set of an
+        // EFECTIVO sale stays exactly what it was before payment methods.
+        cashReceivedMinor: cash ? dto.cashReceivedMinor : undefined,
         occurredAt: new Date(dto.occurredAt).toISOString(),
         items,
+        // Only a non-cash method enters the hash. An absent method and an
+        // explicit EFECTIVO therefore hash exactly like every sale stored
+        // before this field existed — resending one queued by an old device
+        // must replay, never answer 409.
+        ...(cash ? {} : { paymentMethod: dto.paymentMethod }),
       }),
     )
     .digest('hex');
@@ -162,7 +171,8 @@ function isIdempotentReplay(
     existing.memberId === dto.memberId &&
     existing.deviceId === dto.deviceId &&
     existing.currency === dto.currency &&
-    existing.cashReceivedMinor === dto.cashReceivedMinor &&
+    existing.paymentMethod === resolvePaymentMethod(dto.paymentMethod) &&
+    existing.cashReceivedMinor === (dto.cashReceivedMinor ?? null) &&
     existing.occurredAt.getTime() === new Date(dto.occurredAt).getTime();
   if (!sameHeader) return false;
   if (existing.requestFingerprint)
@@ -381,13 +391,24 @@ export class SalesService {
           });
         }
         const totalMinor = toMinorUnits(totalDinero);
-        if (dto.cashReceivedMinor < totalMinor)
-          throw new BadRequestException(
-            'Cash received is insufficient for the calculated total',
+        // Cash and change exist only for EFECTIVO. TRANSFERENCIA/TARJETA
+        // charge the full total: both stay null ("not applicable"), never 0.
+        let cashReceivedMinor: number | null = null;
+        let changeMinor: number | null = null;
+        if (isCashPayment(dto.paymentMethod)) {
+          if (typeof dto.cashReceivedMinor !== 'number')
+            throw new BadRequestException(
+              'Cash received is required for an EFECTIVO sale',
+            );
+          if (dto.cashReceivedMinor < totalMinor)
+            throw new BadRequestException(
+              'Cash received is insufficient for the calculated total',
+            );
+          cashReceivedMinor = dto.cashReceivedMinor;
+          changeMinor = toMinorUnits(
+            subtract(toDinero(dto.cashReceivedMinor), toDinero(totalMinor)),
           );
-        const changeMinor = toMinorUnits(
-          subtract(toDinero(dto.cashReceivedMinor), toDinero(totalMinor)),
-        );
+        }
         const receivedAt = new Date();
         const occurredAt = new Date(dto.occurredAt);
         // Flagged, never blocking: the cash and stock are already
@@ -407,7 +428,8 @@ export class SalesService {
             currency: dto.currency,
             status: 'completada',
             totalMinor,
-            cashReceivedMinor: dto.cashReceivedMinor,
+            paymentMethod: resolvePaymentMethod(dto.paymentMethod),
+            cashReceivedMinor,
             changeMinor,
             // Nested writes for a *different* model (SaleItem,
             // Incidencia) are invisible to the Prisma tenant-isolation
@@ -483,7 +505,8 @@ export class SalesService {
             occurredAt: new Date(dto.occurredAt),
             currency: dto.currency,
             status: 'rechazada_por_conflicto',
-            cashReceivedMinor: dto.cashReceivedMinor,
+            paymentMethod: resolvePaymentMethod(dto.paymentMethod),
+            cashReceivedMinor: dto.cashReceivedMinor ?? null,
             conflictReason: err.message,
             conflictDetectedAt: new Date(),
             incidencias: {

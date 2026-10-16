@@ -9,6 +9,7 @@ import {
 import { add, multiply, subtract } from 'dinero.js';
 import { createHash } from 'node:crypto';
 import { toDinero, toMinorUnits } from '../common/money.js';
+import { isCashPayment, resolvePaymentMethod } from '../common/payment-method.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { CuotaPlaneada } from '../generated/prisma/client.js';
@@ -78,6 +79,13 @@ function requestFingerprint(actor: Actor, dto: CreateDeudaDto) {
           fechaEsperada: cuota.fechaEsperada,
           montoEsperadoMinor: cuota.montoEsperadoMinor,
         })),
+        // Only a non-cash method enters the hash, after every legacy key, so
+        // an absent method and an explicit EFECTIVO hash exactly like every
+        // debt stored before this field existed — resending one queued by an
+        // old device must replay its stored receipt, never answer 409.
+        ...(isCashPayment(dto.abonoInicialPaymentMethod)
+          ? {}
+          : { abonoInicialPaymentMethod: dto.abonoInicialPaymentMethod }),
       }),
     )
     .digest('hex');
@@ -364,6 +372,7 @@ export class DeudasService {
             deudaId: created.id,
             contextId: actor.account.contextId,
             montoMinor: dto.abonoInicialMinor,
+            paymentMethod: resolvePaymentMethod(dto.abonoInicialPaymentMethod),
             receivedByMemberId: memberId,
             receivedAt: now,
           },
@@ -658,6 +667,7 @@ export class DeudasService {
           deudaId,
           contextId: actor.account.contextId,
           montoMinor: dto.montoMinor,
+          paymentMethod: resolvePaymentMethod(dto.paymentMethod),
           receivedByMemberId: memberId,
           nota: dto.nota,
         },

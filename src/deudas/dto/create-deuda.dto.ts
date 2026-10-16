@@ -15,6 +15,7 @@ import {
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_ITEM_QUANTITY } from '../../sales/dto/create-sale.dto.js';
 import { MAX_MINOR_UNITS } from '../../common/money.js';
+import { PAYMENT_METHODS, type PaymentMethod } from '../../common/payment-method.js';
 import { CuotaPlaneadaInputDto } from './cuota-planeada.dto.js';
 
 /**
@@ -97,6 +98,17 @@ export class CreateDeudaDto {
   @Min(0)
   @Max(MAX_MINOR_UNITS)
   abonoInicialMinor!: number;
+
+  @ApiProperty({
+    required: false,
+    enum: PAYMENT_METHODS,
+    default: 'EFECTIVO',
+    description:
+      'How the initial abono was paid. Absent means EFECTIVO. Ignored when abonoInicialMinor is 0 (no abono is created).',
+  })
+  @IsOptional()
+  @IsIn(PAYMENT_METHODS)
+  abonoInicialPaymentMethod?: PaymentMethod | null;
 
   // BE-15 (D3): optional payment schedule created alongside the Deuda, in
   // the same transaction. Purely informative — see CuotaPlaneadaInputDto's
