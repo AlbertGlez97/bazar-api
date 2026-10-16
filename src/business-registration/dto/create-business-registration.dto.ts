@@ -1,66 +1,99 @@
 import { Transform } from 'class-transformer';
 import {
+  Equals,
   IsEmail,
+  IsIn,
+  IsOptional,
   IsString,
   Length,
   Matches,
-  ValidateIf,
+  Validate,
+  ValidatorConstraint,
+  type ValidatorConstraintInterface,
 } from 'class-validator';
+import { cleanText } from '../../common/text-sanitize.js';
+import { BUSINESS_TYPES, type BusinessTypeValue } from '../business-type.js';
+import { normalizeMexicanPhone } from '../phone.js';
 
 /** Shown to the person filling the form when the correo is not an email. */
 export const INVALID_CORREO_MESSAGE =
   'Escribe un correo válido, por ejemplo nombre@dominio.com';
+export const INVALID_TELEFONO_MESSAGE =
+  'Escribe un teléfono de 10 dígitos, por ejemplo 55 1234 5678';
 
-/** Trims surrounding whitespace so "  ana@x.com " and "   " behave sensibly. */
-const trim = ({ value }: { value: unknown }): unknown =>
-  typeof value === 'string' ? value.trim() : value;
+/** Texto libre NO CONFIABLE: limpio (sin control ni invisibles) antes de validar. */
+const clean = ({ value }: { value: unknown }): unknown => cleanText(value);
+
+/** Igual que `clean`, pero un valor vacío de un campo opcional cuenta como "no vino". */
+const cleanOptional = ({ value }: { value: unknown }): unknown => {
+  const cleaned = cleanText(value);
+  return cleaned === '' ? undefined : cleaned;
+};
+
+/** "2026-10-16": una fecha de calendario real en ese formato. */
+@ValidatorConstraint({ name: 'isLegalVersion', async: false })
+class IsLegalVersion implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().startsWith(value);
+  }
+  defaultMessage(): string {
+    return 'versionLegal debe ser una fecha AAAA-MM-DD';
+  }
+}
 
 /**
- * Public "register my business" form (BE-11). No auth: this is the entry
- * point for a business that does not exist in this system yet.
+ * Public "register my business" form. No auth: it is the entry point for a business that
+ * does not exist in this system yet. The request is created as "pendiente_correo" and the
+ * approver hears nothing until the applicant confirms the emailed link.
  *
- * The founding socio is described by real fields, not free text:
- * `nombre` + `apellidos`, a `correo` (a real email: the credentials are
- * emailed there once the request is approved) and an optional `telefono`. `telefono` has no
- * strict format on purpose (international numbers, extensions...): it is
- * only 1..30 characters and never blank when present. `null` is not
- * accepted for it: leave the field out.
+ * Every text is UNTRUSTED: it is cleaned here (no control or invisible characters, repeated
+ * spaces collapsed) and limited in length, and it is HTML-escaped wherever it is shown.
+ * The correo is only checked for FORMAT; the emailed link is what proves the mailbox is theirs.
+ * The telefono is NOT verified (no codes, no paid services): it is saved as 10 digits and the
+ * approver writes to that WhatsApp number.
  *
- * The correo is only checked for FORMAT (`@IsEmail()`, at most 254
- * characters): whether the mailbox really exists is deliberately not
- * verified (no third-party verification service), so the credentials email
- * may still bounce for a well-formed but non-existent address.
+ * `turnstileToken` is Cloudflare Turnstile's one-use token, checked on the server.
+ * `sitioWebEmpresa` is a honeypot: people never see it, bots fill it. It is accepted (so the
+ * bot gets no hint) and the service answers as if everything went well, creating nothing.
  *
- * `nombre`, `apellidos`, `correo` and `telefono` are trimmed BEFORE they are
- * validated, so a value made only of spaces counts as blank (400).
- *
- * No `@ApiProperty()` here, matching this project's established Swagger
- * convention: plain required strings with no extra semantics (no enum,
- * no `required: false`, no bespoke description) are already inferred by
- * `@nestjs/swagger` from the `class-validator` decorators' emitted type
- * metadata. The full request example/description lives in
- * `src/docs/operation-examples.ts` (`businessRegistrationCreate`),
- * consumed via `@ApiExample` on the controller, same as every other
- * module's DTOs.
+ * No `@ApiProperty()` here, matching the project's Swagger convention (see
+ * `src/docs/operation-examples.ts`, `businessRegistrationCreate`).
  */
 export class CreateBusinessRegistrationDto {
-  @IsString() @Length(1, 200) @Matches(/\S/) nombreNegocio!: string;
-  @Transform(trim) @IsString() @Length(1, 100) @Matches(/\S/) nombre!: string;
-  @Transform(trim)
+  @Transform(clean) @IsString() @Length(1, 200) @Matches(/\S/) nombreNegocio!: string;
+  @IsIn(BUSINESS_TYPES) tipoNegocio!: BusinessTypeValue;
+  @Transform(clean) @IsString() @Length(10, 400) queVende!: string;
+  @IsOptional()
+  @Transform(cleanOptional)
   @IsString()
-  @Length(1, 100)
-  @Matches(/\S/)
-  apellidos!: string;
+  @Length(1, 200)
+  dondeVende?: string;
+  @IsOptional()
+  @Transform(cleanOptional)
+  @IsString()
+  @Length(1, 120)
+  recomendadoPor?: string;
+  @Transform(clean) @IsString() @Length(1, 100) @Matches(/\S/) nombre!: string;
+  @Transform(clean) @IsString() @Length(1, 100) @Matches(/\S/) apellidos!: string;
   // `@IsEmail()` already rejects an address over 254 characters (the practical
   // maximum of RFC 5321), so a missing, blank, malformed OR over-long correo all
-  // get this one message. A separate `@MaxLength` would also fire for a MISSING
-  // correo (not a string) and tell the user it is "too long".
-  @Transform(trim)
+  // get this one message.
+  @Transform(clean)
   @IsEmail({}, { message: INVALID_CORREO_MESSAGE })
   correo!: string;
-  @ValidateIf((_dto, value) => value !== undefined)
-  @Transform(trim)
+  // Normalized to 10 digits BEFORE validating; anything that is not a Mexican phone keeps
+  // its original value and fails the pattern with the friendly message.
+  @Transform(({ value }: { value: unknown }) => normalizeMexicanPhone(value) ?? value)
+  @Matches(/^[2-9]\d{9}$/, { message: INVALID_TELEFONO_MESSAGE })
+  telefono!: string;
+  @Equals(true, { message: 'Debes aceptar el Aviso de privacidad y los Términos' })
+  aceptaLegal!: boolean;
+  @Validate(IsLegalVersion) versionLegal!: string;
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
-  @Length(1, 30)
-  telefono?: string;
+  @Length(1, 2048)
+  turnstileToken!: string;
+  @IsOptional() @IsString() @Length(0, 500) sitioWebEmpresa?: string;
 }
