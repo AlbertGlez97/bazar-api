@@ -660,40 +660,93 @@ export const operations: Record<string, Operation> = {
   // the full rationale (hashed single-use token, 30-day expiry, no
   // operational contextId/Member until approved).
   businessRegistrationCreate: {
-    summary: 'Register a brand-new business for approval',
+    summary: 'Register a brand-new business (the correo is verified before anyone approves it)',
     description:
-      'Public, no auth. Creates a SolicitudNegocio in "pendiente" status and emails the fixed approval recipient (APPROVAL_NOTIFICATION_EMAIL) with one-time approve/reject links (30-day expiry, tokens stored hashed). No contextId or Member exists yet; those are only created if/when the approve link is followed. The founding socio is described by nombre + apellidos, a correo (only its format is validated, not that the mailbox exists; stored trimmed and lower-cased; the credentials are emailed there on approval) and an optional telefono. Validation failures are the standard 400 (message is an array of strings; an invalid correo says "Escribe un correo válido, por ejemplo nombre@dominio.com").',
+      'Public, no auth. Validates the Cloudflare Turnstile token on the server (one use, expires), the honeypot field and the data, then creates the request in "pendiente_correo" and emails the applicant a verification link (random 32-byte token stored as a sha256 hash, one use, 48 h). The approver is NOT told anything until the applicant confirms the link (POST /business-registration/verify-email). ALWAYS answers 202 { ok: true } for a well-formed request: a correo that already has a request, a filled honeypot or a reached per-correo limit look exactly like a success. Free texts are untrusted: they are cleaned (no control or invisible characters), length-limited and HTML-escaped wherever shown. The telefono (Mexico: spaces, hyphens and +52 accepted) is stored as 10 digits and is NOT verified. Errors: 400 validation (standard body) or { code: "turnstile_invalid" }; 429 { code: "rate_limited" } with Retry-After (5 requests/hour per IP, taken from CF-Connecting-IP); 503 { code: "turnstile_unavailable" | "email_unavailable" } (nothing is left half done).',
     access: 'public',
     body: body(
       {
-        nombreNegocio: string(e.businessRegistrationInput.nombreNegocio),
-        nombre: { ...string(e.businessRegistrationInput.nombre), maxLength: 100 },
-        apellidos: {
-          ...string(e.businessRegistrationInput.apellidos),
-          maxLength: 100,
+        nombreNegocio: { ...string(e.businessRegistrationInput.nombreNegocio), maxLength: 200 },
+        tipoNegocio: {
+          ...string(
+            e.businessRegistrationInput.tipoNegocio,
+            'One of: bazar_o_tianguis, abarrotes, ropa_y_accesorios, comida_y_bebidas, plantas_y_jardineria, artesanias, servicios, otro.',
+          ),
+          enum: [
+            'bazar_o_tianguis',
+            'abarrotes',
+            'ropa_y_accesorios',
+            'comida_y_bebidas',
+            'plantas_y_jardineria',
+            'artesanias',
+            'servicios',
+            'otro',
+          ],
         },
+        queVende: { ...string(e.businessRegistrationInput.queVende), minLength: 10, maxLength: 400 },
+        dondeVende: { ...string(e.businessRegistrationInput.dondeVende, 'Optional.'), maxLength: 200 },
+        recomendadoPor: { ...string(e.businessRegistrationInput.recomendadoPor, 'Optional.'), maxLength: 120 },
+        nombre: { ...string(e.businessRegistrationInput.nombre), maxLength: 100 },
+        apellidos: { ...string(e.businessRegistrationInput.apellidos), maxLength: 100 },
         correo: {
           ...string(
             e.businessRegistrationInput.correo,
-            'A valid email address. Only the format is checked. Trimmed and stored lower-cased.',
+            'A valid email address. Trimmed and stored lower-cased. The emailed link proves it is the applicant\'s.',
           ),
           format: 'email',
           maxLength: 254,
         },
-        telefono: {
-          ...string(
-            e.businessRegistrationInput.telefono,
-            'Optional. 1 to 30 characters, no strict format; never blank when present.',
-          ),
-          minLength: 1,
-          maxLength: 30,
-        },
+        telefono: string(
+          e.businessRegistrationInput.telefono,
+          'Required. A Mexican phone: 10 digits, with spaces, hyphens and an optional +52. Stored as 10 digits. Not verified.',
+        ),
+        aceptaLegal: { type: 'boolean', enum: [true], example: true, description: 'Must be true: accepts the Aviso de privacidad and the Términos.' },
+        versionLegal: string(e.businessRegistrationInput.versionLegal, 'YYYY-MM-DD version of the legal texts shown. Stored with the server date.'),
+        turnstileToken: { ...string(e.businessRegistrationInput.turnstileToken), maxLength: 2048 },
+        sitioWebEmpresa: { ...string('', 'Honeypot: people never see it. Leave empty; if filled the request is silently ignored.'), maxLength: 500 },
       },
-      ['nombreNegocio', 'nombre', 'apellidos', 'correo'],
+      [
+        'nombreNegocio',
+        'tipoNegocio',
+        'queVende',
+        'nombre',
+        'apellidos',
+        'correo',
+        'telefono',
+        'aceptaLegal',
+        'versionLegal',
+        'turnstileToken',
+      ],
       e.businessRegistrationInput,
     ),
-    responses: ok(e.businessRegistration, 201),
-    errors: [invalid],
+    responses: ok(e.businessRegistration, 202, 'Always this body for a well-formed request.'),
+    errors: [invalid, [429, 'Too many attempts from this IP (Retry-After header).'], [503, 'Turnstile or the verification email is unavailable; nothing was created.']],
+  },
+  businessRegistrationVerifyEmail: {
+    summary: 'Confirm the correo (button on the frontend page /verificar-correo)',
+    description:
+      'Public, no auth. POST, never GET: mail scanners open links on their own and would confirm someone else\'s address. Consumes the one-use token (atomic), moves the request to "pendiente" and only now emails the approver. An unknown, used or expired token all answer the same 400 { code: "link_invalid" }. If the approver email fails everything rolls back (503) and the same link still works. 10 verifications/hour per IP (429).',
+    access: 'public',
+    body: body(
+      { token: { ...string(e.businessRegistrationVerifyInput.token), minLength: 20, maxLength: 200 } },
+      ['token'],
+      e.businessRegistrationVerifyInput,
+    ),
+    responses: ok({ ok: true }, 200),
+    errors: [[400, 'link_invalid: the link expired, was already used or does not exist.'], [429, 'Too many attempts from this IP.'], [503, 'The approver email could not be sent; retry.']],
+  },
+  businessRegistrationResend: {
+    summary: 'Resend the verification link',
+    description:
+      'Public, no auth. ALWAYS 202 { ok: true }, whether the correo exists or not. Only a "pendiente_correo" request gets a new link (a new token; the old one stops working), at most once every 60 s and 3 emails per request in total (the first counts), and 3 per hour per correo. 10 resends/hour per IP (429).',
+    access: 'public',
+    body: body(
+      { correo: { ...string(e.businessRegistrationResendInput.correo), format: 'email', maxLength: 254 } },
+      ['correo'],
+      e.businessRegistrationResendInput,
+    ),
+    responses: ok({ ok: true }, 202),
+    errors: [invalid, [429, 'Too many attempts from this IP.'], [503, 'The email could not be sent.']],
   },
   businessRegistrationApprove: {
     summary: 'Approve a pending business registration (link from the email)',

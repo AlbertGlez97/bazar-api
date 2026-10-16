@@ -229,15 +229,22 @@ export const audit = {
 // ps5-bazaar example context used throughout the rest of this file.
 export const businessRegistrationInput = {
   nombreNegocio: 'Bonsáis de Alberto',
+  tipoNegocio: 'plantas_y_jardineria',
+  queVende: 'Bonsáis y macetas hechas a mano',
+  dondeVende: 'Tianguis de Acolman',
+  recomendadoPor: 'Doña Luz',
   nombre: 'Alberto',
   apellidos: 'Gómez Pérez',
   correo: 'alberto@example.com',
   telefono: '+52 55 1234 5678',
+  aceptaLegal: true,
+  versionLegal: '2026-10-16',
+  turnstileToken: '<token de un solo uso del widget de Cloudflare Turnstile>',
 };
-// The 201 body is only { id, status, createdAt }: the request's other fields
-// are never echoed back.
-export const businessRegistration = {
-  id: 'a0000000-0000-4000-8000-000000000001',
-  status: 'pendiente',
-  createdAt,
+// The 202 body is ALWAYS { ok: true } (also when the correo already has a request, or the
+// honeypot was filled): nothing reveals whether a correo exists.
+export const businessRegistration = { ok: true };
+export const businessRegistrationVerifyInput = {
+  token: 'Zm9vYmFyLXRva2VuLWRlLWVqZW1wbG8tMzItYnl0ZXMtYmFzZTY0dXJs',
 };
+export const businessRegistrationResendInput = { correo: 'alberto@example.com' };

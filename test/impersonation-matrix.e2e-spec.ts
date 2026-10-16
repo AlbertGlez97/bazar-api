@@ -111,6 +111,8 @@ const PUBLIC_ROUTES = [
   'GET /',
   'POST /auth/login',
   'POST /business-registration',
+  'POST /business-registration/verify-email',
+  'POST /business-registration/resend',
   'GET /business-registration/approve',
   'GET /business-registration/reject',
 ];

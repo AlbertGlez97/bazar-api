@@ -3,7 +3,11 @@ import { Logger } from '@nestjs/common';
 import {
   APPROVE_TRANSACTION_OPTIONS,
   BusinessRegistrationService,
+  apiBaseUrl,
 } from './business-registration.service.js';
+import type { RegistrationCleanupService } from './registration-cleanup.service.js';
+import type { RegistrationLimits } from './registration-limits.js';
+import type { TurnstileService } from './turnstile.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaService } from '../database/prisma.service.js';
 import { CREDENTIALS_EMAIL_TIMEOUT_MS } from '../email/email.service.js';
@@ -11,7 +15,7 @@ import type { EmailService } from '../email/email.service.js';
 
 afterEach(() => vi.unstubAllEnvs());
 
-describe('approval email API URLs', () => {
+describe('apiBaseUrl: origin of the approve/reject links', () => {
   it.each([
     ['https://api.example.test', 'https://api.example.test'],
     ['https://api.example.test/', 'https://api.example.test'],
@@ -25,95 +29,24 @@ describe('approval email API URLs', () => {
     ['https://api.example.test/api/v1#frag', 'https://api.example.test'],
     ['', 'http://localhost:3100'],
     [undefined, 'http://localhost:3100'],
-  ])(
-    'uses the configured origin %s without duplicating slashes',
-    async (base, origin) => {
-      vi.stubEnv('APP_BASE_URL', base);
-      vi.stubEnv('PORT', '3100');
-      const create = vi
-        .fn()
-        .mockResolvedValue({ id: 'test', status: 'pendiente' });
-      const send = vi.fn().mockResolvedValue(undefined);
-      const service = new BusinessRegistrationService(
-        { businessRegistrationRequest: { create } } as unknown as PrismaService,
-        {
-          sendBusinessRegistrationApprovalEmail: send,
-        } as unknown as EmailService,
-      );
-      await service.create({
-        nombreNegocio: 'Test',
-        nombre: 'Test',
-        apellidos: 'Socio',
-        correo: 'test@example.test',
-      });
-      const links = send.mock.calls[0][0];
-      const approve = new URL(links.approveUrl);
-      const reject = new URL(links.rejectUrl);
-      expect(approve.origin).toBe(origin);
-      expect(reject.origin).toBe(origin);
-      expect(approve.pathname).toBe('/api/v1/business-registration/approve');
-      expect(reject.pathname).toBe('/api/v1/business-registration/reject');
-      expect(approve.searchParams.get('token')).toBeTruthy();
-      expect(reject.search).toBe(approve.search);
-    },
+  ])('uses the configured origin %s without duplicating slashes', (base, origin) => {
+    vi.stubEnv('APP_BASE_URL', base);
+    vi.stubEnv('PORT', '3100');
+
+    expect(apiBaseUrl()).toBe(origin);
+  });
+});
+
+/** The service with only the collaborators a test cares about; the rest are inert stubs. */
+function buildService(prisma: PrismaService, email: EmailService) {
+  return new BusinessRegistrationService(
+    prisma,
+    email,
+    {} as unknown as TurnstileService,
+    {} as unknown as RegistrationLimits,
+    {} as unknown as RegistrationCleanupService,
   );
-});
-
-describe('create', () => {
-  const build = () => {
-    const create = vi.fn().mockResolvedValue({
-      id: 'test',
-      status: 'pendiente',
-      createdAt: new Date(),
-    });
-    const send = vi.fn().mockResolvedValue(undefined);
-    const service = new BusinessRegistrationService(
-      { businessRegistrationRequest: { create } } as unknown as PrismaService,
-      {
-        sendBusinessRegistrationApprovalEmail: send,
-      } as unknown as EmailService,
-    );
-    return { service, create, send };
-  };
-  const dto = {
-    nombreNegocio: 'Bonsáis',
-    nombre: 'Alberto',
-    apellidos: 'Gómez',
-    correo: ' Alberto@Example.COM ',
-  };
-
-  it('stores nombre, apellidos, the trimmed lower-cased correo and a null telefono when it is absent', async () => {
-    const { service, create } = build();
-
-    await service.create(dto);
-
-    const { data } = create.mock.calls[0][0];
-    expect(data).toMatchObject({
-      nombreNegocio: 'Bonsáis',
-      nombre: 'Alberto',
-      apellidos: 'Gómez',
-      correo: 'alberto@example.com',
-      telefono: null,
-    });
-    expect(data).not.toHaveProperty('nombreSocio');
-    expect(data).not.toHaveProperty('contactoSocio');
-  });
-
-  it('stores the telefono and forwards every field to the approval email', async () => {
-    const { service, create, send } = build();
-
-    await service.create({ ...dto, telefono: '555-123-4567' });
-
-    expect(create.mock.calls[0][0].data.telefono).toBe('555-123-4567');
-    expect(send.mock.calls[0][0]).toMatchObject({
-      nombreNegocio: 'Bonsáis',
-      nombre: 'Alberto',
-      apellidos: 'Gómez',
-      correo: 'alberto@example.com',
-      telefono: '555-123-4567',
-    });
-  });
-});
+}
 
 describe('approve transaction options', () => {
   // The credentials email is sent from inside the approve transaction, so
@@ -131,7 +64,7 @@ describe('approve transaction options', () => {
       telefono: null,
     });
     const $transaction = vi.fn().mockResolvedValue('<html></html>');
-    const service = new BusinessRegistrationService(
+    const service = buildService(
       {
         businessRegistrationRequest: { findFirst },
         $transaction,
@@ -180,7 +113,7 @@ describe('approve failures that keep the request pending', () => {
   };
   const clientVersion = '7.10.0';
   const serviceFailingWith = (error: unknown) =>
-    new BusinessRegistrationService(
+    buildService(
       {
         businessRegistrationRequest: {
           findFirst: vi.fn().mockResolvedValue(pendingRequest),

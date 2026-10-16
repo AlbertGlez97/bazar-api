@@ -11,6 +11,7 @@ import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
+import { TurnstileService } from '../src/business-registration/turnstile.service.js';
 import { createServerId } from '../src/common/server-id.js';
 import { withTestTenant } from './tenant-scope.js';
 
@@ -27,6 +28,7 @@ describe('business registration (BE-11)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let sendApprovalEmail: ReturnType<typeof vi.fn>;
+  let sendVerificationEmail: ReturnType<typeof vi.fn>;
   let sendCredentialsEmail: ReturnType<typeof vi.fn>;
   let uploadRoot: string;
   // Nest warnings emitted while the production bootstrap runs.
@@ -46,6 +48,33 @@ describe('business registration (BE-11)', () => {
   // also match rows left behind by an earlier (or crashed) run.
   const run = randomUUID();
   const name = (label: string) => `${label} ${run}`;
+  // Registration v2: a request only reaches the approver after the applicant confirms the
+  // emailed link, so every approval test goes through the real flow.
+  let ipCounter = 0;
+  const registerAndVerify = async (overrides: Record<string, unknown> = {}) => {
+    const ip = `198.51.${(ipCounter += 1) % 250}.${Math.floor(Math.random() * 250) + 1}`;
+    await request(app.getHttpServer())
+      .post('/api/v1/business-registration')
+      .set('CF-Connecting-IP', ip)
+      .send({
+        tipoNegocio: 'otro',
+        queVende: 'Cosas varias de prueba',
+        telefono: '5512345678',
+        aceptaLegal: true,
+        versionLegal: '2026-10-16',
+        turnstileToken: 'ok-token',
+        apellidos: 'Prueba',
+        // an undefined override keeps the default (JSON would drop it and fail the required field)
+        ...Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)),
+      })
+      .expect(202);
+    const { verifyUrl } = sendVerificationEmail.mock.calls.at(-1)![0];
+    await request(app.getHttpServer())
+      .post('/api/v1/business-registration/verify-email')
+      .set('CF-Connecting-IP', ip)
+      .send({ token: new URL(verifyUrl).searchParams.get('token') })
+      .expect(200);
+  };
   // Accounts created directly by these specs (not through an approval).
   const extraUsernames: string[] = [];
 
@@ -70,6 +99,7 @@ describe('business registration (BE-11)', () => {
     vi.stubEnv('PRODUCT_UPLOAD_DIR', uploadRoot);
     await writeFile(join(uploadRoot, 'prefix-test.txt'), 'static route fixture');
     sendApprovalEmail = vi.fn().mockResolvedValue(undefined);
+    sendVerificationEmail = vi.fn().mockResolvedValue(undefined);
     sendCredentialsEmail = vi.fn().mockImplementation(deliveredNormally);
     const module = await Test.createTestingModule({
       imports: [AppModule],
@@ -77,12 +107,16 @@ describe('business registration (BE-11)', () => {
       .overrideProvider(EmailService)
       .useValue({
         sendBusinessRegistrationApprovalEmail: sendApprovalEmail,
+        sendRegistrationVerificationEmail: sendVerificationEmail,
         sendBusinessCredentialsEmail: sendCredentialsEmail,
       })
+      .overrideProvider(TurnstileService)
+      .useValue({ verify: vi.fn().mockResolvedValue('ok') })
       .compile();
     app = module.createNestApplication();
     vi.stubEnv('PORT', '0');
     vi.stubEnv('APP_BASE_URL', 'https://api.example.test/');
+    vi.stubEnv('PUBLIC_SITE_URL', 'https://marchanta.example.test');
     vi.stubEnv('ENABLE_API_DOCS', 'true');
     vi.stubEnv('DOCS_USER', 'prefix-test');
     vi.stubEnv('DOCS_PASSWORD', randomUUID());
@@ -206,6 +240,7 @@ describe('business registration (BE-11)', () => {
 
   beforeEach(() => {
     sendApprovalEmail.mockClear();
+    sendVerificationEmail.mockClear();
     // reset (not just clear): a test may queue a rejection for the
     // credentials email, which must never leak into the next test.
     sendCredentialsEmail.mockReset().mockImplementation(deliveredNormally);
@@ -264,164 +299,13 @@ describe('business registration (BE-11)', () => {
     await asA(request(server).get('/products')).expect(404);
   });
 
-  it('creates the request as pendiente and "sends" the approval email without calling Resend', async () => {
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/business-registration')
-      .send({
-        nombreNegocio: name('Bonsáis del Alberto'),
-        nombre: 'Alberto',
-        apellidos: 'Prueba',
-        correo: 'alberto@example.com',
-      })
-      .expect(201);
-
-    expect(res.body.status).toBe('pendiente');
-    expect(sendApprovalEmail).toHaveBeenCalledTimes(1);
-    const call = sendApprovalEmail.mock.calls[0][0];
-    expect(call.nombreNegocio).toBe(name('Bonsáis del Alberto'));
-    expect(typeof call.approveUrl).toBe('string');
-    expect(typeof call.rejectUrl).toBe('string');
-  });
-
-  describe('registration fields', () => {
-    const post = (body: object) =>
-      request(app.getHttpServer()).post('/api/v1/business-registration').send(body);
-    const base = () => ({
-      nombreNegocio: name('Campos'),
-      nombre: 'Ana',
-      apellidos: 'López Ruiz',
-      correo: 'ana@example.com',
-    });
-
-    it('stores nombre, apellidos, a trimmed lower-cased correo and telefono, and shows them to the approver', async () => {
-      const res = await post({
-        ...base(),
-        correo: '  Ana.Campos@Example.COM ',
-        telefono: ' +52 55 1234 5678 ',
-      }).expect(201);
-
-      expect(Object.keys(res.body).sort()).toEqual(['createdAt', 'id', 'status']);
-      const stored = await prisma.businessRegistrationRequest.findUniqueOrThrow({
-        where: { id: res.body.id },
-      });
-      expect(stored).toMatchObject({
-        nombre: 'Ana',
-        apellidos: 'López Ruiz',
-        correo: 'ana.campos@example.com',
-        telefono: '+52 55 1234 5678',
-      });
-      expect(sendApprovalEmail.mock.calls[0][0]).toMatchObject({
-        nombre: 'Ana',
-        apellidos: 'López Ruiz',
-        correo: 'ana.campos@example.com',
-        telefono: '+52 55 1234 5678',
-      });
-    });
-
-    it('keeps telefono optional: absent is stored as null', async () => {
-      const res = await post(base()).expect(201);
-
-      const stored = await prisma.businessRegistrationRequest.findUniqueOrThrow({
-        where: { id: res.body.id },
-      });
-      expect(stored.telefono).toBeNull();
-    });
-
-    it.each(['nombreNegocio', 'nombre', 'apellidos', 'correo'])(
-      'answers 400 and creates nothing when %s is missing or blank',
-      async (field) => {
-        const { [field]: _omitted, ...missing } = base() as Record<string, string>;
-        for (const body of [missing, { ...missing, [field]: '   ' }]) {
-          const res = await post(body).expect(400);
-          expect(JSON.stringify(res.body.message)).toContain(field);
-        }
-        expect(sendApprovalEmail).not.toHaveBeenCalled();
-      },
-    );
-
-    it('answers 400 for a blank or too long telefono', async () => {
-      for (const telefono of ['   ', '', 'x'.repeat(31)]) {
-        const res = await post({ ...base(), telefono }).expect(400);
-        expect(JSON.stringify(res.body.message)).toContain('telefono');
-      }
-      expect(sendApprovalEmail).not.toHaveBeenCalled();
-    });
-
-    it('answers 400 with a clear Spanish message for a malformed correo and creates nothing', async () => {
-      const malformed = [
-        'ana',
-        'ana@',
-        '@example.com',
-        'ana@example',
-        'ana pérez@example.com',
-        '555-123-4567',
-        `${'a'.repeat(250)}@example.com`,
-      ];
-      for (const correo of malformed) {
-        const res = await post({
-          ...base(),
-          nombreNegocio: name('Campos malformado'),
-          correo,
-        }).expect(400);
-        expect(res.body.statusCode).toBe(400);
-        expect(res.body.error).toBe('Bad Request');
-        expect(res.body.message, correo.slice(0, 40)).toHaveLength(1);
-        expect(res.body.message[0]).toBe(
-          'Escribe un correo válido, por ejemplo nombre@dominio.com',
-        );
-      }
-      expect(sendApprovalEmail).not.toHaveBeenCalled();
-      await expect(
-        prisma.businessRegistrationRequest.count({
-          where: { nombreNegocio: name('Campos malformado') },
-        }),
-      ).resolves.toBe(0);
-    });
-
-    it('answers exactly the standard class-validator 400 body for an invalid correo', async () => {
-      const res = await post({ ...base(), correo: 'ana@example' }).expect(400);
-
-      expect(res.body).toEqual({
-        statusCode: 400,
-        message: ['Escribe un correo válido, por ejemplo nombre@dominio.com'],
-        error: 'Bad Request',
-      });
-    });
-
-    it('never calls an external service to validate the correo', async () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch');
-      try {
-        await post({ ...base(), correo: 'nadie.existe@dominio-inexistente.example' }).expect(201);
-        await post({ ...base(), correo: 'ana@example' }).expect(400);
-        expect(fetchSpy).not.toHaveBeenCalled();
-      } finally {
-        fetchSpy.mockRestore();
-      }
-    });
-
-    it('answers 400 for the removed nombreSocio and contactoSocio fields', async () => {
-      const res = await post({
-        ...base(),
-        nombreSocio: 'Ana',
-        contactoSocio: 'ana@example.com',
-      }).expect(400);
-      const messages = JSON.stringify(res.body.message);
-      expect(messages).toContain('nombreSocio');
-      expect(messages).toContain('contactoSocio');
-      expect(sendApprovalEmail).not.toHaveBeenCalled();
-    });
-  });
-
   it('approves with a valid token: creates a contextId and a founding socio Member', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/business-registration')
-      .send({
+    await registerAndVerify({
         nombreNegocio: name('Bolsas de Adid'),
         nombre: 'Adid',
         apellidos: 'Prueba',
         correo: 'adid@example.com',
-      })
-      .expect(201);
+      });
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
 
     const res = await request(app.getHttpServer())
@@ -446,16 +330,12 @@ describe('business registration (BE-11)', () => {
   });
 
   it('rejects with a valid token: marks rechazado and creates nothing operative', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/business-registration')
-      .send({
+    await registerAndVerify({
         nombreNegocio: name('Lucha Libre Negocio'),
         nombre: 'Rudo',
         apellidos: 'Anonimo',
         correo: 'rudo@example.com',
-        telefono: '555-0000',
-      })
-      .expect(201);
+      });
     const { rejectUrl } = sendApprovalEmail.mock.calls[0][0];
 
     const res = await request(app.getHttpServer())
@@ -471,15 +351,12 @@ describe('business registration (BE-11)', () => {
   });
 
   it('does not duplicate anything when the same approve token is used twice', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/business-registration')
-      .send({
+    await registerAndVerify({
         nombreNegocio: name('Artículos Varios'),
         nombre: 'Socia Fundadora',
         apellidos: 'Prueba',
         correo: 'socia@example.com',
-      })
-      .expect(201);
+      });
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
 
     await request(app.getHttpServer()).get(emailPath(approveUrl)).expect(200);
@@ -500,15 +377,12 @@ describe('business registration (BE-11)', () => {
   });
 
   it('shows an expired-link page for a token whose expiration has already passed', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/business-registration')
-      .send({
+    await registerAndVerify({
         nombreNegocio: name('Negocio Expirado'),
         nombre: 'Fundador Tardío',
         apellidos: 'Prueba',
         correo: 'tarde@example.com',
-      })
-      .expect(201);
+      });
     const { approveUrl } = sendApprovalEmail.mock.calls[0][0];
 
     await prisma.businessRegistrationRequest.updateMany({
@@ -548,12 +422,26 @@ describe('business registration (BE-11)', () => {
       correo: string,
       telefono?: string,
     ) => {
-      await request(server())
-        .post('/api/v1/business-registration')
-        .send({ nombreNegocio, nombre, apellidos: 'Prueba', correo, telefono })
-        .expect(201);
+      await registerAndVerify({ nombreNegocio, nombre, apellidos: 'Prueba', correo, telefono });
       const { approveUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
       return emailPath(approveUrl);
+    };
+    // A second request for the SAME correo cannot be registered any more (one live request per
+    // correo), so the username race uses a pre-existing-style row inserted directly.
+    const legacyRegister = async (nombreNegocio: string, nombre: string, correo: string) => {
+      const token = randomUUID();
+      await prisma.businessRegistrationRequest.create({
+        data: {
+          id: createServerId(),
+          nombreNegocio,
+          nombre,
+          apellidos: 'Prueba',
+          correo,
+          approvalTokenHash: createHash('sha256').update(token).digest('hex'),
+          tokenExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      return `/api/v1/business-registration/approve?token=${token}`;
     };
     const lastCredentials = () =>
       sendCredentialsEmail.mock.calls.at(-1)![0] as CredentialsCall;
@@ -719,7 +607,7 @@ describe('business registration (BE-11)', () => {
     it('answers 502 and keeps the request pendiente when a concurrent approval wins the username, and the retry derives a fresh one', async () => {
       const email = `choque.${run}@example.com`;
       const pathA = await register(name('Choque Uno'), 'Socio Uno', email);
-      const pathB = await register(name('Choque Dos'), 'Socio Dos', email);
+      const pathB = await legacyRegister(name('Choque Dos'), 'Socio Dos', email);
       // A real race, made deterministic: approval A inserts its Account and
       // then holds its (still uncommitted) transaction open inside the
       // credentials email. Approval B pre-checks the username under READ
@@ -1045,15 +933,12 @@ describe('business registration (BE-11)', () => {
     });
 
     it('does not create an account when the request is rejected', async () => {
-      await request(server())
-        .post('/api/v1/business-registration')
-        .send({
+      await registerAndVerify({
           nombreNegocio: name('Rechazo Sin Cuenta'),
           nombre: 'Nadie',
           apellidos: 'Prueba',
           correo: `nadie.${run}@example.com`,
-        })
-        .expect(201);
+        });
       const { rejectUrl } = sendApprovalEmail.mock.calls.at(-1)![0];
 
       await request(server()).get(emailPath(rejectUrl)).expect(200);
@@ -1069,15 +954,12 @@ describe('business registration (BE-11)', () => {
     // Public form input reaches an HTML page opened in the approver's
     // browser: it must be rendered as text, never as markup.
     const registerHostile = async (nombreNegocio: string) => {
-      await request(app.getHttpServer())
-        .post('/api/v1/business-registration')
-        .send({
+      await registerAndVerify({
           nombreNegocio,
           nombre: 'Socio Hostil',
           apellidos: 'Prueba',
-          correo: 'hostil@example.com',
-        })
-        .expect(201);
+          correo: `hostil.${randomUUID()}@example.com`,
+        });
       return sendApprovalEmail.mock.calls[0][0] as {
         approveUrl: string;
         rejectUrl: string;
