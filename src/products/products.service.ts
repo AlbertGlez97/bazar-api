@@ -13,10 +13,13 @@ import type {
   CreateProductDto,
   PatchProductDto,
   ProductListDto,
+  RestockProductDto,
 } from './dto/product.dto.js';
 import { StorageService } from '../storage/storage.service.js';
 import { createServerId } from '../common/server-id.js';
 import { isRequestingSocio } from '../auth/socio-check.util.js';
+import { MAX_MINOR_UNITS } from '../common/money.js';
+import { nextProductCost } from './restock-cost.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 /**
@@ -227,6 +230,112 @@ export class ProductsService {
       notes: dto.notes,
     });
   }
+  /**
+   * Adds pieces to a "por cantidad" product (a restock) and records it.
+   *
+   * The stock is raised with a database-side increment (`stock = stock + n`),
+   * never by reading it and writing back a computed value, so two restocks
+   * running at once both count. That statement also takes the row lock, which
+   * the rest of the transaction holds until commit: a concurrent restock waits
+   * at its own increment and then sees this one's cost and stock. The
+   * increment's `where` carries every rule (right context, `cantidad`, active,
+   * no overflow of the Int range) so none of them can change between a check
+   * and the write.
+   *
+   * In the same transaction: the weighted-average product cost
+   * ({@link nextProductCost}, only when the purchase cost was given), one
+   * {@link ProductAudit} row (stock and cost before/after, who, when) and one
+   * append-only `StockMovement`.
+   *
+   * Rejections: 404 when the product does not exist in this context; 400 for
+   * a unique piece (única products are never restocked), a deactivated
+   * product (reactivate it first) or a stock that would exceed the maximum.
+   *
+   * @returns the updated product and the movement.
+   */
+  restock(actor: Actor, id: string, dto: RestockProductDto) {
+    return this.prisma.$transaction(async (tx) => {
+      const memberId = await this.authorize(tx, actor);
+      const contextId = actor.account.contextId;
+      let incremented: Product;
+      try {
+        incremented = await tx.product.update({
+          where: {
+            id,
+            contextId,
+            tipo: 'cantidad',
+            active: true,
+            stock: { lte: MAX_MINOR_UNITS - dto.quantity },
+          },
+          data: { stock: { increment: dto.quantity } },
+        });
+      } catch (error) {
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== 'P2025'
+        )
+          throw error;
+        throw await this.explainRestockRejection(tx, id, contextId);
+      }
+
+      const stockBefore = incremented.stock - dto.quantity;
+      // The cost has not been written yet, so what came back is the cost
+      // before this restock (and, holding the row lock, the latest committed).
+      const before: Product = { ...incremented, stock: stockBefore };
+      const nextCost = nextProductCost({
+        stockBefore,
+        costBeforeMinor: incremented.purchaseCostMinor,
+        quantity: dto.quantity,
+        unitCostMinor: dto.unitCostMinor,
+      });
+      const product =
+        nextCost === undefined || nextCost === incremented.purchaseCostMinor
+          ? incremented
+          : await tx.product.update({
+              where: { id },
+              data: { purchaseCostMinor: nextCost },
+            });
+
+      await this.audit(tx, memberId, product, before);
+      const movement = await tx.stockMovement.create({
+        data: {
+          id: createServerId(),
+          contextId,
+          productId: id,
+          memberId,
+          type: 'REPOSICION',
+          quantity: dto.quantity,
+          stockBefore,
+          stockAfter: product.stock,
+          unitCostMinor: dto.unitCostMinor ?? null,
+          note: dto.note ?? null,
+        },
+      });
+      return { product: this.response(product), movement };
+    });
+  }
+
+  /** Why the guarded increment of {@link restock} matched no row. */
+  private async explainRestockRejection(
+    tx: Prisma.TransactionClient,
+    id: string,
+    contextId: string,
+  ) {
+    const product = await tx.product.findFirst({ where: { id, contextId } });
+    if (!product) return new NotFoundException();
+    if (product.tipo !== 'cantidad')
+      return new BadRequestException(
+        'Only products sold by quantity can be restocked',
+      );
+    if (!product.active)
+      return new BadRequestException(
+        'A deactivated product cannot be restocked; reactivate it first',
+      );
+    return new BadRequestException(
+      'The resulting stock would exceed the maximum allowed',
+    );
+  }
+
   /**
    * Lists a context's catalog, optionally filtered by a case-insensitive
    * name search, paginated (added in BE-04). Count and page are read in

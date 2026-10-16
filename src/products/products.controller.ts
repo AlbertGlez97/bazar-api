@@ -26,6 +26,7 @@ import {
   CreateProductDto,
   PatchProductDto,
   ProductListDto,
+  RestockProductDto,
 } from './dto/product.dto.js';
 import { MAX_IMAGE_BYTES } from '../storage/storage.service.js';
 import type {} from 'multer';
@@ -71,6 +72,25 @@ export class ProductsController {
     @Body(validate(PatchProductDto)) dto: PatchProductDto,
   ) {
     return this.products.patch(req, id, dto);
+  }
+  @Post(':id/restock')
+  @ApiOperation({
+    summary: 'Restock a product sold by quantity (socios only)',
+    description:
+      'Adds pieces to the stock, atomically, and records an append-only ' +
+      'StockMovement plus an audit row. Returns { product, movement }. ' +
+      'If a unit cost is given the product cost becomes the weighted ' +
+      'average (see ProductsService.restock). 400 for a unique piece, a ' +
+      'deactivated product or a stock above the maximum; 404 if the ' +
+      'product is not in this context.',
+  })
+  @UseGuards(SocioGuard)
+  restock(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(validate(RestockProductDto)) dto: RestockProductDto,
+  ) {
+    return this.products.restock(req, id, dto);
   }
   @Get()
   @ApiExample('products')

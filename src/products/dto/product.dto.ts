@@ -88,6 +88,42 @@ export class PatchProductDto extends ProductMetadataDto {
   unitPriceMinor?: number;
 }
 
+/** Blank text is "not provided": trimmed, and an empty result becomes absent. */
+const trimToUndefined = ({ value }: { value: unknown }) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+};
+
+export class RestockProductDto {
+  @ApiProperty({
+    minimum: 1,
+    description: 'Pieces to ADD to the stock (not the new total).',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(MAX_MINOR_UNITS)
+  quantity!: number;
+  @ApiProperty({
+    required: false,
+    minimum: 0,
+    description:
+      'Unit cost of this purchase in cents. Empty leaves the product cost untouched; ' +
+      'otherwise the product cost becomes the weighted average (see ProductsService.restock).',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_MINOR_UNITS)
+  unitCostMinor?: number | null;
+  @ApiProperty({ required: false, maxLength: 1000 })
+  @IsOptional()
+  @Transform(trimToUndefined)
+  @IsString()
+  @Length(1, 1000)
+  note?: string | null;
+}
+
 export class ProductListDto {
   @IsOptional() @IsString() @Length(0, 200) search?: string;
   // Same param name/semantics as GET /dashboard/summary's own `umbral`
