@@ -2,8 +2,9 @@
 // Se quitan los de dirección de texto (U+202A-202E, U+2066-2069) y los de ancho cero
 // (U+200B-200F, U+2060, U+FEFF): sirven para disfrazar nombres en correos y pantallas.
 const SPACING_CONTROLS = /[\t\n\r\v\f]+/g;
+// oxlint-disable-next-line no-control-regex -- quitar caracteres de control es justamente el propósito
 const CONTROLS = /[\u0000-\u001F\u007F-\u009F]/g;
-const INVISIBLES = /[​-‏‪-‮⁠⁦-⁩﻿]/g;
+const INVISIBLES = /[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
 
 /**
  * Limpia texto libre NO CONFIABLE que escribe una persona: sin caracteres de control ni
