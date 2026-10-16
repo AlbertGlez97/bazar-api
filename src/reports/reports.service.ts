@@ -3,6 +3,10 @@ import { add, multiply, subtract } from 'dinero.js';
 import { parseRangeBoundary } from '../common/business-time.js';
 import { toDinero, toMinorUnits } from '../common/money.js';
 import { computeProfitTotals } from '../common/profit-totals.js';
+import {
+  PAYMENT_METHODS,
+  type PaymentMethod,
+} from '../common/payment-method.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { DateRangeQueryDto } from './dto/date-range.dto.js';
 import type { SalesDetailQueryDto } from './dto/sales-detail-query.dto.js';
@@ -54,25 +58,27 @@ export class ReportsService {
    * - `totalIngresadoMinor` = `totalSoldMinor + abonosRecibidosMinor`,
    *   already summed so the frontend never adds two numbers from two
    *   different reports itself.
+   * - `porMetodoPago`: the same money split by how it was paid (EFECTIVO /
+   *   TRANSFERENCIA / TARJETA), each as completed sales + abonos received
+   *   with the same date criterion. The three `totalMinor` always add up to
+   *   `totalIngresadoMinor`. It does not affect commissions or profit.
    */
   async salesByPeriod(contextId: string, query: DateRangeQueryDto) {
     const { from, to } = this.range(query);
-    const [agg, saleCount, abonos, deudasLiquidadas] =
+    const [soldByMethod, abonos, deudasLiquidadas] =
       await this.prisma.$transaction([
-        this.prisma.sale.aggregate({
+        // One grouped query gives the total, the count and the split per
+        // method, so they can never disagree (a sale landing between two
+        // separate queries would otherwise make the methods not add up).
+        this.prisma.sale.groupBy({
+          by: ['paymentMethod'],
           where: {
             status: 'completada',
             member: { contextId },
             receivedAt: { gte: from, lte: to },
           },
           _sum: { totalMinor: true },
-        }),
-        this.prisma.sale.count({
-          where: {
-            status: 'completada',
-            member: { contextId },
-            receivedAt: { gte: from, lte: to },
-          },
+          _count: { _all: true },
         }),
         this.prisma.abono.findMany({
           where: {
@@ -81,6 +87,7 @@ export class ReportsService {
           },
           select: {
             montoMinor: true,
+            paymentMethod: true,
             receivedAt: true,
             deuda: {
               select: { type: true, deudor: { select: { nombre: true } } },
@@ -108,6 +115,7 @@ export class ReportsService {
       fecha: a.receivedAt,
       deudor: a.deuda.deudor.nombre,
       montoMinor: a.montoMinor,
+      paymentMethod: a.paymentMethod,
       type: a.deuda.type,
     }));
     const abonosRecibidosMinor = abonosRecibidos.reduce(
@@ -135,7 +143,38 @@ export class ReportsService {
       };
     });
 
-    const totalSoldMinor = agg._sum.totalMinor ?? 0;
+    // Money per payment method ("where is the money"): completed sales plus
+    // abonos received, the same two sources as totalIngresadoMinor, so the
+    // three methods always add up to it. All three keys are always present.
+    const porMetodoPago = Object.fromEntries(
+      PAYMENT_METHODS.map((method) => {
+        const ventasMinor =
+          soldByMethod.find((g) => g.paymentMethod === method)?._sum
+            .totalMinor ?? 0;
+        const abonosMinor = abonosRecibidos
+          .filter((a) => a.paymentMethod === method)
+          .reduce((sum, a) => sum + a.montoMinor, 0);
+        return [
+          method,
+          {
+            ventasMinor,
+            abonosMinor,
+            totalMinor: toMinorUnits(
+              add(toDinero(ventasMinor), toDinero(abonosMinor)),
+            ),
+          },
+        ];
+      }),
+    ) as Record<
+      PaymentMethod,
+      { ventasMinor: number; abonosMinor: number; totalMinor: number }
+    >;
+
+    const totalSoldMinor = soldByMethod.reduce(
+      (sum, g) => sum + (g._sum.totalMinor ?? 0),
+      0,
+    );
+    const saleCount = soldByMethod.reduce((sum, g) => sum + g._count._all, 0);
     const totalIngresadoMinor = toMinorUnits(
       add(toDinero(totalSoldMinor), toDinero(abonosRecibidosMinor)),
     );
@@ -149,6 +188,7 @@ export class ReportsService {
       abonosRecibidosMinor,
       deudasLiquidadas: deudasLiquidadasRows,
       totalIngresadoMinor,
+      porMetodoPago,
     };
   }
 

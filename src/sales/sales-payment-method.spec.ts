@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { SalesService } from './sales.service.js';
 import type { PrismaService } from '../database/prisma.service.js';
@@ -10,7 +10,7 @@ const actor = {
   selection: { memberId: 'member', deviceId: 'device' },
 };
 const occurredAt = new Date().toISOString();
-const base: CreateSaleDto = {
+const base = {
   id: '0199a10c-4b80-7000-8000-000000000001',
   memberId: 'member',
   deviceId: 'device',
