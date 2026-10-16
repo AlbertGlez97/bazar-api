@@ -7,7 +7,7 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
 - **Actualización de seguridad BE-12 (2026-09-25)**: nueva ruta [`GET /auth/me`](#ep-auth-me) (solo `AuthGuard`). Dice a qué persona está atada la cuenta autenticada (`memberId` y `member`, o `null` en la cuenta compartida). **La UI no debe mostrar el selector de persona cuando `memberId` no es `null`**: una cuenta atada solo puede actuar como esa persona y `ContextGuard` rechaza (403) cualquier otro `x-member-id`. Antes el login no exponía el vínculo y el selector dejaba a un colaborador elegir "socio" en la pantalla (las llamadas de datos ya daban 403).
-- Alcance: 45 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- Alcance: 46 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - **Actualización BE-13 (2026-09-28)**: `purchaseCostMinor` pasa a ser **obligatorio** al crear un producto (antes opcional) y ya no se puede "vaciar" con `PATCH` una vez que el producto tiene un costo; cada `SaleItem` guarda ahora un snapshot de costo (`unitCostMinor`) que nunca se recalcula; rutas nuevas: `GET /reports/sales-detail` (ganancia por producto/vendedor) y `GET /dashboard/summary` (resumen para la pantalla de Gestión). Las secciones [5](#mod-products) y [9](#mod-reports) reflejan ese cambio.
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -129,7 +129,7 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
 | Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
-| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id`, `POST /api/v1/deudas/:id/cuotas` (BE-15), `PATCH /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15), `DELETE /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15) |
+| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `POST /api/v1/products/:id/restock`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id`, `POST /api/v1/deudas/:id/cuotas` (BE-15), `PATCH /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15), `DELETE /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15) |
 
 Matiz sobre los endpoints "solo `AuthGuard`": únicamente `GET /members` y `GET /products` leen `x-member-id` de forma **opcional** (para decidir si se respeta `includeInactive`, ver sus secciones); ninguno de los endpoints de este grupo exige ni lee `x-device-id`.
 
@@ -1194,6 +1194,74 @@ Cada elemento (registro crudo):
 ```
 
 Fuente: `src/products/products.controller.ts:100-109`, `src/products/products.service.ts:28-41,110-130,372-389`.
+
+<a id="ep-products-restock"></a>
+### `POST /api/v1/products/:id/restock`
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
+| Éxito | **201**, `{ "product": <producto actualizado>, "movement": <movimiento> }` |
+
+Registra una **reposición**: suma piezas a la existencia de un producto **por cantidad**. Los productos `unica` no se reponen (400). La operación es atómica (`stock = stock + n` en la base de datos, dentro de una transacción), así que dos reposiciones simultáneas suman ambas. En la misma transacción se escribe un `StockMovement` (solo se agrega, nunca se modifica ni se borra) y una fila de auditoría del producto (`GET /products/:id/audit`, con `stock` y `purchaseCostMinor` antes y después).
+
+**Body**
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `quantity` | integer | **Obligatorio**. 1..2147483647. Es lo que se **suma**, no la nueva existencia |
+| `unitCostMinor` | integer \| null | Opcional. 0..2147483647. Costo unitario **de esta compra**, en centavos |
+| `note` | string \| null | Opcional. 1..1000 (se recorta; vacío = sin nota) |
+
+Cualquier otro campo (`stock`, `contextId`, `type`…) = **400**.
+
+**Costo del producto** (`purchaseCostMinor`, promedio ponderado, en centavos enteros):
+
+| Situación | Resultado |
+|---|---|
+| `unitCostMinor` vacío | el costo del producto no se toca |
+| existencia anterior = 0 | el costo del producto pasa a ser `unitCostMinor` |
+| existencia anterior > 0 y costo actual conocido | `(existencia × costo actual + quantity × unitCostMinor) / (existencia + quantity)`, redondeado **half-up** a centavos (`x.5` sube) |
+| existencia anterior > 0 y costo actual `null` | no se toca (desconocido no es cero); el costo de la compra queda igual en el movimiento |
+
+Las ventas ya hechas conservan su costo unitario (`unitCostMinor` de la línea), así que ningún caso altera el pasado.
+
+**Movimiento** (`movement`)
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | UUID | |
+| `productId`, `memberId` | UUID | producto y socio que lo registró |
+| `type` | `"REPOSICION"` | hoy es el único valor |
+| `quantity` | integer | piezas sumadas |
+| `stockBefore`, `stockAfter` | integer | `stockAfter = stockBefore + quantity` |
+| `unitCostMinor` | integer \| null | costo de esa compra |
+| `note` | string \| null | |
+| `createdAt` | ISO 8601 | |
+| `contextId` | string | |
+
+**Errores**
+
+| HTTP | Situación | `message` |
+|---|---|---|
+| 400 | `:id` no UUID | `"Validation failed (uuid is expected)"` |
+| 400 | `quantity` ausente, 0, negativa, decimal o texto; costo negativo o decimal; campo desconocido | array de validación |
+| 400 | producto `unica` | `"Only products sold by quantity can be restocked"` |
+| 400 | producto desactivado | `"A deactivated product cannot be restocked; reactivate it first"` |
+| 400 | la existencia resultante superaría 2147483647 | `"The resulting stock would exceed the maximum allowed"` |
+| 401 / 403 | ver [1.3](#f-auth) (un colaborador recibe 403) | |
+| 404 | Producto inexistente en este negocio (también si es de otro negocio) | `"Not Found"` |
+
+**Ejemplo**
+
+```json
+{ "quantity": 2, "unitCostMinor": 1100, "note": "Compra del sábado" }
+```
+
+Con existencia 3 y costo 1000 responde `product.stock: 5`, `product.purchaseCostMinor: 1040` y `movement` con `stockBefore: 3`, `stockAfter: 5`, `unitCostMinor: 1100`.
+
+Fuente: `src/products/products.controller.ts`, `src/products/products.service.ts` (`restock`), `src/products/restock-cost.ts`, `src/products/dto/product.dto.ts` (`RestockProductDto`), `test/products-restock.e2e-spec.ts`.
 
 <a id="ep-products-image"></a>
 ### `POST /api/v1/products/:id/image`
@@ -2495,7 +2563,7 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 <a id="apendice-a-indice-de-rutas"></a>
 ## Apéndice A: índice de rutas
 
-45 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
+46 rutas de negocio, todas bajo el prefijo `/api/v1`. "Audiencia": **Pública** = sin token; **Cuenta** = solo `Authorization` (`AuthGuard`); **Member** = `Authorization` + `x-member-id` + `x-device-id` con cualquier Member activo (`ContextGuard`); **Socio** = lo mismo con un Member `socio` (`SocioGuard`); **Registro de negocio** = pública, limitada a ese flujo.
 
 | Método | Ruta | Audiencia | Sección |
 |---|---|---|---|
@@ -2520,6 +2588,7 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 | `PATCH` | `/api/v1/products/:id` | Socio | [Products](#ep-products-patch) |
 | `GET` | `/api/v1/products/:id/audit` | Cuenta | [Products](#ep-products-audit) |
 | `POST` | `/api/v1/products/:id/image` | Socio | [Products](#ep-products-image) |
+| `POST` | `/api/v1/products/:id/restock` | Socio | [Products](#ep-products-restock) |
 | `DELETE` | `/api/v1/products/:id` | Socio | [Products](#ep-products-delete) |
 | `PATCH` | `/api/v1/products/:id/reactivate` | Socio | [Products](#ep-products-reactivate) |
 | `POST` | `/api/v1/sales` | Member | [Sales](#ep-sales-create) |
