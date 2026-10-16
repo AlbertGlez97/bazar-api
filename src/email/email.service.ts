@@ -4,6 +4,11 @@ import { Resend } from 'resend';
 import { escapeHtml } from '../common/escape-html.js';
 import { fullName } from '../common/full-name.js';
 import { TimeoutError, withTimeout } from '../common/with-timeout.js';
+import {
+  businessTypeLabel,
+  type BusinessTypeValue,
+} from '../business-registration/business-type.js';
+import { whatsappUrl } from '../business-registration/phone.js';
 
 /**
  * TOTAL time the credentials email operation may take, however many Resend
@@ -92,13 +97,26 @@ class ResendRejectionError extends Error {
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
 type EmailKind =
-  'approval' | 'credentials' | 'activation' | 'member credentials';
+  | 'approval'
+  | 'credentials'
+  | 'activation'
+  | 'member credentials'
+  | 'verification';
 
 interface EmailMessage {
   to: string;
   subject: string;
   html: string;
+  /** Plain-text alternative (clients that block HTML, spam filters, accessibility). */
+  text?: string;
 }
+
+/**
+ * TOTAL time the registration emails (verification and approver notice) may take. Both are
+ * sent from INSIDE a database transaction (15 s) so a failed send rolls everything back: this
+ * must stay well below it.
+ */
+export const REGISTRATION_EMAIL_TIMEOUT_MS = 10_000;
 
 export interface DeviceActivationEmailInput {
   /** Who receives the code (the `correoEnvio` a socio typed). */
@@ -143,12 +161,30 @@ export interface MemberCredentialsEmailResult {
 
 export interface BusinessRegistrationApprovalEmailInput {
   nombreNegocio: string;
+  /** Registration v2 fields: absent on rows that predate them. */
+  tipoNegocio?: BusinessTypeValue | null;
+  queVende?: string | null;
+  dondeVende?: string | null;
+  recomendadoPor?: string | null;
   nombre: string;
   apellidos: string;
   correo: string;
+  /** 10 digits for v2 rows; free text on old ones. */
   telefono?: string | null;
+  /** When the applicant confirmed the correo (v2). */
+  emailVerifiedAt?: Date | null;
+  /** How many OTHER requests already use this telefono / correo. */
+  duplicates?: { telefono: number; correo: number };
   approveUrl: string;
   rejectUrl: string;
+}
+
+export interface RegistrationVerificationEmailInput {
+  /** Where it goes: the person who is registering. */
+  correo: string;
+  nombre: string;
+  /** Link to the FRONTEND page (/verificar-correo?token=...), never an API GET. */
+  verifyUrl: string;
 }
 
 export interface BusinessCredentialsEmailInput {
@@ -212,11 +248,37 @@ export class EmailService {
       throw new Error(
         'APPROVAL_NOTIFICATION_EMAIL is required to send the approval email',
       );
-    await this.deliver('approval', {
-      to,
-      subject: `Nueva solicitud de negocio: ${input.nombreNegocio}`,
-      html: renderApprovalEmailHtml(input),
-    });
+    await withTimeout(
+      this.deliver('approval', {
+        to,
+        subject: `Nueva solicitud de negocio: ${input.nombreNegocio}`,
+        html: renderApprovalEmailHtml(input),
+        text: renderApprovalEmailText(input),
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend approval email',
+    );
+  }
+
+  /**
+   * Sends the "confirm your correo" email to the person who is registering. The link opens a
+   * page of the FRONTEND with a button (the confirmation is a POST, never a GET, so mail
+   * scanners that open links cannot confirm someone else's address). Throws if Resend fails:
+   * the caller rolls the request back and answers 503.
+   */
+  async sendRegistrationVerificationEmail(
+    input: RegistrationVerificationEmailInput,
+  ): Promise<void> {
+    await withTimeout(
+      this.deliver('verification', {
+        to: input.correo,
+        subject: 'Confirma tu correo para La Marchanta',
+        html: renderVerificationEmailHtml(input),
+        text: renderVerificationEmailText(input),
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend verification email',
+    );
   }
 
   /**
@@ -459,6 +521,8 @@ export class EmailService {
     const { data, error } = await this.getClient().emails.send({
       from: 'notificaciones@albertogdlc.org',
       ...message,
+      // Defence in depth against header injection: a subject is one line.
+      subject: message.subject.replace(/[\r\n]+/g, ' '),
     });
     if (error) throw new ResendRejectionError(label, error);
     this.logger.log(
@@ -629,34 +693,152 @@ function renderMemberCredentialsEmailHtml(
 </html>`;
 }
 
+const businessEmailButton = (href: string, label: string, color: string) =>
+  `<a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 20px;background:${color};color:#ffffff;text-decoration:none;border-radius:6px;margin:0 12px 12px 0;">${escapeHtml(label)}</a>`;
+
+/** Mexico City date and time, in Spanish: "16 de octubre de 2026, 12:30". */
+function formatMexicoDateTime(date: Date): string {
+  return new Intl.DateTimeFormat('es-MX', {
+    dateStyle: 'long',
+    timeStyle: 'short',
+    timeZone: 'America/Mexico_City',
+  }).format(date);
+}
+
+const pluralRequests = (count: number) =>
+  count === 1 ? '1 solicitud' : `${count} solicitudes`;
+
+/** "5512345678" only when it is a normalized 10-digit phone (rows that predate v2 hold free text). */
+const isNormalizedPhone = (telefono: string) => /^[2-9]\d{9}$/.test(telefono);
+
+function renderVerificationEmailHtml(
+  input: RegistrationVerificationEmailInput,
+): string {
+  const url = escapeHtml(input.verifyUrl);
+  return renderBusinessEmailShell(
+    'Confirma tu correo',
+    `
+    <p>Hola, ${escapeHtml(input.nombre)}. Gracias por querer sumarte a La Marchanta.</p>
+    <p>Para seguir con tu solicitud, confirma que este correo es tuyo.</p>
+    <p>${businessEmailButton(input.verifyUrl, 'Confirmar mi correo', businessEmailColors.terracotta)}</p>
+    <p style="color:${businessEmailColors.muted};font-size:14px;">Si el botón no funciona, copia este enlace en tu navegador:<br />${url}</p>
+    <p style="color:${businessEmailColors.muted};font-size:14px;">El enlace vence en 48 horas y solo puede usarse una vez.</p>
+    <p style="color:${businessEmailColors.muted};font-size:14px;">Si no fuiste tú, ignora este mensaje. No pasará nada.</p>
+  `,
+  );
+}
+
+function renderVerificationEmailText(
+  input: RegistrationVerificationEmailInput,
+): string {
+  return [
+    `Hola, ${input.nombre}. Gracias por querer sumarte a La Marchanta.`,
+    '',
+    'Para seguir con tu solicitud, confirma que este correo es tuyo.',
+    'Confirmar mi correo:',
+    input.verifyUrl,
+    '',
+    'El enlace vence en 48 horas y solo puede usarse una vez.',
+    'Si no fuiste tú, ignora este mensaje. No pasará nada.',
+    '',
+    'De tu lado del mostrador, La Marchanta.',
+  ].join('\n');
+}
+
+function approvalFacts(input: BusinessRegistrationApprovalEmailInput) {
+  const nombreCompleto = fullName(input.nombre, input.apellidos);
+  const telefono = input.telefono?.trim() || undefined;
+  const whatsapp =
+    telefono && isNormalizedPhone(telefono)
+      ? whatsappUrl(telefono, input.nombre, input.nombreNegocio)
+      : undefined;
+  const verifiedLine = input.emailVerifiedAt
+    ? `confirmado ✓ (${formatMexicoDateTime(input.emailVerifiedAt)})`
+    : undefined;
+  const warnings: string[] = [];
+  if (input.duplicates?.telefono)
+    warnings.push(
+      `Este teléfono ya aparece en ${pluralRequests(input.duplicates.telefono)} más.`,
+    );
+  if (input.duplicates?.correo)
+    warnings.push(
+      `Este correo ya aparece en ${pluralRequests(input.duplicates.correo)} más.`,
+    );
+  return { nombreCompleto, telefono, whatsapp, verifiedLine, warnings };
+}
+
 function renderApprovalEmailHtml(
   input: BusinessRegistrationApprovalEmailInput,
 ): string {
-  const nombreNegocio = escapeHtml(input.nombreNegocio);
-  const nombreCompleto = escapeHtml(fullName(input.nombre, input.apellidos));
-  const correo = escapeHtml(input.correo);
-  const telefono = input.telefono ? escapeHtml(input.telefono) : undefined;
+  const { nombreCompleto, telefono, whatsapp, verifiedLine, warnings } =
+    approvalFacts(input);
+  const row = (label: string, value: string | null | undefined) =>
+    value ? `\n    <p><strong>${label}:</strong> ${escapeHtml(value)}</p>` : '';
+  const tipo = input.tipoNegocio ? businessTypeLabel(input.tipoNegocio) : undefined;
   return renderBusinessEmailShell(
     'Nueva solicitud de registro de negocio',
     `
-    <p>Hola. Un nuevo negocio quiere sumarse a La Marchanta. Estos son sus datos para que puedas revisar la solicitud:</p>
+    <p>Hola. Un nuevo negocio quiere sumarse a La Marchanta. Estos son sus datos para que puedas revisar la solicitud:</p>${
+      warnings.length
+        ? `
+    <p style="padding:12px;background:#fbebc0;border:1px solid ${businessEmailColors.maize};">${warnings
+      .map((warning) => `⚠ ${escapeHtml(warning)}`)
+      .join('<br />')}</p>`
+        : ''
+    }
     ${renderBusinessEmailCard(
       'Datos del negocio',
-      `
-    <p><strong>Negocio:</strong> ${nombreNegocio}</p>
-    <p><strong>Socio fundador:</strong> ${nombreCompleto}</p>
-    <p><strong>Correo:</strong> ${correo}</p>${
+      `${row('Negocio', input.nombreNegocio)}${row('Tipo', tipo)}${row('Qué vende', input.queVende)}${row('Dónde vende', input.dondeVende)}${row('Lo recomendó', input.recomendadoPor)}`,
+    )}
+    ${renderBusinessEmailCard(
+      'Datos de contacto',
+      `${row('Socio fundador', nombreCompleto)}
+    <p><strong>Correo:</strong> ${escapeHtml(input.correo)}${verifiedLine ? ` — ${escapeHtml(verifiedLine)}` : ''}</p>${
       telefono
         ? `
-    <p><strong>Teléfono:</strong> ${telefono}</p>`
+    <p><strong>Teléfono (WhatsApp):</strong> ${escapeHtml(telefono)}</p>${
+      whatsapp
+        ? `
+    <p>${businessEmailButton(whatsapp, 'Escribirle por WhatsApp', businessEmailColors.nopal)}</p>`
+        : ''
+    }`
         : ''
     }`,
     )}
     <p>
-      <a href="${escapeHtml(input.approveUrl)}" style="display:inline-block;padding:12px 20px;background:${businessEmailColors.terracotta};color:#ffffff;text-decoration:none;border-radius:6px;margin:0 12px 12px 0;">Aprobar</a>
-      <a href="${escapeHtml(input.rejectUrl)}" style="display:inline-block;padding:12px 20px;background:#b3261e;color:#ffffff;text-decoration:none;border-radius:6px;margin-bottom:12px;">Rechazar</a>
+      ${businessEmailButton(input.approveUrl, 'Aprobar', businessEmailColors.terracotta)}
+      ${businessEmailButton(input.rejectUrl, 'Rechazar', '#b3261e')}
     </p>
     <p style="color:${businessEmailColors.muted};font-size:14px;">Este enlace expira en 30 días y solo puede usarse una vez.</p>
   `,
   );
+}
+
+function renderApprovalEmailText(
+  input: BusinessRegistrationApprovalEmailInput,
+): string {
+  const { nombreCompleto, telefono, whatsapp, verifiedLine, warnings } =
+    approvalFacts(input);
+  const lines = [
+    'Nueva solicitud de registro de negocio',
+    '',
+    ...warnings.map((warning) => `AVISO: ${warning}`),
+    ...(warnings.length ? [''] : []),
+    `Negocio: ${input.nombreNegocio}`,
+    ...(input.tipoNegocio ? [`Tipo: ${businessTypeLabel(input.tipoNegocio)}`] : []),
+    ...(input.queVende ? [`Qué vende: ${input.queVende}`] : []),
+    ...(input.dondeVende ? [`Dónde vende: ${input.dondeVende}`] : []),
+    ...(input.recomendadoPor ? [`Lo recomendó: ${input.recomendadoPor}`] : []),
+    '',
+    `Socio fundador: ${nombreCompleto}`,
+    `Correo: ${input.correo}${verifiedLine ? ` — ${verifiedLine}` : ''}`,
+    ...(telefono ? [`Teléfono (WhatsApp): ${telefono}`] : []),
+    ...(whatsapp ? [`Escribirle por WhatsApp: ${whatsapp}`] : []),
+    '',
+    `Aprobar: ${input.approveUrl}`,
+    `Rechazar: ${input.rejectUrl}`,
+    '',
+    'Este enlace expira en 30 días y solo puede usarse una vez.',
+  ];
+  return lines.join('\n');
 }
