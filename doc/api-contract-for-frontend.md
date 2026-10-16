@@ -4,10 +4,11 @@ Referencia de todos los endpoints del backend `bazar-api`, pensada para quien co
 
 - Fecha del documento: 2026-09-24.
 - Base de código: rama `feat/backend-e0-be11-multitenancy`, commit `1b1e449` ("fix(api): address the two advisory findings of the prefix review"), árbol de trabajo limpio.
+- **Actualización 2026-10-16 (registro v2, rama `feat/registration-email-verification`)**: el registro de negocios verifica el correo con un enlace **antes** de que la solicitud llegue al aprobador. `POST /business-registration` cambia de contrato (campos nuevos, **202** y respuesta genérica `{ ok: true }`) y se agregan `POST /business-registration/verify-email` y `POST /business-registration/resend`. Ver la sección [11](#mod-business-registration). **El frontend viejo deja de funcionar contra este backend (400)**: despliega primero el backend y enseguida el frontend.
 - Actualización posterior (2026-09-24): el flujo de aprobación de negocios cambió en los commits `73c7411` (escape de HTML en las páginas de estado) y `3399370` (la aprobación crea la cuenta y el dispositivo inicial y envía las credenciales por correo). Las secciones [1.3](#f-auth), [2](#mod-auth), [4](#mod-devices), [11](#mod-business-registration) y el [Apéndice B](#apendice-b-aclaraciones) reflejan ese cambio; los números de línea de las referencias `Fuente:` de esas secciones se actualizaron, el resto corresponde al commit base. Un cambio posterior añade el respaldo al aprobador cuando Resend (modo de prueba) rechaza el correo del socio, con un plazo total de 10 s para el correo, y documenta que el identificador de dispositivo es un secreto compartido (secciones 4, 11 y B.4); los números de línea de sus `Fuente:` no se recalcularon. Otro cambio posterior reemplaza `nombreSocio`/`contactoSocio` del formulario por `nombre`, `apellidos`, `correo` (validado solo por formato, sin verificar que el buzón exista) y `telefono` opcional (sección 11).
 - **Actualización BE-12 (2026-09-25, rama `feat/backend-e0-be12-team-devices`)**: gestión de equipo y de dispositivos. Cambia el contrato en cuatro frentes: (1) `POST /devices/identify` ahora puede devolver `{ deviceId, deviceToken }` y `409` si el identificador ya se usó; (2) `ContextGuard` exige `x-device-token` a los dispositivos activados con el flujo nuevo y ata a una persona las cuentas que crea `POST /members`; (3) rutas nuevas: `POST /members`, `POST /auth/change-password`, `GET /devices`, `POST /devices`, `PATCH /devices/:id/revoke` y `PATCH /devices/:id/reissue`; (4) CORS permite el header `x-device-token`. Las secciones [1.3](#f-auth), [1.10](#f-cors), [2](#mod-auth), [3](#mod-members), [4](#mod-devices), [11](#mod-business-registration) y los apéndices reflejan ese cambio; **las referencias `Fuente:` de esas secciones nuevas apuntan a archivos y funciones (sin número de línea) y los números de línea de las `Fuente:` antiguas no se recalcularon**. Lista de migración para el frontend: [4.6](#dev-migracion).
 - **Actualización de seguridad BE-12 (2026-09-25)**: nueva ruta [`GET /auth/me`](#ep-auth-me) (solo `AuthGuard`). Dice a qué persona está atada la cuenta autenticada (`memberId` y `member`, o `null` en la cuenta compartida). **La UI no debe mostrar el selector de persona cuando `memberId` no es `null`**: una cuenta atada solo puede actuar como esa persona y `ContextGuard` rechaza (403) cualquier otro `x-member-id`. Antes el login no exponía el vínculo y el selector dejaba a un colaborador elegir "socio" en la pantalla (las llamadas de datos ya daban 403).
-- Alcance: 46 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
+- Alcance: 48 rutas de negocio bajo `/api/v1` (índice completo en el [Apéndice A](#apendice-a-indice-de-rutas)) más los montajes fuera del prefijo (`/docs*`, `/uploads/products/...`).
 - **Actualización BE-13 (2026-09-28)**: `purchaseCostMinor` pasa a ser **obligatorio** al crear un producto (antes opcional) y ya no se puede "vaciar" con `PATCH` una vez que el producto tiene un costo; cada `SaleItem` guarda ahora un snapshot de costo (`unitCostMinor`) que nunca se recalcula; rutas nuevas: `GET /reports/sales-detail` (ganancia por producto/vendedor) y `GET /dashboard/summary` (resumen para la pantalla de Gestión). Las secciones [5](#mod-products) y [9](#mod-reports) reflejan ese cambio.
 - Los ejemplos usan valores ficticios (`eyJ...` para tokens, `socio@example.test` como usuario). Los identificadores `bf030001-...` son los socios sembrados por `prisma/seed-data.ts`; el resto de UUID de los ejemplos son ficticios (mismos valores que `src/docs/bazaar-examples.ts`). Cuando un ejemplo no proviene de un test, se indica "ejemplo construido a partir del DTO".
 - Cada endpoint termina con una línea **Fuente:** con referencias `archivo:línea` para auditar la afirmación.
@@ -2441,7 +2442,7 @@ Fuente: `src/deudas/deudas.controller.ts`, `src/deudas/dto/cuota-planeada.dto.ts
 
 Alta pública de un negocio nuevo, con aprobación manual por correo. Es un flujo **especial**: enteramente público (sin `Authorization` ni headers de selección) y limitado a este alcance. Reglas:
 
-1. Alguien envía el formulario (`POST /business-registration`). Se crea una solicitud `pendiente` y se envía un correo (vía Resend) al aprobador fijo del sistema (`APPROVAL_NOTIFICATION_EMAIL`) con el negocio, el nombre completo, el correo y el teléfono (si se dio) del socio, y dos enlaces: aprobar y rechazar.
+1. **Registro v2 (verificación de correo).** Alguien envía el formulario (`POST /business-registration`, con un token de Cloudflare Turnstile). Se crea una solicitud en estado **`pendiente_correo`** y se envía un correo (vía Resend) **a quien se registra** con un enlace a la página del frontend `/verificar-correo?token=…` (vence a las 48 h; token aleatorio de 32 bytes, solo se guarda su hash sha-256; un solo uso). **Al aprobador no le llega nada todavía.** La persona abre el enlace, toca el botón "Confirmar mi correo" y el frontend llama a `POST /business-registration/verify-email`; **no existe una verificación por GET** (los escáneres de correo abren los enlaces solos). Al confirmar: estado **`pendiente`** y **recién entonces** se envía al aprobador fijo (`APPROVAL_NOTIFICATION_EMAIL`) el correo de solicitud, con el negocio, tipo, qué vende, dónde vende, quién lo recomendó, el nombre completo, el correo "confirmado ✓ (fecha)", el teléfono con un botón "Escribirle por WhatsApp" (`wa.me/52<10 dígitos>` con un mensaje inicial en español codificado), un aviso si ese teléfono o correo ya aparecen en otra solicitud, y los enlaces de aprobar y rechazar (sin enlaces a mapas ni redes sociales; con texto plano alterno). Los pasos 2 a 7 siguientes describen lo que ocurre desde que la solicitud está `pendiente`.
 2. El aprobador abre uno de los enlaces (`GET .../approve?token=...` o `GET .../reject?token=...`) **desde su cliente de correo**. Ambos endpoints devuelven una **página HTML**, no JSON: no están pensados para llamarse desde el frontend con Axios. Los enlaces apuntan al origen de la API (`APP_BASE_URL` + `/api/v1/business-registration/...`), no al frontend.
 3. El token es de un solo uso y expira a los **30 días**; solo se guarda su hash. Nunca se devuelve por la API.
 4. Al **aprobar**, en **una sola transacción**, se crea: el `contextId` real del negocio; un Member fundador con `role: "socio"` (activo); la **cuenta (Account)** de ese socio, con una contraseña temporal aleatoria (solo se guarda su hash Argon2id); y un **dispositivo (Device)** `"Dispositivo principal"` ya `authorized`, con un `identifier` aleatorio (UUID). Desde BE-12 ese dispositivo es **heredado** (`activo` y sin token): sigue funcionando con `x-device-id` solo y se identifica con `POST /devices/identify` como siempre (responde `{ deviceId }`, sin token); un socio puede reemitirlo después para pasarlo al modelo con token (ver [4](#mod-devices)). La cuenta del socio fundador sigue siendo la cuenta **compartida** del negocio (no atada a una persona). Al **rechazar** no se crea nada operativo.
@@ -2450,7 +2451,11 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
    - **Contraseña temporal**: 24 caracteres URL-safe (`A-Z a-z 0-9 _ -`, 144 bits aleatorios), independiente de cualquier dato del formulario.
 6. **Si la aprobación no puede completarse, no ocurre**: la transacción se revierte (no queda Account, Device, Member ni contexto), la solicitud sigue `pendiente` y la página responde **502**. Tres causas dan esa misma respuesta: el correo de credenciales falla (incluido un respaldo al aprobador que también falla) o Resend no contesta dentro del plazo total de 10 s (compartido por el envío directo y el respaldo); la transacción agota su tiempo (15 s); o dos aprobaciones distintas compiten por el mismo nombre de usuario y la otra gana (el reintento deriva uno nuevo). El aprobador puede reintentar abriendo **el mismo enlace**. Caso límite aceptado: si el correo sale (o solo se agotó la espera, con la petición aún en vuelo) y la aprobación se revierte o el commit falla justo después, el destinatario tiene credenciales que nunca fueron válidas; el reintento envía un juego nuevo y válido.
 7. **Qué implica para el frontend**: el primer inicio de sesión de un negocio nuevo usa el `username` y la contraseña temporal del correo (`POST /auth/login`); después se identifica el dispositivo con `POST /devices/identify` usando el `identifier` del correo y el nombre `"Dispositivo principal"`. El cliente **debe guardar el `identifier`** (no hay endpoint para consultarlo de nuevo; un socio puede reemitirlo con `PATCH /devices/:id/reissue`). La contraseña temporal se cambia con [`POST /auth/change-password`](#ep-auth-change-password) (desde BE-12; el correo de credenciales lo pide).
-8. **No existe `GET /business-registration`** ni ningún endpoint para consultar el estado de una solicitud: el frontend no puede saber si fue aprobada. Las únicas rutas de este módulo son `POST /business-registration`, `GET /business-registration/approve` y `GET /business-registration/reject`.
+8. **No existe `GET /business-registration`** ni ningún endpoint para consultar el estado de una solicitud: el frontend no puede saber si fue aprobada. Las rutas de este módulo son `POST /business-registration`, `POST /business-registration/verify-email`, `POST /business-registration/resend`, `GET /business-registration/approve` y `GET /business-registration/reject`.
+9. **Respuestas genéricas (sin enumeración).** `POST /business-registration` y `POST /business-registration/resend` contestan **siempre lo mismo** (`202 { "ok": true }`) para una petición bien formada: un correo ya registrado (confirmado, pendiente o aprobado), un límite alcanzado o el campo trampa lleno se ven exactamente igual que un éxito. Solo hay una solicitud viva por correo (índice único parcial en la base de datos), así que dos envíos simultáneos no crean duplicados; una solicitud **rechazada** libera el correo.
+10. **Límites.** Por IP (`CF-Connecting-IP`; **nunca** `X-Forwarded-For`): 5 solicitudes/hora, 10 verificaciones/hora y 10 reenvíos/hora (`429 { code: "rate_limited" }` con `Retry-After`; cuentan antes de validar el cuerpo). Por correo: 3 correos de verificación por hora. Por solicitud: reenvío con 60 s de espera y **3 correos en total** (el primero cuenta). Los contadores por IP y por correo viven en memoria (una sola instancia del API; se reinician con él).
+11. **Fallos sin registros a medias.** Si Resend falla al mandar la verificación: **503** `{ code: "email_unavailable" }` y no queda ninguna fila. Si falla al avisar al aprobador durante la confirmación: **503** y la confirmación se revierte (el mismo enlace sigue sirviendo). Turnstile caído o sin configurar: **503** `{ code: "turnstile_unavailable" }`; token falso, usado o vencido: **400** `{ code: "turnstile_invalid" }`.
+12. **Limpieza.** Se borran las solicitudes **sin confirmar a los 7 días**, las **rechazadas a los 30 días** de rechazarse y las **vencidas** (el enlace de aprobación venció) 30 días después de vencer; **nunca** las aprobadas. Corre al arrancar el API y con cada solicitud nueva, por lotes de 200 filas (sin tareas programadas ni dependencias nuevas).
 
 <a id="ep-br-create"></a>
 ### `POST /api/v1/business-registration`
@@ -2459,50 +2464,51 @@ Alta pública de un negocio nuevo, con aprobación manual por correo. Es un fluj
 |---|---|
 | Audiencia | Pública, flujo de registro de negocio (sin token, sin headers de selección) |
 | Headers | `Content-Type: application/json` |
-| Éxito | **201** |
+| Éxito | **202** `{ "ok": true }` (siempre el mismo cuerpo) |
+| Errores | **400** (validación: cuerpo estándar de class-validator, o `{ code: "turnstile_invalid" }`); **429** `{ code: "rate_limited" }` + `Retry-After`; **503** `{ code: "turnstile_unavailable" \| "email_unavailable" }` |
 
-**Body** (desconocidos = 400):
+**Body** (desconocidos = 400, incluidos `nombreSocio`, `contactoSocio` y cualquier enlace de redes o mapas):
 
 | Campo | Tipo | Reglas |
 |---|---|---|
-| `nombreNegocio` | string | requerido; 1..200; con algún carácter no blanco |
-| `nombre` | string | requerido; 1..100; con algún carácter no blanco (nombre del socio fundador). Se recorta antes de validar |
-| `apellidos` | string | requerido; 1..100; con algún carácter no blanco (apellidos del socio fundador). Se recorta antes de validar |
-| `correo` | string | requerido; una dirección de correo válida (`@IsEmail()`), máximo 254 caracteres. Se recorta antes de validar y se guarda en minúsculas; ahí llegan las credenciales. **Solo se valida el formato: no se comprueba que el buzón exista** y no se llama a ningún servicio externo |
-| `telefono` | string | **opcional** (omitirlo es válido); si se envía: 1..30 caracteres, sin formato estricto, no en blanco (se recorta antes de validar). `null` no se acepta: omite el campo |
+| `nombreNegocio` | string | requerido; 1..200 |
+| `tipoNegocio` | enum | requerido: `bazar_o_tianguis`, `abarrotes`, `ropa_y_accesorios`, `comida_y_bebidas`, `plantas_y_jardineria`, `artesanias`, `servicios`, `otro` |
+| `queVende` | string | requerido; 10..400 (después de limpiar) |
+| `dondeVende` | string | opcional; máx. 200 (vacío = no vino) |
+| `recomendadoPor` | string | opcional; máx. 120 |
+| `nombre`, `apellidos` | string | requeridos; 1..100 cada uno |
+| `correo` | string | requerido; correo válido, máx. 254; se guarda en minúsculas. Lo prueba el enlace del correo, no el formato |
+| `telefono` | string | **requerido**; teléfono de México: 10 dígitos con espacios, guiones y un `+52` opcional; se guarda **normalizado a 10 dígitos**; rechaza paréntesis, puntos, extensiones y otros países. **No se verifica** (sin códigos ni servicios de pago) |
+| `aceptaLegal` | boolean | requerido, `true` |
+| `versionLegal` | string | requerido; fecha `AAAA-MM-DD` real (la versión de los textos legales que vio la persona). Se guarda con la fecha del **servidor** |
+| `turnstileToken` | string | requerido; 1..2048; token de **un solo uso** del widget de Cloudflare Turnstile, verificado en el servidor |
+| `sitioWebEmpresa` | string | **campo trampa**: opcional, máx. 500; las personas no lo ven. Si llega con algo, se responde como un éxito y **no se crea nada** |
 
-Los campos `nombreSocio` y `contactoSocio` **ya no existen**: enviarlos es un 400 por campo desconocido.
+Todo texto libre es **no confiable**: se limpia (sin caracteres de control ni invisibles, espacios repetidos juntos) y se escapa como HTML donde se muestra (correos y páginas). Variables de entorno: `TURNSTILE_SECRET_KEY`, `PUBLIC_SITE_URL` (origen del frontend para armar el enlace), `APP_BASE_URL` (origen del API para los enlaces de aprobar/rechazar), `CLIENT_IP_HEADER` (opcional, por defecto `cf-connecting-ip`) y, solo fuera de producción, `TURNSTILE_DEV_BYPASS=true`.
 
-**Respuesta 201**: `{ "id": string, "status": "pendiente", "createdAt": string (ISO 8601) }` (solo esos tres campos).
+<a id="ep-br-verify"></a>
+### `POST /api/v1/business-registration/verify-email`
 
-**Errores**
+| | |
+|---|---|
+| Audiencia | Pública |
+| Body | `{ "token": string }` (20..200; el token del enlace) |
+| Éxito | **200** `{ "ok": true }` |
+| Errores | **400** `{ code: "link_invalid" }` (token inexistente, usado o vencido: **la misma respuesta** para los tres); **429** (10/hora por IP); **503** `{ code: "email_unavailable" }` (no se pudo avisar al aprobador: nada cambió y el mismo enlace sirve) |
 
-| HTTP | Situación | `message` |
-|---|---|---|
-| 400 | Falta un campo obligatorio, está en blanco, supera su límite, `correo` no es una dirección válida, `telefono` está en blanco o supera 30 caracteres, o hay un campo desconocido (p. ej. `nombreSocio` o `contactoSocio`) | array de validación (ver abajo) |
-| 500 | El correo de aprobación no pudo enviarse (falta `RESEND_API_KEY` o `APPROVAL_NOTIFICATION_EMAIL`, o Resend rechazó el envío). **La solicitud ya se creó** como `pendiente`, pero nadie tiene su enlace | `"Internal server error"` |
+Es un POST a propósito: el enlace del correo abre una **página del frontend** (`/verificar-correo?token=…`) con un botón; un GET que confirmara sería confirmado por los escáneres de correo (Outlook SafeLinks…). Consume el token de forma atómica (solo una de N llamadas simultáneas gana), pasa la solicitud a `pendiente`, emite el token de aprobación del aprobador (vence a los 30 días) y envía el correo de solicitud.
 
-Notas: no hay limitación de tasa (*rate limiting*) en el código; cada llamada válida crea una solicitud y dispara un correo. El único fallo de validación es el 400 estándar de class-validator (`{ "statusCode": 400, "message": [...], "error": "Bad Request" }`, `message` es un **array de strings**); no hay códigos de error propios ni sugerencias de corrección. Para `correo` el texto es en español y apto para mostrarse al usuario: "Escribe un correo válido, por ejemplo nombre@dominio.com" (falta, en blanco o mal formado o de más de 254 caracteres); es siempre el mismo mensaje, nunca uno distinto según el caso. Los mensajes de los demás campos son los genéricos de class-validator (en inglés, p. ej. `nombre must be longer than or equal to 1 characters`): conviene que el frontend mapee por nombre de campo. El frontend debería además validar el formato antes de enviar; una dirección con buen formato pero inexistente **se acepta** (no se verifica el buzón).
+<a id="ep-br-resend"></a>
+### `POST /api/v1/business-registration/resend`
 
-**Ejemplo** (`test/business-registration.e2e-spec.ts`, describe "registration fields")
+| | |
+|---|---|
+| Audiencia | Pública |
+| Body | `{ "correo": string }` |
+| Éxito | **202** `{ "ok": true }` (siempre, exista o no el correo) |
+| Errores | **400** (correo mal escrito); **429** (10/hora por IP); **503** `{ code: "email_unavailable" }` |
 
-```json
-{ "nombreNegocio": "Bonsáis del Alberto", "nombre": "Alberto", "apellidos": "Gómez Pérez", "correo": "alberto@example.test", "telefono": "+52 55 1234 5678" }
-```
-
-El mismo caso sin `telefono` también es válido. Ejemplo del 400 por un correo inválido (`{ "correo": "alberto@example" }` con el resto válido):
-
-```json
-{ "statusCode": 400, "message": ["Escribe un correo válido, por ejemplo nombre@dominio.com"], "error": "Bad Request" }
-```
-
-Respuesta 201:
-
-```json
-{ "id": "a0000000-0000-4000-8000-000000000001", "status": "pendiente", "createdAt": "2026-09-23T12:00:00.000Z" }
-```
-
-Fuente: `src/business-registration/business-registration.controller.ts:39-53`, `src/business-registration/dto/create-business-registration.dto.ts:49-69`, `src/business-registration/business-registration.service.ts:119-150`, `src/email/email.service.ts:63-76`, `doc/reglas-de-negocio.md:131`.
+Solo una solicitud `pendiente_correo` recibe un enlace nuevo (el anterior deja de servir), a lo más una vez cada 60 s, 3 correos en total por solicitud y 3 por hora por correo. En cualquier otro caso no manda nada y contesta igual.
 
 <a id="ep-br-approve"></a>
 ### `GET /api/v1/business-registration/approve`
@@ -2624,6 +2630,8 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 | `PATCH` | `/api/v1/deudas/:id/cuotas/:cuotaId` | Socio | [Deudas](#ep-deudas-cuotas) |
 | `DELETE` | `/api/v1/deudas/:id/cuotas/:cuotaId` | Socio | [Deudas](#ep-deudas-cuotas) |
 | `POST` | `/api/v1/business-registration` | Registro de negocio | [Business Registration](#ep-br-create) |
+| `POST` | `/api/v1/business-registration/verify-email` | Registro de negocio | [Business Registration](#ep-br-verify) |
+| `POST` | `/api/v1/business-registration/resend` | Registro de negocio | [Business Registration](#ep-br-resend) |
 | `GET` | `/api/v1/business-registration/approve` | Registro de negocio | [Business Registration](#ep-br-approve) |
 | `GET` | `/api/v1/business-registration/reject` | Registro de negocio | [Business Registration](#ep-br-reject) |
 
@@ -2677,7 +2685,7 @@ Sin verificar aquí: que Axios con `FormData` mande el `boundary` correcto cuand
 
 Esto no cambia el contrato de arriba, pero conviene saberlo al construir el frontend:
 
-- **Sin límite de tasa** en `POST /business-registration`: cada llamada válida crea una solicitud y dispara un correo. Si el correo falla responde 500, pero la solicitud ya quedó `pendiente`.
+- **Límites de tasa del registro (resuelto 2026-10-16):** 5 solicitudes/hora por IP, 3 correos de verificación/hora por correo y 10 verificaciones y 10 reenvíos/hora por IP, más Turnstile y un campo trampa; ver [11](#mod-business-registration). Los contadores viven en memoria (se reinician con el API) y la IP sale de `CF-Connecting-IP`: si esa cabecera no llegara, todos los visitantes compartirían una cubeta (el API lo avisa una vez en el log).
 - **Datos internos en las respuestas:** las ventas incluyen `requestFingerprint` (verificado en vivo) y los snapshots de auditoría de producto incluyen `imagePath`, la clave interna de almacenamiento (verificado en vivo).
 - **Reemplazar una imagen no borra la anterior** del disco; sigue accesible por su URL vieja.
 - **Imágenes en desarrollo:** el proxy de Vite solo cubre `/api`, así que `/uploads/products/...` no llega al backend hasta añadir un proxy para `/uploads`.
