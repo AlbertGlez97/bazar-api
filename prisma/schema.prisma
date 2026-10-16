@@ -226,6 +226,15 @@ model Product {
   @@index([contextId, createdAt, id])
 }
 
+// How a sale or an abono was paid. Spanish upper case, like StockMovementType.
+// Only the means is recorded (no receipt number or terminal reference); it
+// never changes stock or a debt's balance. Existing rows are EFECTIVO.
+enum PaymentMethod {
+  EFECTIVO
+  TRANSFERENCIA
+  TARJETA
+}
+
 enum StockMovementType {
   // Only restocking exists today. Kept as an enum (not a boolean/free text)
   // so a later "Corregir existencia" (set the stock to a counted value) can
@@ -300,7 +309,11 @@ model Sale {
   // not be (and is not) computed once processing is aborted mid-sale, so
   // these are never a stand-in for zero.
   totalMinor        Int?
-  cashReceivedMinor Int
+  paymentMethod     PaymentMethod @default(EFECTIVO)
+  // Cash handed over. Null when the sale was paid by TRANSFERENCIA/TARJETA
+  // (the full total is charged; "not applicable", never a stand-in for 0 —
+  // enforced by the Sale_noncash_has_no_cash CHECK). Always set for EFECTIVO.
+  cashReceivedMinor Int?
   // Normalized request identity, including attempted items for rejected sales.
   requestFingerprint String?
   changeMinor       Int?
@@ -495,6 +508,9 @@ model Abono {
   receivedByMemberId String   @db.Uuid
   receivedAt         DateTime @default(now()) @db.Timestamptz(3)
   nota               String?
+  // How this abono was paid. Never edited afterwards and never part of the
+  // balance calculation.
+  paymentMethod      PaymentMethod @default(EFECTIVO)
   deuda              Deuda    @relation(fields: [deudaId], references: [id])
   receivedByMember   Member   @relation("AbonoReceivedBy", fields: [receivedByMemberId], references: [id])
 
