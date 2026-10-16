@@ -13,6 +13,14 @@ function stripMapped(address: string): string {
   return address.startsWith('::ffff:') ? address.slice(7) : address;
 }
 
+/** ¿La petición trae la cabecera confiable con una IP válida? */
+export function hasTrustedIpHeader(req: Pick<Request, 'headers'>): boolean {
+  const name = (process.env.CLIENT_IP_HEADER || DEFAULT_HEADER).toLowerCase();
+  const raw = req.headers?.[name];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  return typeof header === 'string' && isIP(header.trim()) !== 0;
+}
+
 /**
  * IP del cliente para los límites. Si la cabecera falta o no es UNA IP válida, se usa la
  * dirección de la conexión (desarrollo local). Nunca lanza: sin nada devuelve "unknown".

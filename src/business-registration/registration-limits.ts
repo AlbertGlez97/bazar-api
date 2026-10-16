@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
-import { clientIp } from './client-ip.js';
+import { clientIp, hasTrustedIpHeader } from './client-ip.js';
 import { SlidingWindowLimiter } from './rate-limiter.js';
 
 const MINUTE = 60 * 1000;
@@ -68,8 +68,19 @@ export class RegistrationLimits {
  * registro. Responde 429 con Retry-After. Corre antes que la validación, así que también
  * cuentan las solicitudes mal formadas.
  */
+const ipLogger = new Logger('RegistrationLimits');
+
 export function ipRateLimit(limits: RegistrationLimits, bucket: string, limit: number) {
+  let warnedMissingHeader = false;
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Behind the Cloudflare tunnel every connection comes from the tunnel: without
+    // CF-Connecting-IP all visitors would share ONE bucket. Say so once, never the IP.
+    if (!warnedMissingHeader && process.env.NODE_ENV === 'production' && !hasTrustedIpHeader(req)) {
+      warnedMissingHeader = true;
+      ipLogger.warn(
+        'CF-Connecting-IP is missing on a registration request: all visitors share one rate-limit bucket. Check how requests reach the API (CLIENT_IP_HEADER).',
+      );
+    }
     const result = limits.hitIp(bucket, clientIp(req), limit);
     if (result.allowed) {
       next();
