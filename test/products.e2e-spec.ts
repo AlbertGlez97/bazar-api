@@ -481,10 +481,12 @@ describe('context-scoped products', () => {
     // purchaseCostMinor is mandatory on create (BE-13), so a product without
     // cost only exists through a direct write (legacy rows).
     const noCost = await create({ ...body(`${prefix} c`), initialStock: 4 });
-    await prisma.product.update({
-      where: { id: noCost.id },
-      data: { purchaseCostMinor: null },
-    });
+    await withTestTenant(contextId, () =>
+      prisma.product.update({
+        where: { id: noCost.id },
+        data: { purchaseCostMinor: null },
+      }),
+    );
     const unique = await create({
       name: `${prefix} d`,
       tipo: 'unica',
