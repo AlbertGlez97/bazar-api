@@ -25,8 +25,13 @@ import {
   formatFolio,
   type SimulationShape,
 } from './finance-agreements.snapshot.js';
+import {
+  commitmentOf,
+  exceedsMessage,
+} from './finance-agreements.commitment.js';
 import { loadPaymentSummary } from './finance-payments.summary.js';
 import { FinanceDistributionService } from './finance-distribution.service.js';
+import type { FinanceOverviewDto } from './finance-overview.dto.js';
 import { isCalendarDate } from './work-shift.dto.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
@@ -38,6 +43,7 @@ export const AGREEMENT_ERRORS = {
   alreadyVoided: 'FINANCE_AGREEMENT_ALREADY_VOIDED',
   busy: 'FINANCE_AGREEMENT_BUSY',
   reversalTimeInvalid: 'FINANCE_AGREEMENT_REVERSAL_TIME_INVALID',
+  exceedsUncommitted: 'FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED',
 } as const;
 
 export const MAX_CREATE_ATTEMPTS = 5;
@@ -315,6 +321,23 @@ export class FinanceAgreementsService {
         currentSimulationFingerprint: simulation.simulationFingerprint,
       });
 
+    // The same available money cannot be agreed twice. Two creations racing for it
+    // both touch the folio counter row below, so under REPEATABLE READ the loser fails
+    // with 40001 and is retried from the start, where this check sees the winner.
+    const commitment = commitmentOf(
+      simulation.financialBase.potentiallyAvailableMinor,
+      (await this.committedInTx(tx, contextId, data.from, data.to))
+        .committedMinor,
+    );
+    if (data.requestedAmountMinor > commitment.freeMinor)
+      throw new UnprocessableEntityException({
+        code: AGREEMENT_ERRORS.exceedsUncommitted,
+        message: exceedsMessage(commitment, data.requestedAmountMinor),
+        ...commitment,
+        requestedMinor: data.requestedAmountMinor,
+        missingMinor: data.requestedAmountMinor - commitment.freeMinor,
+      });
+
     const receivedAt = new Date();
     const year = folioYear(receivedAt);
     // Atomic, gapless allocation: a rollback releases the increment, and a
@@ -558,6 +581,59 @@ export class FinanceAgreementsService {
         ),
       };
     });
+  }
+
+  /** What the live (not voided) agreements of this exact period already distribute. */
+  private async committedInTx(
+    tx: Prisma.TransactionClient,
+    contextId: string,
+    from: string,
+    to: string,
+  ) {
+    const live = await tx.distributionAgreement.aggregate({
+      where: {
+        contextId,
+        periodFrom: date(from),
+        periodTo: date(to),
+        reversal: { is: null },
+      },
+      _sum: { distributedMinor: true },
+      _count: { _all: true },
+    });
+    return {
+      committedMinor: live._sum.distributedMinor ?? 0,
+      agreementCount: live._count._all,
+    };
+  }
+
+  /**
+   * Available / committed / free for one exact period, read in one snapshot. It is
+   * only a notice for the screen that creates an agreement; creation checks again.
+   */
+  async commitment(contextId: string, query: FinanceOverviewDto) {
+    const { from, to } = query;
+    if (!isCalendarDate(from) || !isCalendarDate(to) || from >= to)
+      throw new BadRequestException(
+        'from and to must be valid YYYY-MM-DD dates with from preceding to',
+      );
+    return this.prisma.$transaction(
+      async (tx) => {
+        const available = await this.distribution.availableInTx(
+          tx,
+          contextId,
+          from,
+          to,
+        );
+        const committed = await this.committedInTx(tx, contextId, from, to);
+        return {
+          from,
+          to,
+          ...commitmentOf(available, committed.committedMinor),
+          agreementCount: committed.agreementCount,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
 
   async list(contextId: string, query: DistributionAgreementListDto) {

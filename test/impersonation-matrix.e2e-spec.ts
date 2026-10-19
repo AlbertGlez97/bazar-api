@@ -35,6 +35,7 @@ const SOCIO_ROUTES = [
   'POST /finance/distribution-simulations',
   'POST /finance/distribution-agreements',
   'GET /finance/distribution-agreements',
+  'GET /finance/distribution-agreements/commitment',
   'GET /finance/distribution-agreements/:id',
   'POST /finance/distribution-agreements/:id/reversals',
   'POST /finance/distribution-agreements/:agreementId/payments',

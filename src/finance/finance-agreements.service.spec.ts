@@ -90,6 +90,8 @@ function setup(
     authorized?: boolean;
     replaced?: unknown;
     simulate?: () => Promise<unknown>;
+    /** Minor units the live agreements of the period already distribute. */
+    committed?: number;
   } = {},
 ) {
   const queries: string[] = [];
@@ -111,6 +113,10 @@ function setup(
         args.where.id === ID ? (options.existing ?? null) : options.replaced,
       ),
       create: vi.fn().mockResolvedValue({}),
+      aggregate: vi.fn().mockResolvedValue({
+        _sum: { distributedMinor: options.committed ?? 0 },
+        _count: { _all: options.committed ? 1 : 0 },
+      }),
     },
     distributionAgreementParticipant: {
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -374,6 +380,59 @@ describe('FinanceAgreementsService.create', () => {
     expect(
       queries.some((q) => q.includes('DistributionAgreementCounter')),
     ).toBe(false);
+  });
+
+  it('counts only live agreements of this business and this exact period', async () => {
+    const { service, tx } = setup();
+    await service.create(actor, dto());
+    expect(tx.distributionAgreement.aggregate).toHaveBeenCalledWith({
+      where: {
+        contextId: 'tenant',
+        periodFrom: new Date('2026-10-01T00:00:00.000Z'),
+        periodTo: new Date('2026-10-02T00:00:00.000Z'),
+        reversal: { is: null },
+      },
+      _sum: { distributedMinor: true },
+      _count: { _all: true },
+    });
+  });
+
+  it('accepts an agreement that takes exactly what is still free', async () => {
+    const { service, tx } = setup({ committed: 400_000 });
+    // available 1,000,000 - committed 400,000 = free 600,000 = requested
+    await expect(service.create(actor, dto())).resolves.toMatchObject({
+      created: true,
+    });
+    expect(tx.distributionAgreement.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses one cent over what is free: 422 in Spanish with every figure, nothing persisted or counted', async () => {
+    const { service, tx, queries } = setup({ committed: 400_001 });
+    await expect(service.create(actor, dto())).rejects.toMatchObject({
+      response: {
+        code: 'FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED',
+        availableMinor: 1_000_000,
+        committedMinor: 400_001,
+        freeMinor: 599_999,
+        requestedMinor: 600_000,
+        missingMinor: 1,
+        message: expect.stringContaining('faltan $0.01.'),
+      },
+    });
+    expect(tx.distributionAgreement.create).not.toHaveBeenCalled();
+    expect(
+      queries.some((q) => q.includes('DistributionAgreementCounter')),
+    ).toBe(false);
+  });
+
+  it('checks the free amount after drift, so a stale simulation is still a 409', async () => {
+    const { service } = setup({
+      committed: 999_999,
+      fingerprint: 'sim1:' + 'e'.repeat(64),
+    });
+    await expect(service.create(actor, dto())).rejects.toMatchObject({
+      response: { code: 'FINANCE_AGREEMENT_SIMULATION_CHANGED' },
+    });
   });
 
   it('propagates simulator domain errors unchanged', async () => {

@@ -858,7 +858,8 @@ describe('finance distribution agreements HTTP', () => {
       const count = 8;
       const before = await counts();
       const start = before.counters[0]?.lastNumber ?? 0;
-      const sc = await scenario();
+      // 8 agreements of 6,000.00 each need 48,000.00 free in the period.
+      const sc = await scenario({ funding: 6_000_000 });
       const responses = await Promise.all(
         Array.from({ length: count }, (_, i) =>
           create(sc, { title: `Concurrent ${i}` }),
@@ -880,7 +881,8 @@ describe('finance distribution agreements HTTP', () => {
       await second.init();
       try {
         const start = (await counts()).counters[0]?.lastNumber ?? 0;
-        const sc = await scenario();
+        // 6 agreements of 6,000.00 each need 36,000.00 free in the period.
+        const sc = await scenario({ funding: 6_000_000 });
         const through = (server: INestApplication, i: number) =>
           auth(request(server.getHttpServer()).post(endpoint))
             .send(body(sc, { title: `Instance ${i}` }))
@@ -1210,7 +1212,7 @@ describe('finance distribution agreements HTTP', () => {
     });
 
     it('lists summaries by status, exact period and folio, without internals', async () => {
-      const sc = await scenario();
+      const sc = await scenario({ funding: 2_000_000 });
       const a = (await create(sc, { note: 'primera' }).expect(201)).body;
       const b = (await create(sc).expect(201)).body;
       await reverse(a.id).expect(201);
@@ -1264,7 +1266,7 @@ describe('finance distribution agreements HTTP', () => {
     });
 
     it('paginates by cursor across three pages and rejects tampered or foreign cursors', async () => {
-      const sc = await scenario();
+      const sc = await scenario({ funding: 4_000_000 });
       const ids: string[] = [];
       for (let i = 0; i < 5; i++)
         ids.push((await create(sc, { title: `P${i}` }).expect(201)).body.id);
@@ -1574,6 +1576,180 @@ describe('finance distribution agreements HTTP', () => {
       await get(endpoint).expect(200);
       await get(`${endpoint}/${created.id}`).expect(200);
       await reverse(created.id).expect(201);
+    });
+  });
+
+  describe('the same available amount is never agreed twice', () => {
+    const commitment = (period: Period, index = 0, memberId?: string) =>
+      auth(
+        http().get(`${endpoint}/commitment`).query(period),
+        index,
+        memberId,
+      );
+    const rule = (requestedAmountMinor: number): Rule => ({
+      ...worked,
+      requestedAmountMinor,
+    });
+    // A funded period plus a simulation for `requested` out of 1,000,000.
+    const funded = async (requested: number) => {
+      const sc = await scenario({ rule: rule(requested) });
+      return sc;
+    };
+    const second = async (sc: Scenario, requested: number) => ({
+      ...sc,
+      rule: rule(requested),
+      sim: await simulate(sc.period, rule(requested)),
+    });
+
+    it('reports available, committed and free, and counts only live agreements', async () => {
+      const sc = await funded(600_000);
+      expect((await commitment(sc.period).expect(200)).body).toEqual({
+        from: sc.period.from,
+        to: sc.period.to,
+        availableMinor: 1_000_000,
+        committedMinor: 0,
+        freeMinor: 1_000_000,
+        agreementCount: 0,
+      });
+      const created = (await create(sc).expect(201)).body;
+      expect((await commitment(sc.period).expect(200)).body).toMatchObject({
+        availableMinor: 1_000_000,
+        committedMinor: 600_000,
+        freeMinor: 400_000,
+        agreementCount: 1,
+      });
+      await reverse(created.id).expect(201);
+      expect((await commitment(sc.period).expect(200)).body).toMatchObject({
+        committedMinor: 0,
+        freeMinor: 1_000_000,
+        agreementCount: 0,
+      });
+    });
+
+    it('rejects a second agreement that exceeds what is free, in plain Spanish, without consuming a folio', async () => {
+      const sc = await funded(600_000);
+      await create(sc).expect(201);
+      const before = await counts();
+      const again = await second(sc, 600_000);
+
+      const res = await create(again).expect(422);
+
+      expect(res.body).toMatchObject({
+        code: 'FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED',
+        availableMinor: 1_000_000,
+        committedMinor: 600_000,
+        freeMinor: 400_000,
+        requestedMinor: 600_000,
+        missingMinor: 200_000,
+      });
+      expect(res.body.message).toBe(
+        'No alcanza el disponible del período: hay $10,000.00 disponibles, $6,000.00 ya comprometidos en otros acuerdos vigentes y quedan $4,000.00 libres. Este acuerdo pide $6,000.00; faltan $2,000.00.',
+      );
+      expect(await counts()).toEqual(before);
+    });
+
+    it('lets the second agreement take exactly what is left, and not one cent more', async () => {
+      const sc = await funded(600_000);
+      await create(sc).expect(201);
+
+      const over = await second(sc, 400_001);
+      expect((await create(over).expect(422)).body.missingMinor).toBe(1);
+      await create(await second(sc, 400_000)).expect(201);
+
+      expect((await commitment(sc.period).expect(200)).body).toMatchObject({
+        committedMinor: 1_000_000,
+        freeMinor: 0,
+      });
+      await create(await second(sc, 1)).expect(422);
+    });
+
+    it('two agreements for 100 % of the available amount: the second is refused', async () => {
+      const sc = await funded(1_000_000);
+      await create(sc).expect(201);
+      const res = await create(await second(sc, 1_000_000)).expect(422);
+      expect(res.body).toMatchObject({ freeMinor: 0, missingMinor: 1_000_000 });
+    });
+
+    it('voiding an agreement frees its amount, and a replacement can use it', async () => {
+      const sc = await funded(1_000_000);
+      const first = (await create(sc).expect(201)).body;
+      await create(await second(sc, 1_000_000)).expect(422);
+
+      await reverse(first.id).expect(201);
+
+      await create(await second(sc, 1_000_000), {
+        replacesAgreementId: first.id,
+      }).expect(201);
+    });
+
+    it('does not count agreements of another period or of another business', async () => {
+      const a = await funded(1_000_000);
+      const b = await funded(1_000_000);
+      await create(a).expect(201);
+      await create(b).expect(201);
+      expect((await commitment(b.period).expect(200)).body.committedMinor).toBe(
+        1_000_000,
+      );
+      expect(
+        (await commitment(a.period, 1).expect(200)).body.committedMinor,
+      ).toBe(0);
+    });
+
+    it('a retried request with the same id is a replay, not a second commitment', async () => {
+      const sc = await funded(1_000_000);
+      const same = body(sc);
+      await post(endpoint, same).expect(201);
+      await post(endpoint, same).expect(200);
+      expect((await commitment(sc.period).expect(200)).body).toMatchObject({
+        committedMinor: 1_000_000,
+        agreementCount: 1,
+      });
+    });
+
+    it('is safe under simultaneous requests, also from two server processes', async () => {
+      const other = await Test.createTestingModule({
+        imports: [AppModule],
+      }).compile();
+      const app2 = other.createNestApplication();
+      app2.setGlobalPrefix('api/v1');
+      await app2.init();
+      try {
+        for (let round = 0; round < 3; round++) {
+          const sc = await funded(1_000_000);
+          const fire = (server: INestApplication, id: string) =>
+            auth(request(server.getHttpServer()).post(endpoint))
+              .send({ ...body(sc), id })
+              .then((res) => res.status);
+
+          const statuses = await Promise.all([
+            fire(app, v7()),
+            fire(app2, v7()),
+            fire(app, v7()),
+            fire(app2, v7()),
+          ]);
+
+          expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+          expect(statuses.filter((s) => s === 422)).toHaveLength(3);
+          expect(
+            (await commitment(sc.period).expect(200)).body,
+          ).toMatchObject({ committedMinor: 1_000_000, agreementCount: 1 });
+        }
+      } finally {
+        await app2.close();
+      }
+    });
+
+    it('only socios can read it; dates are validated', async () => {
+      const period = nextPeriod();
+      await commitment(period, 0, actors[0].collaborator).expect(403);
+      await http().get(`${endpoint}/commitment`).query(period).expect(401);
+      await get(`${endpoint}/commitment`, { from: 'x', to: period.to }).expect(
+        400,
+      );
+      await get(`${endpoint}/commitment`, {
+        from: period.to,
+        to: period.from,
+      }).expect(400);
     });
   });
 

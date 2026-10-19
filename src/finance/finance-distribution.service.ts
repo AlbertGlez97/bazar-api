@@ -90,6 +90,17 @@ export class FinanceDistributionService {
     );
   }
 
+  /** The period's potentially available amount, exactly as the simulation reads it. */
+  async availableInTx(
+    tx: Prisma.TransactionClient,
+    contextId: string,
+    from: string,
+    to: string,
+  ): Promise<number> {
+    const base = await this.overview.compute(tx, contextId, from, to);
+    return base.result.potentiallyAvailableMinor;
+  }
+
   /**
    * The pure computation, run inside a caller-owned RepeatableRead transaction
    * so agreement creation can re-simulate and persist in one snapshot.

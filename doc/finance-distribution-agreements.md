@@ -130,9 +130,22 @@ Member names, roles and flags are frozen: renaming or deactivating a member late
 | 409    | `FINANCE_AGREEMENT_SIMULATION_CHANGED`                                               | Drift; body adds `currentSimulationFingerprint`. Nothing is persisted and no folio is used |
 | 422    | `FINANCE_AGREEMENT_REPLACEMENT_INVALID`                                              | Replaced agreement unknown, still active, or already replaced                              |
 | 422    | `FINANCE_DISTRIBUTION_EXCEEDS_AVAILABLE`, `_NO_WORK`, `_NO_PARTNERS`, overview codes | Simulator domain errors, propagated unchanged                                              |
+| 422    | `FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED`                                              | The period's free amount cannot cover the request (see "Commitment"); message in Spanish   |
 | 503    | `FINANCE_AGREEMENT_BUSY`                                                             | Concurrent activity exhausted the bounded retries; safe to retry the same request          |
 
-Domain errors use `{ code, message }`; branch on `code`. Messages are informational English.
+Domain errors use `{ code, message }`; branch on `code`. Messages are informational English, except `FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED`, whose message is plain Spanish for the screen.
+
+## Commitment: the same available money is never agreed twice
+
+Creating an agreement (a replacement included) checks, in the same transaction, that the request fits in what is **free**:
+
+- **Available** = the period's `potentiallyAvailableMinor`, read exactly as the simulation reads it (this rule does not change how it is calculated).
+- **Committed** = the sum of `distributedMinor` of the live (not voided) agreements of the **same exact period** (`periodFrom` and `periodTo` equal), of the same business.
+- **Free** = `max(0, available - committed)`. If `requestedAmountMinor > free` the answer is `422 FINANCE_AGREEMENT_EXCEEDS_UNCOMMITTED` with `availableMinor`, `committedMinor`, `freeMinor`, `requestedMinor`, `missingMinor` and a Spanish `message`. Nothing is persisted and no folio is used. A replay of the same id answers before this check.
+- **Payments do not release it.** The available amount comes from recorded sales and expenses, which paying an agreement does not change; subtracting what was paid would let the same money be agreed again. Voiding an agreement does release it.
+- The check runs after the drift check and before the folio. Two simultaneous creations also contend on the folio counter row, so under `REPEATABLE READ` the loser is retried and sees the winner (tested with four simultaneous requests through two API instances).
+
+`GET /api/v1/finance/distribution-agreements/commitment?from=YYYY-MM-DD&to=YYYY-MM-DD` (socios) returns `{ from, to, availableMinor, committedMinor, freeMinor, agreementCount }` for the screen. It is a notice only; creation checks again.
 
 ## Folio
 
@@ -168,6 +181,7 @@ Migration `20261009120000_finance_distribution_agreements` creates `Distribution
 ## Known limits
 
 - Eligibility inherits the simulator's current-state rule (no membership history).
-- Two agreements may exist for the same period and amount; nothing forbids it. Void and replace to correct.
+- Agreements of the same exact period cannot together exceed its available amount. Periods that only overlap (a month and a week inside it) are NOT compared, because their available amounts come from different sales; the check does not cover that.
+- The year boundary: two creations that straddle New Year use different folio counters, so they do not contend on the counter; the check could then miss a simultaneous pair at that exact moment.
 - Only `MXN`, `EQUAL` partner mode and algorithm version 1 exist.
 - The agreement records acceptance of a calculation; it does not prove that money moved.

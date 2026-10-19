@@ -22,6 +22,7 @@ import {
   ReverseDistributionAgreementDto,
 } from './finance-agreements.dto.js';
 import { FinanceAgreementsService } from './finance-agreements.service.js';
+import { FinanceOverviewDto } from './finance-overview.dto.js';
 
 const validate = (expectedType: new () => object) =>
   new ValidationPipe({
@@ -64,6 +65,15 @@ export class FinanceAgreementsController {
     query: DistributionAgreementListDto,
   ) {
     return this.agreements.list(req.account.contextId, query);
+  }
+
+  // Declared before ':id' so "commitment" is never read as an agreement id.
+  @Get('commitment')
+  commitment(
+    @Req() req: AuthenticatedRequest,
+    @Query(validate(FinanceOverviewDto)) query: FinanceOverviewDto,
+  ) {
+    return this.agreements.commitment(req.account.contextId, query);
   }
 
   @Get(':id')
