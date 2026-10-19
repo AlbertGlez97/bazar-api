@@ -40,7 +40,43 @@ function snapshot(product: Product): Prisma.InputJsonObject {
     purchaseCostMinor: product.purchaseCostMinor,
     supplier: product.supplier,
     notes: product.notes,
+    brand: product.brand,
+    presentation: product.presentation,
+    description: product.description,
   };
+}
+
+/** Most distinct brands (and presentations) offered as suggestions. */
+const MAX_SUGGESTIONS = 200;
+
+/**
+ * Distinct values with the first spelling of each, ignoring upper/lower case
+ * ("Nike", "NIKE" and "nike" are one suggestion). The input is already sorted.
+ */
+function distinctIgnoringCase(values: Array<string | null>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (value === null) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+/** A JSON audit snapshot without the purchase cost (a colaborador never sees it). */
+function withoutCost(snapshotValue: unknown): unknown {
+  if (
+    typeof snapshotValue !== 'object' ||
+    snapshotValue === null ||
+    Array.isArray(snapshotValue)
+  )
+    return snapshotValue;
+  return Object.fromEntries(
+    Object.entries(snapshotValue).filter(([key]) => key !== 'purchaseCostMinor'),
+  );
 }
 
 @Injectable()
@@ -51,10 +87,16 @@ export class ProductsService {
     @Inject(StorageService) private readonly storage: StorageService,
   ) {}
 
-  private response(product: Product) {
-    const { imagePath, ...data } = product;
+  /**
+   * `withCost: false` (a colaborador reading the catalog) leaves the purchase
+   * cost out: the key is absent, not null, because null would read as "this
+   * product has no cost yet". Every write endpoint is socio-only and keeps it.
+   */
+  private response(product: Product, withCost = true) {
+    const { imagePath, purchaseCostMinor, ...data } = product;
     return {
       ...data,
+      ...(withCost ? { purchaseCostMinor } : {}),
       // The stored imagePath is an internal storage key, not a public URL;
       // never leak it — only expose the derived, servable URL.
       image: imagePath ? this.storage.getUrl(imagePath) : null,
@@ -158,6 +200,9 @@ export class ProductsService {
           purchaseCostMinor: dto.purchaseCostMinor,
           supplier: dto.supplier,
           notes: dto.notes,
+          brand: dto.brand,
+          presentation: dto.presentation,
+          description: dto.description,
           contextId: actor.account.contextId,
           initialStock,
           stock: initialStock,
@@ -228,6 +273,9 @@ export class ProductsService {
       purchaseCostMinor: dto.purchaseCostMinor,
       supplier: dto.supplier,
       notes: dto.notes,
+      brand: dto.brand,
+      presentation: dto.presentation,
+      description: dto.description,
     });
   }
   /**
@@ -375,19 +423,32 @@ export class ProductsService {
     requestingMemberId: string | undefined,
     accountMemberId: string | null,
   ) {
-    const includeInactive =
-      query.includeInactive &&
-      (await isRequestingSocio(
-        this.prisma,
-        contextId,
-        requestingMemberId,
-        accountMemberId,
-      ));
+    const isSocio = await isRequestingSocio(
+      this.prisma,
+      contextId,
+      requestingMemberId,
+      accountMemberId,
+    );
+    const includeInactive = query.includeInactive && isSocio;
     const where = {
       contextId,
       ...(includeInactive ? {} : { active: true }),
       ...(query.search
-        ? { name: { contains: query.search, mode: 'insensitive' as const } }
+        ? {
+            OR: [
+              { name: { contains: query.search, mode: 'insensitive' as const } },
+              { brand: { contains: query.search, mode: 'insensitive' as const } },
+              {
+                presentation: {
+                  contains: query.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(query.brand
+        ? { brand: { equals: query.brand, mode: 'insensitive' as const } }
         : {}),
       // `agotados` (stock = 0) wins over `umbral`: umbral is validated >= 0,
       // so "stock <= umbral AND stock = 0" is always just "stock = 0".
@@ -412,7 +473,7 @@ export class ProductsService {
       { isolationLevel: 'RepeatableRead' },
     );
     return {
-      items: items.map((product) => this.response(product)),
+      items: items.map((product) => this.response(product, isSocio)),
       total,
       page: query.page,
       limit: query.limit,
@@ -430,12 +491,54 @@ export class ProductsService {
    * context (including a product belonging to another context, which
    * must be indistinguishable from nonexistent).
    */
-  async findOne(contextId: string, id: string) {
+  async findOne(
+    contextId: string,
+    id: string,
+    requestingMemberId: string | undefined,
+    accountMemberId: string | null,
+  ) {
     const product = await this.prisma.product.findFirst({
       where: { id, contextId },
     });
     if (!product) throw new NotFoundException();
-    return this.response(product);
+    const isSocio = await isRequestingSocio(
+      this.prisma,
+      contextId,
+      requestingMemberId,
+      accountMemberId,
+    );
+    return this.response(product, isSocio);
+  }
+  /**
+   * Distinct brands and presentations already used by the context's ACTIVE
+   * products, to offer them as suggestions in the product form (socios only).
+   * Nothing else about the products is read or returned. At most
+   * {@link MAX_SUGGESTIONS} of each, alphabetical; spellings that differ only
+   * in upper/lower case count once.
+   */
+  async suggestions(contextId: string) {
+    const [brands, presentations] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { contextId, active: true, brand: { not: null } },
+        distinct: ['brand'],
+        select: { brand: true },
+        orderBy: { brand: 'asc' },
+        take: MAX_SUGGESTIONS,
+      }),
+      this.prisma.product.findMany({
+        where: { contextId, active: true, presentation: { not: null } },
+        distinct: ['presentation'],
+        select: { presentation: true },
+        orderBy: { presentation: 'asc' },
+        take: MAX_SUGGESTIONS,
+      }),
+    ]);
+    return {
+      brands: distinctIgnoringCase(brands.map((row) => row.brand)),
+      presentations: distinctIgnoringCase(
+        presentations.map((row) => row.presentation),
+      ),
+    };
   }
   /**
    * Soft-deletes (`active: false`) a product. Never a physical delete:
@@ -514,9 +617,21 @@ export class ProductsService {
    * product, so an account cannot use this endpoint to probe which product
    * ids exist in another bazar's catalog.
    */
-  async audits(contextId: string, id: string, query: ProductListDto) {
+  async audits(
+    contextId: string,
+    id: string,
+    query: ProductListDto,
+    requestingMemberId: string | undefined,
+    accountMemberId: string | null,
+  ) {
     if (!(await this.prisma.product.findFirst({ where: { id, contextId } })))
       throw new NotFoundException();
+    const isSocio = await isRequestingSocio(
+      this.prisma,
+      contextId,
+      requestingMemberId,
+      accountMemberId,
+    );
     const where = { productId: id, product: { contextId } };
     const [items, total] = await this.prisma.$transaction(
       [
@@ -530,7 +645,18 @@ export class ProductsService {
       ],
       { isolationLevel: 'RepeatableRead' },
     );
-    return { items, total, page: query.page, limit: query.limit };
+    return {
+      items: isSocio
+        ? items
+        : items.map((audit) => ({
+            ...audit,
+            before: withoutCost(audit.before),
+            after: withoutCost(audit.after),
+          })),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
   /**
    * Replaces a product's image. The file is decoded/validated and saved to

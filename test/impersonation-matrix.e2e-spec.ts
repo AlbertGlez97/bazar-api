@@ -82,6 +82,7 @@ const SOCIO_ROUTES = [
   'PATCH /products/:id',
   'POST /products/:id/image',
   'POST /products/:id/restock',
+  'GET /products/suggestions',
   'DELETE /products/:id',
   'PATCH /products/:id/reactivate',
 ];

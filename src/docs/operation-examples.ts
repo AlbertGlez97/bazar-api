@@ -115,6 +115,19 @@ const metadata: Record<string, SchemaObject> = {
   purchaseCostMinor: { ...money(90000), nullable: true },
   supplier: { ...string('Local trade-in'), nullable: true },
   notes: { ...string('Used disc and original case, tested.'), nullable: true },
+  brand: { ...string('Sony'), nullable: true, maxLength: 40 },
+  presentation: {
+    ...string('Disc · Spanish'),
+    nullable: true,
+    maxLength: 40,
+    description:
+      'Size, measure or capacity ("XL", "24 oz"); the color goes inside ("Azul · 28").',
+  },
+  description: {
+    ...string('Single-player action game.'),
+    nullable: true,
+    maxLength: 200,
+  },
 };
 const productFields = {
   name: string(e.productInput.name),
@@ -351,11 +364,14 @@ export const operations: Record<string, Operation> = {
   products: {
     summary: 'Search the PS5 catalog',
     description:
-      'JWT read access, including colaboradores. Offset pagination is not a snapshot across requests.',
+      'JWT read access, including colaboradores (who never receive purchaseCostMinor). Optional brand filter (exact, ignoring case). Offset pagination is not a snapshot across requests.',
     access: 'jwt',
     queries: [
       ...pagination,
-      search('PS5', 'Case-insensitive product name search.'),
+      search(
+        'PS5',
+        'Case-insensitive search in the product name, brand and presentation.',
+      ),
     ],
     responses: ok(e.page([e.product, e.godOfWar, e.granTurismo])),
     errors: [invalid],

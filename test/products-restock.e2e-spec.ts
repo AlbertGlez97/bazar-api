@@ -205,10 +205,11 @@ describe('product restock', () => {
 
       await restock(product.id, { quantity: 2, unitCostMinor: 1100 }).expect(201);
 
-      const audit = await request(app.getHttpServer())
-        .get(`/products/${product.id}/audit`)
-        .auth(tokenA, { type: 'bearer' })
-        .expect(200);
+      // The cost is part of the audit only for a socio (x-member-id).
+      const audit = await as(
+        request(app.getHttpServer()).get(`/products/${product.id}/audit`),
+        socio(),
+      ).expect(200);
       const last = audit.body.items.at(-1);
       expect(last.before.purchaseCostMinor).toBe(1000);
       expect(last.after.purchaseCostMinor).toBe(1040);

@@ -32,6 +32,9 @@ export const productInput = {
   purchaseCostMinor: 90000,
   supplier: 'Local trade-in',
   notes: 'Used disc and original case, tested.',
+  brand: 'Sony',
+  presentation: 'Disc · Spanish',
+  description: 'Single-player action game.',
 };
 export const product = {
   id: ids.spiderMan,

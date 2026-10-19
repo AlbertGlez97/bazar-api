@@ -107,20 +107,41 @@ export class ProductsController {
       req.account.memberId,
     );
   }
+  // Declared before `:id` so "suggestions" is never read as a product id.
+  @Get('suggestions')
+  @ApiOperation({
+    summary: 'Brands and presentations already in use (socios only)',
+    description:
+      'Distinct brands and presentations of the active products of the ' +
+      'business, at most 200 of each, alphabetical, to suggest them in the ' +
+      'product form. Returns { brands: string[], presentations: string[] } ' +
+      'and nothing else about the products.',
+  })
+  @UseGuards(SocioGuard)
+  suggestions(@Req() req: AuthenticatedRequest) {
+    return this.products.suggestions(req.account.contextId);
+  }
   @Get(':id')
   @ApiOperation({
     summary: 'Get a single product',
     description:
       'Returns the product regardless of active status (a deactivated ' +
       "product is still individually fetchable; only the default list " +
-      'hides it). 404 if it does not exist in this context.',
+      'hides it). 404 if it does not exist in this context. The purchase ' +
+      'cost is only included when x-member-id identifies an active socio.',
   })
   @UseGuards(AuthGuard)
   findOne(
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @Headers('x-member-id') requestingMemberId?: string,
   ) {
-    return this.products.findOne(req.account.contextId, id);
+    return this.products.findOne(
+      req.account.contextId,
+      id,
+      requestingMemberId,
+      req.account.memberId,
+    );
   }
   @Get(':id/audit')
   @ApiExample('productAudit')
@@ -129,8 +150,15 @@ export class ProductsController {
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Query(validate(ProductListDto)) query: ProductListDto,
+    @Headers('x-member-id') requestingMemberId?: string,
   ) {
-    return this.products.audits(req.account.contextId, id, query);
+    return this.products.audits(
+      req.account.contextId,
+      id,
+      query,
+      requestingMemberId,
+      req.account.memberId,
+    );
   }
   @Post(':id/image')
   @ApiExample('productImage')
