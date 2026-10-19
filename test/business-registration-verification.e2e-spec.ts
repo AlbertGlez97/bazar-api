@@ -774,6 +774,74 @@ describe('business registration v2: email verification', () => {
     });
   });
 
+  describe('enlaces de los correos: la URL correcta con cualquier forma de APP_BASE_URL y PUBLIC_SITE_URL', () => {
+    afterEach(() => {
+      vi.stubEnv('APP_BASE_URL', 'https://api.example.test');
+      vi.stubEnv('PUBLIC_SITE_URL', 'https://marchanta.example.test/');
+    });
+
+    // Con y sin barra final, con y sin /api/v1 (en cualquier combinación de mayúsculas), con
+    // espacios, con query o fragmento: el enlace SIEMPRE sale con el mismo origen y la misma ruta.
+    it.each([
+      ['https://marchanta.example.test'],
+      ['https://marchanta.example.test/'],
+      ['https://marchanta.example.test///'],
+      ['  https://marchanta.example.test/  '],
+      ['https://marchanta.example.test/?utm=1'],
+      ['https://marchanta.example.test/#inicio'],
+    ])('el enlace de verificación con PUBLIC_SITE_URL=%j es https://marchanta.example.test/verificar-correo?token=…', async (site) => {
+      vi.stubEnv('PUBLIC_SITE_URL', site);
+      const correo = mail(`enlace-v-${Math.random().toString(36).slice(2, 8)}`);
+
+      await submit(body({ correo })).expect(202);
+
+      const { verifyUrl } = lastVerification();
+      expect(verifyUrl).toMatch(/^https:\/\/marchanta\.example\.test\/verificar-correo\?token=[A-Za-z0-9_-]{43}$/);
+    });
+
+    it.each([
+      ['https://api.example.test'],
+      ['https://api.example.test/'],
+      ['https://api.example.test///'],
+      ['https://api.example.test/api/v1'],
+      ['https://api.example.test/api/v1/'],
+      ['https://api.example.test/API/V1'],
+      ['https://api.example.test//api/v1'],
+      ['  https://api.example.test/api/v1  '],
+      ['https://api.example.test/api/v1?x=1'],
+      ['https://api.example.test/api/v1#f'],
+    ])('los enlaces de aprobar y rechazar con APP_BASE_URL=%j son https://api.example.test/api/v1/business-registration/{approve,reject}?token=… y funcionan', async (base) => {
+      vi.stubEnv('APP_BASE_URL', base);
+      const correo = mail(`enlace-a-${Math.random().toString(36).slice(2, 8)}`);
+      await submit(body({ correo })).expect(202);
+      await verify(tokenOf(lastVerification().verifyUrl)).expect(200);
+
+      const { approveUrl, rejectUrl } = sendApproval.mock.calls.at(-1)![0] as { approveUrl: string; rejectUrl: string };
+
+      expect(approveUrl).toMatch(/^https:\/\/api\.example\.test\/api\/v1\/business-registration\/approve\?token=[A-Za-z0-9_-]{43}$/);
+      expect(rejectUrl).toMatch(/^https:\/\/api\.example\.test\/api\/v1\/business-registration\/reject\?token=[A-Za-z0-9_-]{43}$/);
+      expect(tokenOf(approveUrl)).toBe(tokenOf(rejectUrl));
+      // el enlace no es solo bonito: abrirlo (como lo haría el aprobador) resuelve la solicitud
+      const path = new URL(rejectUrl);
+      await request(app.getHttpServer()).get(`${path.pathname}${path.search}`).expect(200);
+      expect((await rowOf(correo))!.status).toBe('rechazado');
+    });
+
+    it('con APP_BASE_URL vacío los enlaces apuntan al puerto local (desarrollo)', async () => {
+      vi.stubEnv('APP_BASE_URL', '');
+      vi.stubEnv('PORT', '3100');
+      const correo = mail('enlace-local');
+      await submit(body({ correo })).expect(202);
+      await verify(tokenOf(lastVerification().verifyUrl)).expect(200);
+
+      const { approveUrl } = sendApproval.mock.calls.at(-1)![0] as { approveUrl: string };
+
+      expect(approveUrl.startsWith('http://localhost:3100/api/v1/business-registration/approve?token=')).toBe(true);
+      vi.unstubAllEnvs();
+      vi.stubEnv('APP_BASE_URL', 'https://api.example.test');
+    });
+  });
+
   describe('limpieza de solicitudes', () => {
     const insert = (label: string, data: Record<string, unknown>) =>
       prisma.businessRegistrationRequest.create({
