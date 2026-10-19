@@ -1040,7 +1040,7 @@ Fuente: `src/products/products.controller.ts:56-64`, `src/products/dto/product.d
 | Headers | `Authorization`. `x-member-id` **opcional** (solo para `includeInactive`); `x-device-id` no requerido |
 | Éxito | **200**, `{ items, total, page, limit }` |
 
-**Costo**: `purchaseCostMinor` solo viene si `x-member-id` identifica a un socio activo; para un colaborador (o sin ese encabezado) **la clave no aparece**. Todo producto trae `brand`, `presentation` y `description` (`null` si no tienen).
+**Costo, proveedor y notas**: `purchaseCostMinor`, `supplier` y `notes` solo vienen si `x-member-id` identifica a un socio activo; para un colaborador (o sin ese encabezado) **la clave no aparece**. Todo producto trae `brand`, `presentation` y `description` (`null` si no tienen).
 
 **Query** (desconocidos = 400): `search` (0..200; coincidencia parcial sin distinguir mayúsculas en `name`, `brand` y `presentation`), `brand` (1..40 tras limpiar; igualdad exacta sin distinguir mayúsculas; vacío = sin filtro), `includeInactive` (`true`/`false`, def. `false`), `umbral` (integer, 0..100000; **sin default** — mismo nombre y semántica que el `umbral` de [`GET /dashboard/summary`](#ep-dashboard-summary), `stock <= umbral`, pero aquí ausente significa "sin filtro", nunca el default 2 del dashboard; solo el frontend decide enviarlo cuando su toggle de "poca existencia" está activo), `agotados` (`true`/`false`; `true` = solo `stock = 0`; **sin default**, `false` o ausente = sin filtro, nunca "solo con existencia"), `sinCosto` (`true`/`false`; `true` = solo productos sin `purchaseCostMinor`; mismo criterio de ausente/`false`), `tipo` (`unica` o `cantidad`; ausente = ambos), `page` (1..1000000, def. 1), `limit` (1..100, def. 20). Los filtros se combinan con AND y se aplican en la base de datos (`total` y la paginación siguen siendo correctos); `agotados` junto con `umbral` equivale a `stock = 0`. Orden fijo: `createdAt` asc, `id` asc. Por defecto solo productos `active: true`; los de `stock: 0` **sí** aparecen (y, con `umbral` presente, cuentan si `0 <= umbral`).
 
@@ -1107,7 +1107,7 @@ Fuente: `src/products/products.controller.ts` (`suggestions`), `src/products/pro
 | Headers | `Authorization` |
 | Éxito | **200**, un producto |
 
-Devuelve el producto **aunque esté desactivado** (`active: false`); solo el listado por defecto lo oculta. No tiene query params. `x-member-id` es opcional: solo con un socio activo la respuesta incluye `purchaseCostMinor` (para los demás la clave no aparece).
+Devuelve el producto **aunque esté desactivado** (`active: false`); solo el listado por defecto lo oculta. No tiene query params. `x-member-id` es opcional: solo con un socio activo la respuesta incluye `purchaseCostMinor`, `supplier` y `notes` (para los demás las claves no aparecen).
 
 **Errores**
 
@@ -1177,7 +1177,7 @@ Fuente: `src/products/products.controller.ts:65-74`, `src/products/dto/product.d
 | Headers | `Authorization` |
 | Éxito | **200**, `{ items, total, page, limit }` |
 
-Historial de auditoría del producto, del más antiguo al más nuevo (`changedAt` asc, `id` asc; no se puede cambiar el orden). Query: `page` (def. 1), `limit` (def. 20, máx. 100). Acepta también `search`, `includeInactive` y `umbral` (mismo DTO que el listado) pero los **ignora**. `x-member-id` opcional: para quien no es un socio activo, `before` y `after` **no traen `purchaseCostMinor`**. Las fotos instantáneas incluyen también `brand`, `presentation` y `description`.
+Historial de auditoría del producto, del más antiguo al más nuevo (`changedAt` asc, `id` asc; no se puede cambiar el orden). Query: `page` (def. 1), `limit` (def. 20, máx. 100). Acepta también `search`, `includeInactive` y `umbral` (mismo DTO que el listado) pero los **ignora**. `x-member-id` opcional: para quien no es un socio activo, `before` y `after` **no traen `purchaseCostMinor`, `supplier` ni `notes`**. Las fotos instantáneas incluyen también `brand`, `presentation` y `description`.
 
 Cada elemento (registro crudo):
 

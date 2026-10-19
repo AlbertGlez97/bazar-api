@@ -38,7 +38,7 @@ Antes de este cambio `GET /products`, `GET /products/:id` y `GET /products/:id/a
 
 Un colaborador recibe marca, presentación y descripción.
 
-No cambió: `supplier` y `notes` siguen visibles en esas lecturas, y las respuestas de venta guardan `unitCostMinor` por línea; ver "Pendiente" en el reporte de la entrega.
+Lo mismo vale para `supplier` y `notes` (y, en el historial, también dentro de `before`/`after`): solo un socio activo los recibe. Las respuestas de venta (`POST /sales`, `GET /sales`, `GET /sales/:id` y la sincronización) nunca traen `unitCostMinor` ni campos de costo o ganancia, para nadie; el costo por línea sigue guardado en la base y solo lo usan los reportes de socios.
 
 ## Compatibilidad
 

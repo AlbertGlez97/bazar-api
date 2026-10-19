@@ -231,6 +231,8 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
 
     expect(page.items[0]).toMatchObject({ brand: 'Nike', presentation: 'XL', description: 'Algodón' });
     expect(page.items[0]).not.toHaveProperty('purchaseCostMinor');
+    expect(page.items[0]).not.toHaveProperty('supplier');
+    expect(page.items[0]).not.toHaveProperty('notes');
   });
 
   it('list: sin encabezado de persona tampoco hay costo', async () => {
@@ -247,7 +249,7 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
 
     const page = await service.list(CTX, new ProductListDto(), SOCIO_ID, null);
 
-    expect(page.items[0]).toMatchObject({ purchaseCostMinor: 9000 });
+    expect(page.items[0]).toMatchObject({ purchaseCostMinor: 9000, supplier: 'Proveedor X', notes: 'nota interna' });
   });
 
   it('findOne: un colaborador no recibe el costo; un socio sí', async () => {
@@ -258,6 +260,8 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     const asSocio = await service.findOne(CTX, row.id, SOCIO_ID, null);
 
     expect(asColab).not.toHaveProperty('purchaseCostMinor');
+    expect(asColab).not.toHaveProperty('supplier');
+    expect(asColab).not.toHaveProperty('notes');
     expect(asColab).toMatchObject({ brand: 'Nike' });
     expect(asSocio).toMatchObject({ purchaseCostMinor: 9000 });
   });
@@ -273,8 +277,8 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
           id: 'au1',
           oldUnitPriceMinor: 100,
           newUnitPriceMinor: 200,
-          before: { name: 'a', purchaseCostMinor: 5, supplier: 's' },
-          after: { name: 'b', purchaseCostMinor: 6, supplier: 's' },
+          before: { name: 'a', purchaseCostMinor: 5, supplier: 's', notes: 'n' },
+          after: { name: 'b', purchaseCostMinor: 6, supplier: 's', notes: 'n' },
         },
       ],
       1,
@@ -285,6 +289,10 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     const item = page.items[0] as { before: Record<string, unknown>; after: Record<string, unknown> };
     expect(item.before).not.toHaveProperty('purchaseCostMinor');
     expect(item.after).not.toHaveProperty('purchaseCostMinor');
+    for (const side of [item.before, item.after]) {
+      expect(side).not.toHaveProperty('supplier');
+      expect(side).not.toHaveProperty('notes');
+    }
     expect(item.after).toMatchObject({ name: 'b' });
   });
 });

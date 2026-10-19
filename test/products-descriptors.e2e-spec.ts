@@ -385,4 +385,79 @@ describe('product brand, presentation and description', () => {
       expect((await row(made.body.id)).brand).toBe('Nike');
     });
   });
+  describe('costo, proveedor y notas: solo para socios, en cada endpoint', () => {
+    const SECRET = { supplier: 'Proveedor Secreto', notes: 'nota interna' };
+    const hasSocioOnly = (value: unknown) => /purchaseCostMinor|unitCostMinor|"supplier"|"notes"|costoMinor|gananciaMinor/.test(JSON.stringify(value));
+
+    it('GET /products, /products/:id y /audit: el colaborador no ve costo, proveedor ni notas; el socio sí', async () => {
+      const made = await create({ ...SECRET }).expect(201);
+      await as(http().patch(`/products/${made.body.id}`), socio()).send({ notes: 'otra nota' }).expect(200);
+
+      const list = await as(http().get('/products?limit=100'), colab()).expect(200);
+      const one = await as(http().get(`/products/${made.body.id}`), colab()).expect(200);
+      const audit = await as(http().get(`/products/${made.body.id}/audit`), colab()).expect(200);
+      expect(hasSocioOnly(list.body)).toBe(false);
+      expect(hasSocioOnly(one.body)).toBe(false);
+      expect(hasSocioOnly(audit.body)).toBe(false);
+
+      const socioOne = await as(http().get(`/products/${made.body.id}`), socio()).expect(200);
+      expect(socioOne.body).toMatchObject({ purchaseCostMinor: 9000, supplier: 'Proveedor Secreto', notes: 'otra nota' });
+      const socioAudit = await as(http().get(`/products/${made.body.id}/audit`), socio()).expect(200);
+      expect(socioAudit.body.items.at(-1).after).toMatchObject({ supplier: 'Proveedor Secreto', purchaseCostMinor: 9000 });
+    });
+
+    it('una cuenta ligada a un colaborador no obtiene nada de esto aunque nombre a un socio', async () => {
+      const made = await create({ ...SECRET }).expect(201);
+      // Una cuenta ligada a un miembro solo puede haber una: se reutiliza la del test anterior.
+      const bound = await prisma.account.findFirstOrThrow({ where: { contextId: contextA, memberId: colabA } });
+      const token = await app.get(JwtService).signAsync({ sub: bound.id });
+      const res = await http()
+        .get(`/products/${made.body.id}`)
+        .auth(token, { type: 'bearer' })
+        .set('x-member-id', socioA)
+        .set('x-device-id', deviceA)
+        .expect(200);
+      expect(hasSocioOnly(res.body)).toBe(false);
+    });
+
+    it('POST /sales, GET /sales/:id y GET /sales: ninguna línea trae costo ni ganancia (colaborador y socio)', async () => {
+      const made = await create({ ...SECRET, initialStock: 50 }).expect(201);
+      const sell = async (who: Who) => {
+        const res = await as(http().post('/sales'), who)
+          .send({
+            id: randomUUID(),
+            memberId: who.member,
+            deviceId: who.device,
+            occurredAt: new Date().toISOString(),
+            currency: 'MXN',
+            cashReceivedMinor: 100000,
+            items: [{ productId: made.body.id, quantity: 1 }],
+          })
+          .expect(201);
+        expect(hasSocioOnly(res.body)).toBe(false);
+        // Reenviar la misma venta (la cola reintenta) tampoco lo revela.
+        const replay = await as(http().post('/sales'), who).send({
+          id: res.body.id,
+          memberId: who.member,
+          deviceId: who.device,
+          occurredAt: res.body.occurredAt,
+          currency: 'MXN',
+          cashReceivedMinor: 100000,
+          items: [{ productId: made.body.id, quantity: 1 }],
+        });
+        expect(hasSocioOnly(replay.body)).toBe(false);
+        const detail = await as(http().get(`/sales/${res.body.id}`), who).expect(200);
+        expect(hasSocioOnly(detail.body)).toBe(false);
+        return res.body.id as string;
+      };
+      await sell(colab());
+      await sell(socio());
+
+      const list = await as(http().get('/sales?limit=100'), socio()).expect(200);
+      expect(list.body.items.length).toBeGreaterThan(0);
+      expect(hasSocioOnly(list.body)).toBe(false);
+      await as(http().get('/sales'), colab()).expect(403);
+    });
+  });
+
 });

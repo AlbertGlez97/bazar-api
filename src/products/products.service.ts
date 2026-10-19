@@ -66,7 +66,10 @@ function distinctIgnoringCase(values: Array<string | null>): string[] {
   return result;
 }
 
-/** A JSON audit snapshot without the purchase cost (a colaborador never sees it). */
+/** Fields only a socio may read: what the product cost, who supplies it and the internal notes. */
+const SOCIO_ONLY_FIELDS = ['purchaseCostMinor', 'supplier', 'notes'];
+
+/** A JSON audit snapshot without the socio-only fields (a colaborador never sees them). */
 function withoutCost(snapshotValue: unknown): unknown {
   if (
     typeof snapshotValue !== 'object' ||
@@ -75,7 +78,7 @@ function withoutCost(snapshotValue: unknown): unknown {
   )
     return snapshotValue;
   return Object.fromEntries(
-    Object.entries(snapshotValue).filter(([key]) => key !== 'purchaseCostMinor'),
+    Object.entries(snapshotValue).filter(([key]) => !SOCIO_ONLY_FIELDS.includes(key)),
   );
 }
 
@@ -88,15 +91,15 @@ export class ProductsService {
   ) {}
 
   /**
-   * `withCost: false` (a colaborador reading the catalog) leaves the purchase
-   * cost out: the key is absent, not null, because null would read as "this
-   * product has no cost yet". Every write endpoint is socio-only and keeps it.
+   * `withCost: false` (anyone who is not an active socio reading the catalog) leaves
+   * out the purchase cost, the supplier and the notes: the keys are absent, not null,
+   * because null would read as "none yet". Every write endpoint is socio-only and keeps them.
    */
   private response(product: Product, withCost = true) {
-    const { imagePath, purchaseCostMinor, ...data } = product;
+    const { imagePath, purchaseCostMinor, supplier, notes, ...data } = product;
     return {
       ...data,
-      ...(withCost ? { purchaseCostMinor } : {}),
+      ...(withCost ? { purchaseCostMinor, supplier, notes } : {}),
       // The stored imagePath is an internal storage key, not a public URL;
       // never leak it — only expose the derived, servable URL.
       image: imagePath ? this.storage.getUrl(imagePath) : null,
