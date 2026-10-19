@@ -25,8 +25,18 @@ export function cleanText<T>(value: T): T | string {
 
 /** "alberto@example.com" -> "a***@e***.com": para los logs, nunca el correo completo. */
 export function maskEmail(email: string): string {
-  const match = /^([^@\s])[^@\s]*@([^@\s.])[^@\s]*(\.[^@\s]+)$/.exec(email);
-  return match ? `${match[1]}***@${match[2]}***${match[3]}` : '***';
+  // Un recorrido sin expresiones con retroceso (la anterior, con `[^@\s]*` seguido de
+  // `\.[^@\s]+$`, tardaba segundos con decenas de miles de puntos). Mismas reglas de antes: sin
+  // espacios, una sola arroba con algo antes, el dominio no empieza con punto y termina en un
+  // tramo ".algo" cuyo punto es el último que todavía tiene algún carácter detrás.
+  if (/\s/.test(email)) return '***';
+  const at = email.indexOf('@');
+  if (at < 1 || at !== email.lastIndexOf('@')) return '***';
+  const domain = email.slice(at + 1);
+  if (domain.startsWith('.')) return '***';
+  const dot = domain.lastIndexOf('.', domain.length - 2);
+  if (dot < 0) return '***';
+  return `${email.charAt(0)}***@${domain.charAt(0)}***${domain.slice(dot)}`;
 }
 
 /** "5512345678" -> "********78": para los logs, nunca el teléfono completo. */

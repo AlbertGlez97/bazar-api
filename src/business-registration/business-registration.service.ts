@@ -28,6 +28,11 @@ import {
 } from './initial-credentials.js';
 import { renderStatusPage } from './status-page.html.js';
 import { maskEmail } from '../common/text-sanitize.js';
+import {
+  stripQueryAndFragment,
+  stripTrailingApiPrefix,
+  trimTrailingSlashes,
+} from '../common/url-parts.js';
 import { RegistrationCleanupService } from './registration-cleanup.service.js';
 import { REGISTRATION_RULES, RegistrationLimits } from './registration-limits.js';
 import { TurnstileService } from './turnstile.service.js';
@@ -150,14 +155,13 @@ function hashToken(token: string): string {
  * would point at the wrong place.
  */
 export function apiBaseUrl(): string {
-  return (
+  const raw =
     process.env.APP_BASE_URL?.trim() ||
-    `http://localhost:${process.env.PORT ?? 3000}`
-  )
-    .replace(/[?#].*$/, '')
-    .replace(/\/+$/, '')
-    .replace(/\/api\/v1$/i, '')
-    .replace(/\/+$/, '');
+    `http://localhost:${process.env.PORT ?? 3000}`;
+  // No regular expressions with backtracking: see src/common/url-parts.ts
+  return trimTrailingSlashes(
+    stripTrailingApiPrefix(trimTrailingSlashes(stripQueryAndFragment(raw))),
+  );
 }
 
 /**
@@ -462,7 +466,7 @@ export class BusinessRegistrationService {
   /** Public origin of the FRONTEND (for the link in the verification email). */
   private publicSiteUrl(): string {
     const configured = process.env.PUBLIC_SITE_URL?.trim();
-    if (configured) return configured.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    if (configured) return trimTrailingSlashes(stripQueryAndFragment(configured));
     if (process.env.NODE_ENV === 'production') {
       this.logger.error('PUBLIC_SITE_URL is not configured: verification links cannot be built.');
       throw new ServiceUnavailableException({

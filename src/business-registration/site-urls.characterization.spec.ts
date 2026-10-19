@@ -25,6 +25,12 @@ describe('apiBaseUrl: caracterización', () => {
     ['https://a.test/api/v1?x=1', 'https://a.test'],
     ['https://a.test/api/v1#f', 'https://a.test'],
     ['https://a.test/api/v1/api/v1', 'https://a.test/api/v1'],
+    // las barras que quedan al quitar /api/v1 también se limpian
+    ['https://a.test//api/v1', 'https://a.test'],
+    ['https://a.test///API/V1/', 'https://a.test'],
+    ['a//api/v1?x=1', 'a'],
+    ['/api/v1', ''],
+    ['//api/v1', ''],
     ['https://a.test/api', 'https://a.test/api'],
     ['http://localhost:5173', 'http://localhost:5173'],
     ['   https://a.test/   ', 'https://a.test'],
