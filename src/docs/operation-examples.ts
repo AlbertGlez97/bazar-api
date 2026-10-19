@@ -594,6 +594,8 @@ export const operations: Record<string, Operation> = {
         {
           productId: e.ids.spiderMan,
           productName: 'Marvel’s Spider-Man 2 — PS5',
+          productBrand: 'Sony',
+          productPresentation: 'Disc · Spanish',
           memberId: e.ids.carlos,
           memberName: 'Carlos',
           units: 2,

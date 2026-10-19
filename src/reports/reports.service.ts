@@ -261,7 +261,7 @@ export class ReportsService {
         quantity: true,
         subtotalMinor: true,
         unitCostMinor: true,
-        product: { select: { name: true } },
+        product: { select: { name: true, brand: true, presentation: true } },
         sale: {
           select: { memberId: true, member: { select: { name: true } } },
         },
@@ -271,6 +271,8 @@ export class ReportsService {
     type Row = {
       productId: string;
       productName: string;
+      productBrand: string | null;
+      productPresentation: string | null;
       memberId: string;
       memberName: string | null;
       units: number;
@@ -286,6 +288,8 @@ export class ReportsService {
         row = {
           productId: item.productId,
           productName: item.product.name,
+          productBrand: item.product.brand,
+          productPresentation: item.product.presentation,
           memberId: item.sale.memberId,
           memberName: item.sale.member?.name ?? null,
           units: 0,
@@ -313,6 +317,10 @@ export class ReportsService {
       return {
         productId: row.productId,
         productName: row.productName,
+        // Current brand/presentation of the product (not a snapshot of the sale): they tell
+        // apart sizes and colors of the same model in the report.
+        productBrand: row.productBrand,
+        productPresentation: row.productPresentation,
         memberId: row.memberId,
         memberName: row.memberName,
         units: row.units,

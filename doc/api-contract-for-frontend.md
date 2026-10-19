@@ -2022,6 +2022,8 @@ Cada fila agrupa **todas** las partidas (`SaleItem`) del periodo por par `(produ
 |---|---|---|
 | `productId` | string | |
 | `productName` | string | |
+| `productBrand` | string \| null | marca actual del producto (no es una foto de la venta); `null` si no tiene |
+| `productPresentation` | string \| null | presentación actual del producto; `null` si no tiene |
 | `memberId` | string | quien vendió (socio o colaborador) |
 | `memberName` | string \| null | |
 | `units` | integer | suma de `quantity` de todas las partidas del par |

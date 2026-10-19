@@ -597,4 +597,50 @@ describe('reports sales-detail (BE-13)', () => {
     });
     await prisma.account.deleteMany({ where: { contextId: otherContextId } });
   });
+
+  it('each row carries the product brand and presentation (null when it has none)', async () => {
+    const described = await withTestTenant(contextId, () =>
+      prisma.product.create({
+        data: {
+          name: 'Playera descrita',
+          tipo: 'cantidad',
+          unitPriceMinor: 1_000,
+          initialStock: 10,
+          stock: 10,
+          contextId,
+          purchaseCostMinor: 500,
+          brand: 'Casa Vieja',
+          presentation: 'Azul · 28',
+        },
+      }),
+    );
+    const plain = await createProduct('Playera sin datos', 500);
+    const day = new Date('2025-07-03T12:00:00.000Z');
+    await createSale({
+      memberId: socioMemberId,
+      receivedAt: day,
+      items: [
+        { productId: described.id, quantity: 1, unitPriceMinor: 1_000, unitCostMinor: 500 },
+        { productId: plain.id, quantity: 1, unitPriceMinor: 900, unitCostMinor: 500 },
+      ],
+    });
+
+    const res = await asSocio(
+      request(app.getHttpServer()).get(
+        '/reports/sales-detail?from=2025-07-03&to=2025-07-03',
+      ),
+    ).expect(200);
+    const byId = (id: string) =>
+      res.body.items.find((i: { productId: string }) => i.productId === id);
+
+    expect(byId(described.id)).toMatchObject({
+      productName: 'Playera descrita',
+      productBrand: 'Casa Vieja',
+      productPresentation: 'Azul · 28',
+    });
+    expect(byId(plain.id)).toMatchObject({
+      productBrand: null,
+      productPresentation: null,
+    });
+  });
 });

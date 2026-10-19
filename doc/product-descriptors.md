@@ -47,3 +47,7 @@ No cambió: `supplier` y `notes` siguen visibles en esas lecturas, y las respues
 - Contrato HTTP: [`api-contract-for-frontend.md`](api-contract-for-frontend.md#ep-products-create).
 
 Fuente: `src/products/dto/product.dto.ts`, `src/products/products.service.ts`, `src/products/products.controller.ts`, `test/products-descriptors.e2e-spec.ts`.
+
+## Reportes
+
+`GET /reports/sales-detail` (solo socios) agrega a cada fila `productBrand` y `productPresentation`: los valores **actuales** del producto (no una foto de la venta), `null` si no tiene. Sirven para distinguir tallas y colores del mismo modelo en la pantalla, el PDF y el Excel. Es aditivo: una fila sigue teniendo todo lo de antes.
