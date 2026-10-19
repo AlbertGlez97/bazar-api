@@ -130,7 +130,7 @@ Orden de rechazo: primero 401 (`AuthGuard`), luego 403 (selección), luego 403 (
 | Ninguno (públicos) | `GET /api/v1`, `POST /api/v1/auth/login`, `POST /api/v1/business-registration`, `GET /api/v1/business-registration/approve`, `GET /api/v1/business-registration/reject` |
 | Solo `AuthGuard` (basta el token; los headers `x-member-id`/`x-device-id` **no** se exigen) | `GET /api/v1/members`, `GET /api/v1/auth/me`, `POST /api/v1/auth/change-password`, `POST /api/v1/devices/identify`, `GET /api/v1/products`, `GET /api/v1/products/:id`, `GET /api/v1/products/:id/audit`, `GET /api/v1/sales/:id` |
 | `ContextGuard` (token + member + device; cualquier Member activo, socio o colaborador) | `POST /api/v1/sales`, `POST /api/v1/deudas/:id/abonos` |
-| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `POST /api/v1/products/:id/restock`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id`, `POST /api/v1/deudas/:id/cuotas` (BE-15), `PATCH /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15), `DELETE /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15) |
+| `SocioGuard` (token + member socio + device) | `POST /api/v1/members`, `GET /api/v1/devices`, `POST /api/v1/devices`, `PATCH /api/v1/devices/:id/revoke`, `PATCH /api/v1/devices/:id/reissue`, `POST /api/v1/products`, `PATCH /api/v1/products/:id`, `POST /api/v1/products/:id/image`, `POST /api/v1/products/:id/restock`, `GET /api/v1/products/suggestions`, `DELETE /api/v1/products/:id`, `PATCH /api/v1/products/:id/reactivate`, `PATCH /api/v1/members/:id`, `DELETE /api/v1/members/:id`, `PATCH /api/v1/members/:id/reactivate`, `PATCH /api/v1/members/:id/commission-rate`, `GET /api/v1/sales`, `GET /api/v1/incidencias`, `GET /api/v1/incidencias/:id`, `PATCH /api/v1/incidencias/:id/resolver`, `GET /api/v1/commissions`, `PATCH /api/v1/settings/commission-rate`, `GET /api/v1/reports/sales-by-period`, `GET /api/v1/reports/sales-by-member`, `GET /api/v1/reports/sales-detail`, `GET /api/v1/dashboard/summary`, `POST /api/v1/deudas`, `GET /api/v1/deudas`, `GET /api/v1/deudas/:id`, `POST /api/v1/deudas/:id/cuotas` (BE-15), `PATCH /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15), `DELETE /api/v1/deudas/:id/cuotas/:cuotaId` (BE-15) |
 
 Matiz sobre los endpoints "solo `AuthGuard`": únicamente `GET /members` y `GET /products` leen `x-member-id` de forma **opcional** (para decidir si se respeta `includeInactive`, ver sus secciones); ninguno de los endpoints de este grupo exige ni lee `x-device-id`.
 
@@ -983,8 +983,11 @@ Forma de un producto en las respuestas:
 | `purchaseCostMinor` | integer | **requerido (BE-13)**, 0..2147483647. Antes de BE-13 era opcional; ahora falta el campo, o mandarlo `null`, es 400 — el costo de compra ya no puede quedar sin definir en un producto nuevo (lo necesitan `GET /reports/sales-detail` y `GET /dashboard/summary` para calcular ganancia real) |
 | `supplier` | string \| null | opcional, 1..200 |
 | `notes` | string \| null | opcional, 0..2000 |
+| `brand` | string \| null | opcional, 1..40 **después de limpiar** (control e invisibles fuera, saltos de línea = espacio, espacios juntos y recortados); vacío = `null` |
+| `presentation` | string \| null | opcional, igual que `brand` (talla, tamaño o capacidad; el color va dentro: "Azul · 28") |
+| `description` | string \| null | opcional, 1..200, igual que `brand` |
 
-`image`, `stock`, `active`, `contextId` u otros campos = 400.
+`image`, `stock`, `active`, `contextId` u otros campos = 400. Detalle de los tres campos nuevos: [`product-descriptors.md`](product-descriptors.md).
 
 **Errores**
 
@@ -1037,7 +1040,9 @@ Fuente: `src/products/products.controller.ts:56-64`, `src/products/dto/product.d
 | Headers | `Authorization`. `x-member-id` **opcional** (solo para `includeInactive`); `x-device-id` no requerido |
 | Éxito | **200**, `{ items, total, page, limit }` |
 
-**Query** (desconocidos = 400): `search` (0..200; coincidencia parcial sin distinguir mayúsculas en `name`), `includeInactive` (`true`/`false`, def. `false`), `umbral` (integer, 0..100000; **sin default** — mismo nombre y semántica que el `umbral` de [`GET /dashboard/summary`](#ep-dashboard-summary), `stock <= umbral`, pero aquí ausente significa "sin filtro", nunca el default 2 del dashboard; solo el frontend decide enviarlo cuando su toggle de "poca existencia" está activo), `agotados` (`true`/`false`; `true` = solo `stock = 0`; **sin default**, `false` o ausente = sin filtro, nunca "solo con existencia"), `sinCosto` (`true`/`false`; `true` = solo productos sin `purchaseCostMinor`; mismo criterio de ausente/`false`), `tipo` (`unica` o `cantidad`; ausente = ambos), `page` (1..1000000, def. 1), `limit` (1..100, def. 20). Los filtros se combinan con AND y se aplican en la base de datos (`total` y la paginación siguen siendo correctos); `agotados` junto con `umbral` equivale a `stock = 0`. Orden fijo: `createdAt` asc, `id` asc. Por defecto solo productos `active: true`; los de `stock: 0` **sí** aparecen (y, con `umbral` presente, cuentan si `0 <= umbral`).
+**Costo**: `purchaseCostMinor` solo viene si `x-member-id` identifica a un socio activo; para un colaborador (o sin ese encabezado) **la clave no aparece**. Todo producto trae `brand`, `presentation` y `description` (`null` si no tienen).
+
+**Query** (desconocidos = 400): `search` (0..200; coincidencia parcial sin distinguir mayúsculas en `name`, `brand` y `presentation`), `brand` (1..40 tras limpiar; igualdad exacta sin distinguir mayúsculas; vacío = sin filtro), `includeInactive` (`true`/`false`, def. `false`), `umbral` (integer, 0..100000; **sin default** — mismo nombre y semántica que el `umbral` de [`GET /dashboard/summary`](#ep-dashboard-summary), `stock <= umbral`, pero aquí ausente significa "sin filtro", nunca el default 2 del dashboard; solo el frontend decide enviarlo cuando su toggle de "poca existencia" está activo), `agotados` (`true`/`false`; `true` = solo `stock = 0`; **sin default**, `false` o ausente = sin filtro, nunca "solo con existencia"), `sinCosto` (`true`/`false`; `true` = solo productos sin `purchaseCostMinor`; mismo criterio de ausente/`false`), `tipo` (`unica` o `cantidad`; ausente = ambos), `page` (1..1000000, def. 1), `limit` (1..100, def. 20). Los filtros se combinan con AND y se aplican en la base de datos (`total` y la paginación siguen siendo correctos); `agotados` junto con `umbral` equivale a `stock = 0`. Orden fijo: `createdAt` asc, `id` asc. Por defecto solo productos `active: true`; los de `stock: 0` **sí** aparecen (y, con `umbral` presente, cuentan si `0 <= umbral`).
 
 **Errores**: 400 (`page`/`limit` no enteros o fuera de rango, p. ej. `limit=101`; `umbral` no entero, negativo o mayor a 100000; `agotados`/`sinCosto` distintos de `true`/`false`; `tipo` distinto de `unica`/`cantidad`; parámetro desconocido); 401.
 
@@ -1076,6 +1081,23 @@ Authorization: Bearer eyJ...
 
 Fuente: `src/products/products.controller.ts:75-84`, `src/products/dto/product.dto.ts:75-98`, `src/products/products.service.ts:258-298`, `test/soft-delete.e2e-spec.ts:283-330`, `test/products.e2e-spec.ts` (filtro `umbral`, BE-14).
 
+<a id="ep-products-suggestions"></a>
+### `GET /api/v1/products/suggestions`
+
+| | |
+|---|---|
+| Audiencia | Solo socios (`SocioGuard`) |
+| Headers | `Authorization`, `x-member-id` (un socio), `x-device-id` |
+| Éxito | **200**, `{ brands: string[], presentations: string[] }` |
+
+Marcas y presentaciones distintas de los productos **activos** del negocio, ordenadas, **máximo 200** de cada una; las que solo cambian en mayúsculas cuentan una vez. No devuelve nada más de los productos. Sin query params. Colaborador = 403; sin token = 401.
+
+```json
+{ "brands": ["Adidas", "Nike"], "presentations": ["24 oz", "XL"] }
+```
+
+Fuente: `src/products/products.controller.ts` (`suggestions`), `src/products/products.service.ts` (`suggestions`), `test/products-descriptors.e2e-spec.ts`.
+
 <a id="ep-products-get"></a>
 ### `GET /api/v1/products/:id`
 
@@ -1085,7 +1107,7 @@ Fuente: `src/products/products.controller.ts:75-84`, `src/products/dto/product.d
 | Headers | `Authorization` |
 | Éxito | **200**, un producto |
 
-Devuelve el producto **aunque esté desactivado** (`active: false`); solo el listado por defecto lo oculta. No tiene query params.
+Devuelve el producto **aunque esté desactivado** (`active: false`); solo el listado por defecto lo oculta. No tiene query params. `x-member-id` es opcional: solo con un socio activo la respuesta incluye `purchaseCostMinor` (para los demás la clave no aparece).
 
 **Errores**
 
@@ -1120,6 +1142,8 @@ Edita nombre, precio y metadatos. **Al menos un campo** es obligatorio. Cada PAT
 | `purchaseCostMinor` | integer \| null | 0..2147483647; **`null` solo se acepta si el producto todavía no tiene costo** (BE-13). Si el producto ya tiene un `purchaseCostMinor` guardado (no `null`), mandar `purchaseCostMinor: null` es **400** — el costo, una vez conocido, ya no se puede "vaciar" (los reportes de ganancia dependen de que no desaparezca). Se puede seguir **corrigiendo** a otro valor entero en cualquier momento; solo se rechaza volver a `null`. Un producto que nunca tuvo costo (de antes de BE-13) puede guardarse con `purchaseCostMinor: null` sin problema (no cambia nada) o recibir un costo por primera vez |
 | `supplier` | string \| null | 1..200; `null` lo borra |
 | `notes` | string \| null | 0..2000; `null` lo borra |
+| `brand`, `presentation` | string \| null | 1..40 tras limpiar; `null` o vacío lo borra |
+| `description` | string \| null | 1..200 tras limpiar; `null` o vacío lo borra |
 
 `tipo`, `initialStock`, `stock`, `image`, `active`, `id`, `contextId` y cualquier otro campo = **400** (inmutables o inexistentes en el DTO).
 
@@ -1153,7 +1177,7 @@ Fuente: `src/products/products.controller.ts:65-74`, `src/products/dto/product.d
 | Headers | `Authorization` |
 | Éxito | **200**, `{ items, total, page, limit }` |
 
-Historial de auditoría del producto, del más antiguo al más nuevo (`changedAt` asc, `id` asc; no se puede cambiar el orden). Query: `page` (def. 1), `limit` (def. 20, máx. 100). Acepta también `search`, `includeInactive` y `umbral` (mismo DTO que el listado) pero los **ignora**.
+Historial de auditoría del producto, del más antiguo al más nuevo (`changedAt` asc, `id` asc; no se puede cambiar el orden). Query: `page` (def. 1), `limit` (def. 20, máx. 100). Acepta también `search`, `includeInactive` y `umbral` (mismo DTO que el listado) pero los **ignora**. `x-member-id` opcional: para quien no es un socio activo, `before` y `after` **no traen `purchaseCostMinor`**. Las fotos instantáneas incluyen también `brand`, `presentation` y `description`.
 
 Cada elemento (registro crudo):
 
@@ -2603,6 +2627,7 @@ Fuente: `src/business-registration/business-registration.controller.ts:68-77`, `
 | `PATCH` | `/api/v1/devices/:id/reissue` | Socio | [Devices](#ep-devices-reissue) |
 | `POST` | `/api/v1/products` | Socio | [Products](#ep-products-create) |
 | `GET` | `/api/v1/products` | Cuenta | [Products](#ep-products-list) |
+| `GET` | `/api/v1/products/suggestions` | Socio | [Products](#ep-products-suggestions) |
 | `GET` | `/api/v1/products/:id` | Cuenta | [Products](#ep-products-get) |
 | `PATCH` | `/api/v1/products/:id` | Socio | [Products](#ep-products-patch) |
 | `GET` | `/api/v1/products/:id/audit` | Cuenta | [Products](#ep-products-audit) |
