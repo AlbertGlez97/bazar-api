@@ -228,6 +228,13 @@ model Product {
   purchaseCostMinor Int?
   supplier          String?
   notes             String?
+  // Optional descriptors that help to tell look-alike products apart and to
+  // show a product's sheet when its QR is scanned. All NULL on existing rows.
+  // brand <= 40, presentation <= 40 (size/measure/capacity; the color goes
+  // inside, "Azul · 28"), description <= 200: enforced by the DTOs.
+  brand             String?
+  presentation      String?
+  description       String?
   createdAt         DateTime        @default(now()) @db.Timestamptz(3)
   // Soft delete (BE-10): a deactivated product disappears from the
   // default catalog listing and cannot be sold or fiado/apartado'd even

@@ -10,10 +10,45 @@ import {
   IsOptional,
   Matches,
 } from 'class-validator';
+import { applyDecorators } from '@nestjs/common';
 import { Transform, Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import { MAX_MINOR_UNITS } from '../../common/money.js';
+import { cleanText } from '../../common/text-sanitize.js';
 import { ProductPriceDto } from './product-price.dto.js';
+
+/** Largest sizes of the optional descriptive fields (brand, presentation, description). */
+export const MAX_BRAND_LENGTH = 40;
+export const MAX_PRESENTATION_LENGTH = 40;
+export const MAX_DESCRIPTION_LENGTH = 200;
+
+/**
+ * Optional short text a person types: cleaned with the shared sanitizer (control
+ * and invisible characters out, line breaks as a space, inner spaces collapsed,
+ * trimmed) and an empty result becomes `null`. `null` means "no value": on create
+ * it stores nothing and on edit it clears the field; `undefined` (field absent)
+ * leaves it untouched. Anything that is not text is left as is for `@IsString`.
+ */
+const toShortText = ({ value }: { value: unknown }) => {
+  const cleaned = cleanText(value);
+  return cleaned === '' ? null : cleaned;
+};
+
+function ShortText(maxLength: number, description?: string) {
+  return applyDecorators(
+    ApiProperty({ required: false, nullable: true, maxLength, description }),
+    IsOptional(),
+    Transform(toShortText),
+    IsString(),
+    Length(1, maxLength),
+  );
+}
+
+/** Same cleaning for a filter: an empty value is "no filter", never "only without a value". */
+const toShortTextFilter = ({ value }: { value: unknown }) => {
+  const cleaned = cleanText(value);
+  return cleaned === '' ? undefined : cleaned;
+};
 
 /**
  * Query strings arrive as text. `'true'`/`'false'` become real booleans and
@@ -36,6 +71,13 @@ export class ProductMetadataDto {
     number | null;
   @IsOptional() @IsString() @Length(1, 200) supplier?: string | null;
   @IsOptional() @IsString() @Length(0, 2000) notes?: string | null;
+  @ShortText(MAX_BRAND_LENGTH) brand?: string | null;
+  @ShortText(
+    MAX_PRESENTATION_LENGTH,
+    'Size, measure or capacity ("XL", "24 oz"); the color goes inside ("Azul · 28").',
+  )
+  presentation?: string | null;
+  @ShortText(MAX_DESCRIPTION_LENGTH) description?: string | null;
 }
 
 export class CreateProductDto extends ProductPriceDto {
@@ -70,6 +112,13 @@ export class CreateProductDto extends ProductPriceDto {
   @IsInt() @Min(0) @Max(MAX_MINOR_UNITS) purchaseCostMinor!: number;
   @IsOptional() @IsString() @Length(1, 200) supplier?: string | null;
   @IsOptional() @IsString() @Length(0, 2000) notes?: string | null;
+  @ShortText(MAX_BRAND_LENGTH) brand?: string | null;
+  @ShortText(
+    MAX_PRESENTATION_LENGTH,
+    'Size, measure or capacity ("XL", "24 oz"); the color goes inside ("Azul · 28").',
+  )
+  presentation?: string | null;
+  @ShortText(MAX_DESCRIPTION_LENGTH) description?: string | null;
 }
 
 export class PatchProductDto extends ProductMetadataDto {
@@ -126,6 +175,17 @@ export class RestockProductDto {
 
 export class ProductListDto {
   @IsOptional() @IsString() @Length(0, 200) search?: string;
+  @ApiProperty({
+    required: false,
+    maxLength: MAX_BRAND_LENGTH,
+    description:
+      'Only products of this brand (exact match, ignoring upper/lower case). Omit or leave empty for no filter.',
+  })
+  @IsOptional()
+  @Transform(toShortTextFilter)
+  @IsString()
+  @Length(1, MAX_BRAND_LENGTH)
+  brand?: string;
   // Same param name/semantics as GET /dashboard/summary's own `umbral`
   // (dashboard-query.dto.ts): stock <= umbral, 0..100_000. Deliberately NO
   // default here (unlike the dashboard's default of 2) — absent must mean
