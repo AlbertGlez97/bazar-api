@@ -416,7 +416,7 @@ describe('FinanceAgreementsService.create', () => {
         freeMinor: 599_999,
         requestedMinor: 600_000,
         missingMinor: 1,
-        message: expect.stringContaining('faltan $0.01.'),
+        message: expect.stringContaining('Faltan $0.01.'),
       },
     });
     expect(tx.distributionAgreement.create).not.toHaveBeenCalled();

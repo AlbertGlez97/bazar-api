@@ -1643,7 +1643,7 @@ describe('finance distribution agreements HTTP', () => {
         missingMinor: 200_000,
       });
       expect(res.body.message).toBe(
-        'No alcanza el disponible del período: hay $10,000.00 disponibles, $6,000.00 ya comprometidos en otros acuerdos vigentes y quedan $4,000.00 libres. Este acuerdo pide $6,000.00; faltan $2,000.00.',
+        'No alcanza. Este acuerdo pide $6,000.00 y solo quedan $4,000.00 libres. Faltan $2,000.00. Hay $10,000.00 disponibles y $6,000.00 ya están comprometidos en otros acuerdos vigentes.',
       );
       expect(await counts()).toEqual(before);
     });

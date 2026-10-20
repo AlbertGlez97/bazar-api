@@ -38,9 +38,8 @@ export function formatMxn(minor: number): string {
 export function exceedsMessage(commitment: Commitment, requestedMinor: number) {
   const missingMinor = requestedMinor - commitment.freeMinor;
   return (
-    `No alcanza el disponible del período: hay ${formatMxn(commitment.availableMinor)} disponibles, ` +
-    `${formatMxn(commitment.committedMinor)} ya comprometidos en otros acuerdos vigentes y quedan ` +
-    `${formatMxn(commitment.freeMinor)} libres. Este acuerdo pide ${formatMxn(requestedMinor)}; ` +
-    `faltan ${formatMxn(missingMinor)}.`
+    `No alcanza. Este acuerdo pide ${formatMxn(requestedMinor)} y solo quedan ${formatMxn(commitment.freeMinor)} libres. ` +
+    `Faltan ${formatMxn(missingMinor)}. ` +
+    `Hay ${formatMxn(commitment.availableMinor)} disponibles y ${formatMxn(commitment.committedMinor)} ya están comprometidos en otros acuerdos vigentes.`
   );
 }

@@ -41,13 +41,13 @@ describe('formatMxn', () => {
 describe('exceedsMessage', () => {
   it('names the available, committed, free, requested and missing amounts', () => {
     expect(exceedsMessage(commitmentOf(1_000_000, 600_000), 600_000)).toBe(
-      'No alcanza el disponible del período: hay $10,000.00 disponibles, $6,000.00 ya comprometidos en otros acuerdos vigentes y quedan $4,000.00 libres. Este acuerdo pide $6,000.00; faltan $2,000.00.',
+      'No alcanza. Este acuerdo pide $6,000.00 y solo quedan $4,000.00 libres. Faltan $2,000.00. Hay $10,000.00 disponibles y $6,000.00 ya están comprometidos en otros acuerdos vigentes.',
     );
   });
 
   it('missing is exactly one cent over the free amount', () => {
     expect(exceedsMessage(commitmentOf(1_000, 0), 1_001)).toContain(
-      'faltan $0.01.',
+      'Faltan $0.01.',
     );
   });
 
