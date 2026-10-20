@@ -198,8 +198,6 @@ export function parseRulesConfig(input: unknown): ParsedRules {
   let untilAmountMinor: number | null = null;
   if (reinvRaw && reinvRaw.untilAmountMinor !== null)
     untilAmountMinor = reinv.minor('untilAmountMinor');
-  else if (reinvRaw && !('untilAmountMinor' in reinvRaw))
-    reinv.fail('untilAmountMinor', 'es obligatorio (usa null si no hay tope)');
 
   const recRaw = root.object('capitalRecovery');
   const rec = new Reader(errors, 'capitalRecovery', recRaw, ['mode', 'timing']);

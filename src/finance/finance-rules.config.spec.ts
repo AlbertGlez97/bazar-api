@@ -163,7 +163,7 @@ describe('parseRulesConfig: la forma', () => {
 
   it('el tope de reinversión es obligatorio (null si no hay) y la reserva tiene dos formas', () => {
     expect(errorsOf((c) => delete c.reinvestment.untilAmountMinor)).toEqual([
-      'reinvestment.untilAmountMinor: es obligatorio (usa null si no hay tope)',
+      'reinvestment.untilAmountMinor: debe ser un número entero de 0 a 2147483647',
     ]);
     expect(errorsOf((c) => (c.reserves = { kind: 'otra' }))).toEqual(['reserves.kind: debe ser uno de: porcentaje, monto']);
     expect(errorsOf((c) => (c.work.pay = { kind: 'otra' }))).toEqual(['work.pay.kind: debe ser uno de: por_hora, porcentaje']);
