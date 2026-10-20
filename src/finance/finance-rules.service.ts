@@ -8,6 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
+import { businessNameOf } from '../common/business-name.js';
 import { createServerId } from '../common/server-id.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -49,6 +50,30 @@ interface RuleSetRow {
   withdrawnAt: Date | null;
 }
 
+/** An invitation accepted within this long before approving counts as "recent". */
+export const RECENT_INVITE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How the approving login was created; written once inside the approval. */
+export type AccountOrigin =
+  | { kind: 'shared_single_partner' }
+  | {
+      kind: 'invited';
+      invitedByMemberId: string;
+      invitedByName: string;
+      invitedAt: string;
+      acceptedAt: string;
+      recent: boolean;
+    }
+  | { kind: 'own_account'; accountCreatedAt: string | null };
+
+export interface ApprovalView {
+  memberId: string;
+  name: string;
+  approvedAt: string;
+  /** null for approvals recorded before origins were kept. */
+  origin: AccountOrigin | null;
+}
+
 export interface RuleSetView {
   id: string;
   version: number;
@@ -62,7 +87,14 @@ export interface RuleSetView {
   activatedAt: string | null;
   supersededAt: string | null;
   withdrawnAt: string | null;
-  approvals: { memberId: string; name: string; approvedAt: string }[];
+  approvals: ApprovalView[];
+  /** Approvers whose login was created by an invitation accepted shortly before approving. */
+  recentInvitedApprovers: {
+    memberId: string;
+    name: string;
+    invitedByName: string;
+    acceptedAt: string;
+  }[];
   /** Active partners who have not approved yet (only meaningful while pending). */
   missing: { memberId: string; name: string }[];
 }
@@ -266,6 +298,11 @@ export class FinanceRulesService {
             memberId: me,
             approvedByAccountId: actor.account.id,
             approvedHash: row.configHash,
+            // Frozen with the approval: it is part of the record, never recomputed.
+            accountOrigin: (await this.accountOrigin(
+              tx,
+              actor,
+            )) as unknown as Prisma.InputJsonValue,
           },
         });
       const approved = await tx.financeRuleApproval.findMany({
@@ -348,6 +385,38 @@ export class FinanceRulesService {
 
   // ───────────────────────── helpers ─────────────────────────
 
+  /**
+   * How the approving login came to exist. Approving already required either
+   * a login bound to this socio or a lone socio on the shared login.
+   */
+  private async accountOrigin(tx: Tx, actor: Actor): Promise<AccountOrigin> {
+    if (actor.account.memberId === null) return { kind: 'shared_single_partner' };
+    const contextId = actor.account.contextId;
+    const invitation = await tx.accountInvitation.findFirst({
+      where: { contextId, accountId: actor.account.id },
+    });
+    if (invitation?.usedAt) {
+      const inviter = await tx.member.findFirst({
+        where: { id: invitation.invitedByMemberId, contextId },
+      });
+      return {
+        kind: 'invited',
+        invitedByMemberId: invitation.invitedByMemberId,
+        invitedByName: inviter?.name ?? 'Un socio',
+        invitedAt: invitation.createdAt.toISOString(),
+        acceptedAt: invitation.usedAt.toISOString(),
+        recent: Date.now() - invitation.usedAt.getTime() < RECENT_INVITE_MS,
+      };
+    }
+    const account = await tx.account.findFirst({
+      where: { id: actor.account.id, contextId },
+    });
+    return {
+      kind: 'own_account',
+      accountCreatedAt: account?.createdAt.toISOString() ?? null,
+    };
+  }
+
   /** One writer at a time per business for version numbers and the single draft/pending slots. */
   private lockBusiness(tx: Tx, contextId: string) {
     return tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'finance-rules:' + contextId}, 0))`;
@@ -406,7 +475,7 @@ export class FinanceRulesService {
   ) {
     const sent = new Set<string>();
     if (!reminded.length) return sent;
-    const business = (await this.businessName(contextId)) ?? 'tu negocio';
+    const business = (await businessNameOf(this.prisma, contextId)) ?? 'tu negocio';
     const accounts = await this.prisma.account.findMany({
       where: { contextId, memberId: { in: reminded.map((r) => r.memberId) }, active: true },
     });
@@ -433,13 +502,6 @@ export class FinanceRulesService {
       }
     }
     return sent;
-  }
-
-  private async businessName(contextId: string): Promise<string | null> {
-    const rows = await this.prisma.$queryRaw<{ name: string | null }[]>`
-      SELECT "nombreNegocio" AS name FROM "BusinessRegistrationRequest"
-      WHERE "createdContextId" = ${contextId} ORDER BY "createdAt" DESC LIMIT 1`;
-    return rows[0]?.name ?? null;
   }
 
   private async viewOne(contextId: string, id: string): Promise<RuleSetView> {
@@ -470,6 +532,12 @@ export class FinanceRulesService {
     return rows.map((row) => {
       const mine = approvals.filter((a) => a.ruleSetId === row.id);
       const done = new Set(mine.map((a) => a.memberId));
+      const approvalViews: ApprovalView[] = mine.map((a) => ({
+        memberId: a.memberId,
+        name: names.get(a.memberId) ?? 'Socio',
+        approvedAt: a.approvedAt.toISOString(),
+        origin: (a.accountOrigin as AccountOrigin | null) ?? null,
+      }));
       const config = row.config as FinanceRulesConfig;
       return {
         id: row.id,
@@ -487,11 +555,19 @@ export class FinanceRulesService {
         activatedAt: iso(row.activatedAt),
         supersededAt: iso(row.supersededAt),
         withdrawnAt: iso(row.withdrawnAt),
-        approvals: mine.map((a) => ({
-          memberId: a.memberId,
-          name: names.get(a.memberId) ?? 'Socio',
-          approvedAt: a.approvedAt.toISOString(),
-        })),
+        approvals: approvalViews,
+        recentInvitedApprovers: approvalViews.flatMap((a) =>
+          a.origin?.kind === 'invited' && a.origin.recent
+            ? [
+                {
+                  memberId: a.memberId,
+                  name: a.name,
+                  invitedByName: a.origin.invitedByName,
+                  acceptedAt: a.origin.acceptedAt,
+                },
+              ]
+            : [],
+        ),
         missing:
           row.status === 'pendiente'
             ? partners.filter((p) => !done.has(p.memberId))

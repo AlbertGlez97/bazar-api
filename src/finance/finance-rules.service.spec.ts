@@ -12,61 +12,16 @@ import {
 } from './finance-rules.service.js';
 import { FinanceRulesController } from './finance-rules.controller.js';
 import { RULES_SCHEMA_VERSION } from './finance-rules.config.js';
+import { table, type Row } from '../../test/support/memory-table.js';
 
 /**
  * Unit tests of the rules service against a small in-memory stand-in for
  * Prisma. The database guards (triggers, unique indexes, RLS) and real
  * concurrency are covered by test/finance-rules.e2e-spec.ts.
  */
-type Row = Record<string, any>;
 const CONTEXT = 'ctx-1';
 
-const match = (row: Row, where: Row = {}): boolean =>
-  Object.entries(where).every(([key, expected]) => {
-    if (expected && typeof expected === 'object' && 'in' in expected)
-      return (expected.in as unknown[]).includes(row[key]);
-    return row[key] === expected;
-  });
-
-function table(rows: Row[]) {
-  const sorted = (list: Row[], orderBy?: Row | Row[]) => {
-    const [first] = ([] as Row[]).concat(orderBy ?? []);
-    if (!first) return list;
-    const [key, dir] = Object.entries(first)[0] as [string, string];
-    const factor = dir === 'desc' ? -1 : 1;
-    return [...list].sort((a, b) => (a[key] > b[key] ? factor : a[key] < b[key] ? -factor : 0));
-  };
-  return {
-    rows,
-    findMany: async ({ where, orderBy, take }: Row = {}) =>
-      sorted(rows.filter((r) => match(r, where)), orderBy).slice(0, take ?? rows.length),
-    findFirst: async ({ where, orderBy }: Row = {}) =>
-      sorted(rows.filter((r) => match(r, where)), orderBy)[0] ?? null,
-    create: async ({ data }: Row) => {
-      const row = { createdAt: new Date(), approvedAt: new Date(), ...data };
-      rows.push(row);
-      return row;
-    },
-    update: async ({ where, data }: Row) => {
-      const row = rows.find((r) => match(r, where))!;
-      Object.assign(row, data);
-      return row;
-    },
-    updateMany: async ({ where, data }: Row) => {
-      const hit = rows.filter((r) => match(r, where));
-      hit.forEach((r) => Object.assign(r, data));
-      return { count: hit.length };
-    },
-    deleteMany: async ({ where }: Row) => {
-      const keep = rows.filter((r) => !match(r, where));
-      const count = rows.length - keep.length;
-      rows.splice(0, rows.length, ...keep);
-      return { count };
-    },
-  };
-}
-
-function setup(opts: { partners?: Row[]; accounts?: Row[]; email?: ReturnType<typeof vi.fn> } = {}) {
+function setup(opts: { partners?: Row[]; accounts?: Row[]; invitations?: Row[]; email?: ReturnType<typeof vi.fn> } = {}) {
   const members = table(
     opts.partners ?? [
       { id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 },
@@ -78,10 +33,11 @@ function setup(opts: { partners?: Row[]; accounts?: Row[]; email?: ReturnType<ty
   const reminders = table([]);
   const accounts = table(
     opts.accounts ?? [
-      { id: 'acc-ana', memberId: 'ana', username: 'ana@example.test', active: true, contextId: CONTEXT },
-      { id: 'acc-beto', memberId: 'beto', username: 'beto-sin-correo', active: true, contextId: CONTEXT },
+      { id: 'acc-ana', memberId: 'ana', username: 'ana@example.test', active: true, contextId: CONTEXT, createdAt: new Date('2026-09-01T00:00:00Z') },
+      { id: 'acc-beto', memberId: 'beto', username: 'beto-sin-correo', active: true, contextId: CONTEXT, createdAt: new Date('2026-09-02T00:00:00Z') },
     ],
   );
+  const invitations = table(opts.invitations ?? []);
   const raw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');
     if (sql.includes('MAX("version")'))
@@ -97,13 +53,14 @@ function setup(opts: { partners?: Row[]; accounts?: Row[]; email?: ReturnType<ty
     financeRuleApproval: approvals,
     financeRuleReminder: reminders,
     account: accounts,
+    accountInvitation: invitations,
     $queryRaw: raw,
     $executeRaw: async () => 1,
     $transaction: async (fn: (tx: Row) => unknown) => fn(prisma),
   };
   const email = opts.email ?? vi.fn().mockResolvedValue(undefined);
   const service = new FinanceRulesService(prisma as never, { sendFinanceRulesReminderEmail: email } as never);
-  return { service, members, sets, approvals, reminders, email };
+  return { service, members, sets, approvals, reminders, invitations, email };
 }
 
 const actor = (memberId: string, boundTo: string | null = memberId) =>
@@ -350,6 +307,69 @@ describe('FinanceRulesService', () => {
       await expect(s.service.approve(actor('ana'), draft.id)).rejects.toMatchObject({
         response: { code: 'FINANCE_RULES_WRONG_STATE' },
       });
+    });
+  });
+
+  describe('trazabilidad: cómo se creó la cuenta de quien aprobó', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const invited = (acceptedAgoMs: number) => ({
+      id: 'inv-1', contextId: CONTEXT, memberId: 'beto', invitedByMemberId: 'ana',
+      accountId: 'acc-beto', createdAt: new Date(Date.now() - acceptedAgoMs - 1000), usedAt: new Date(Date.now() - acceptedAgoMs),
+    });
+
+    it('un socio único con acceso compartido queda anotado como tal', async () => {
+      const s = setup({ partners: [{ id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 }] });
+      const pending = await propose(s);
+      const done = await s.service.approve(actor('ana', null), pending.id);
+      expect(done.approvals[0]!.origin).toEqual({ kind: 'shared_single_partner' });
+      expect(s.approvals.rows[0]!.accountOrigin).toEqual({ kind: 'shared_single_partner' });
+      expect(done.recentInvitedApprovers).toEqual([]);
+    });
+
+    it('una cuenta creada por invitación guarda quién invitó y cuándo, y si fue reciente', async () => {
+      const s = setup({ invitations: [invited(2 * DAY)] });
+      const pending = await propose(s);
+      const done = await s.service.approve(actor('beto'), pending.id);
+      const origin = done.approvals[0]!.origin as Record<string, unknown>;
+      expect(origin).toMatchObject({ kind: 'invited', invitedByMemberId: 'ana', invitedByName: 'Ana', recent: true });
+      expect(origin.invitedAt).toEqual(expect.any(String));
+      expect(origin.acceptedAt).toEqual(expect.any(String));
+      expect(done.recentInvitedApprovers).toEqual([
+        { memberId: 'beto', name: 'Beto', invitedByName: 'Ana', acceptedAt: origin.acceptedAt },
+      ]);
+    });
+
+    it('"hace poco" son 7 días: pasado ese tiempo la cuenta invitada ya no se marca', async () => {
+      const s = setup({ invitations: [invited(7 * DAY + 1000)] });
+      const pending = await propose(s);
+      const done = await s.service.approve(actor('beto'), pending.id);
+      expect(done.approvals[0]!.origin).toMatchObject({ kind: 'invited', recent: false });
+      expect(done.recentInvitedApprovers).toEqual([]);
+    });
+
+    it('una cuenta propia que no vino de invitación guarda cuándo se creó', async () => {
+      const s = setup();
+      const pending = await propose(s);
+      const done = await s.service.approve(actor('ana'), pending.id);
+      expect(done.approvals[0]!.origin).toEqual({ kind: 'own_account', accountCreatedAt: expect.any(String) });
+    });
+
+    it('el dato queda guardado en la aprobación: cambiar la invitación después no lo cambia', async () => {
+      const s = setup({ invitations: [invited(DAY)] });
+      const pending = await propose(s);
+      await s.service.approve(actor('beto'), pending.id);
+      s.invitations.rows[0]!.invitedByMemberId = 'beto';
+      s.invitations.rows[0]!.usedAt = new Date(0);
+      const view = await s.service.overview(actor('ana'));
+      expect(view.pending!.approvals[0]!.origin).toMatchObject({ invitedByName: 'Ana', recent: true });
+    });
+
+    it('las aprobaciones sin dato (anteriores a este cambio) se muestran sin origen', async () => {
+      const s = setup();
+      const pending = await propose(s);
+      await s.service.approve(actor('ana'), pending.id);
+      delete s.approvals.rows[0]!.accountOrigin;
+      expect((await s.service.overview(actor('ana'))).pending!.approvals[0]!.origin).toBeNull();
     });
   });
 

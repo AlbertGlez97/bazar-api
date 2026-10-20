@@ -321,6 +321,45 @@ describe('finance rules: versions and approvals', () => {
       expect((await overview(s, s.bound[0]!)).pending.approvals).toEqual([]);
     });
 
+    it('guarda cómo se creó la cuenta de quien aprueba y lo muestra en el historial y en el aviso de vigencia', async () => {
+      const s = await scenario('origin', 2);
+      const [a, b] = s.bound as [Who, Who];
+      const account = await prisma.account.findFirstOrThrow({ where: { memberId: b.memberId } });
+      const acceptedAt = new Date(Date.now() - 2 * 24 * 3600_000);
+      await withTestTenant(s.contextId, () =>
+        prisma.accountInvitation.create({
+          data: {
+            id: v7(), contextId: s.contextId, memberId: b.memberId, email: `inv-${randomUUID()}@example.test`,
+            tokenHash: randomUUID().replaceAll('-', '').repeat(2), invitedByMemberId: a.memberId,
+            createdAt: new Date(acceptedAt.getTime() - 60_000), expiresAt: new Date(Date.now() + 3600_000),
+            usedAt: acceptedAt, accountId: account.id,
+          },
+        }),
+      );
+      const pending = await propose(s, a);
+      await call(s, a, 'post', `/${pending.id}/approve`).expect(200);
+      const done = (await call(s, b, 'post', `/${pending.id}/approve`).expect(200)).body;
+
+      const byName = (name: string) => done.approvals.find((x: { name: string }) => x.name === name);
+      expect(byName('Socio 0').origin).toMatchObject({ kind: 'own_account' });
+      expect(byName('Socio 1').origin).toMatchObject({
+        kind: 'invited', invitedByName: 'Socio 0', recent: true, acceptedAt: acceptedAt.toISOString(),
+      });
+      expect(done.status).toBe('vigente');
+      expect(done.recentInvitedApprovers).toEqual([
+        { memberId: b.memberId, name: 'Socio 1', invitedByName: 'Socio 0', acceptedAt: acceptedAt.toISOString() },
+      ]);
+      const stored = await withTestTenant(s.contextId, () =>
+        prisma.financeRuleApproval.findMany({ where: { ruleSetId: pending.id }, orderBy: { approvedAt: 'asc' } }),
+      );
+      expect(stored.map((r) => (r.accountOrigin as { kind: string }).kind)).toEqual(['own_account', 'invited']);
+      // The invitation can change later; what the approval recorded does not.
+      await withTestTenant(s.contextId, () => prisma.accountInvitation.deleteMany({ where: { contextId: s.contextId } }));
+      const view = await overview(s, a);
+      expect(view.inForce.recentInvitedApprovers).toHaveLength(1);
+      expect(view.history[0].approvals.map((x: { origin: { kind: string } }) => x.origin.kind)).toEqual(['own_account', 'invited']);
+    });
+
     it('the replaced rules stay in the history and exactly one set is in force', async () => {
       const s = await scenario('replace', 2);
       const [a, b] = s.bound as [Who, Who];
