@@ -78,6 +78,8 @@ enum DeviceStatus {
 }
 
 model Account {
+  proposedFinanceRuleSets        FinanceRuleSet[]
+  financeRuleApprovals           FinanceRuleApproval[]
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
   recordedDistributionPayments   DistributionPayment[]
@@ -111,6 +113,10 @@ model Account {
 }
 
 model Member {
+  proposedFinanceRuleSets             FinanceRuleSet[]
+  financeRuleApprovals                FinanceRuleApproval[]
+  financeRuleRemindersReceived        FinanceRuleReminder[]              @relation("RuleReminderTarget")
+  financeRuleRemindersSent            FinanceRuleReminder[]              @relation("RuleReminderSender")
   recordedDistributionAgreements      DistributionAgreement[]
   distributionAgreementReversals      DistributionAgreementReversal[]
   distributionAgreementParticipations DistributionAgreementParticipant[]
@@ -996,4 +1002,63 @@ model DistributionPaymentReversal {
 
   @@unique([paymentId, contextId])
   @@index([contextId, occurredAt, id])
+}
+
+// Versioned profit-sharing rules (migration 20261020120000). Once submitted the
+// config and its hash never change; DB triggers enforce it. See doc/finance-rules.md.
+model FinanceRuleSet {
+  id                  String                @id @db.Uuid
+  contextId           String
+  version             Int
+  status              String
+  config              Json
+  configHash          String
+  proposedByMemberId  String                @db.Uuid
+  proposedByAccountId String                @db.Uuid
+  createdAt           DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime              @default(now()) @db.Timestamptz(3)
+  submittedAt         DateTime?             @db.Timestamptz(3)
+  activatedAt         DateTime?             @db.Timestamptz(3)
+  supersededAt        DateTime?             @db.Timestamptz(3)
+  withdrawnAt         DateTime?             @db.Timestamptz(3)
+  proposedByMember    Member                @relation(fields: [proposedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  proposedByAccount   Account               @relation(fields: [proposedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  approvals           FinanceRuleApproval[]
+  reminders           FinanceRuleReminder[]
+
+  @@unique([id, contextId])
+  @@unique([contextId, version])
+  @@index([contextId, status])
+}
+
+model FinanceRuleApproval {
+  id                  String         @id @db.Uuid
+  contextId           String
+  ruleSetId           String         @db.Uuid
+  memberId            String         @db.Uuid
+  approvedByAccountId String         @db.Uuid
+  approvedHash        String
+  approvedAt          DateTime       @default(now()) @db.Timestamptz(3)
+  ruleSet             FinanceRuleSet @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
+  member              Member         @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  approvedByAccount   Account        @relation(fields: [approvedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+
+  @@unique([ruleSetId, memberId])
+  @@index([contextId, ruleSetId])
+}
+
+model FinanceRuleReminder {
+  id             String         @id @db.Uuid
+  contextId      String
+  ruleSetId      String         @db.Uuid
+  memberId       String         @db.Uuid
+  sentByMemberId String         @db.Uuid
+  emailSent      Boolean        @default(false)
+  sentAt         DateTime       @default(now()) @db.Timestamptz(3)
+  ruleSet        FinanceRuleSet @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
+  member         Member         @relation("RuleReminderTarget", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  sentBy         Member         @relation("RuleReminderSender", fields: [sentByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+
+  @@index([ruleSetId, memberId, sentAt])
+  @@index([contextId, memberId, sentAt])
 }
