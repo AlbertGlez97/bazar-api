@@ -80,6 +80,7 @@ enum DeviceStatus {
 model Account {
   proposedFinanceRuleSets        FinanceRuleSet[]
   financeRuleApprovals           FinanceRuleApproval[]
+  invitationsUsed                AccountInvitation[]
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
   recordedDistributionPayments   DistributionPayment[]
@@ -117,6 +118,8 @@ model Member {
   financeRuleApprovals                FinanceRuleApproval[]
   financeRuleRemindersReceived        FinanceRuleReminder[]              @relation("RuleReminderTarget")
   financeRuleRemindersSent            FinanceRuleReminder[]              @relation("RuleReminderSender")
+  accountInvitations                  AccountInvitation[]                @relation("InvitationTarget")
+  accountInvitationsSent              AccountInvitation[]                @relation("InvitationSender")
   recordedDistributionAgreements      DistributionAgreement[]
   distributionAgreementReversals      DistributionAgreementReversal[]
   distributionAgreementParticipations DistributionAgreementParticipant[]
@@ -1039,6 +1042,8 @@ model FinanceRuleApproval {
   approvedByAccountId String         @db.Uuid
   approvedHash        String
   approvedAt          DateTime       @default(now()) @db.Timestamptz(3)
+  // How the approving account was created, frozen with the approval (never recomputed).
+  accountOrigin       Json?
   ruleSet             FinanceRuleSet @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
   member              Member         @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
   approvedByAccount   Account        @relation(fields: [approvedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
@@ -1061,4 +1066,26 @@ model FinanceRuleReminder {
 
   @@index([ruleSetId, memberId, sentAt])
   @@index([contextId, memberId, sentAt])
+}
+
+// Single-use invitation for an existing socio to create their own login (migration
+// 20261021120000). Only the SHA-256 of the token is stored. The public page reaches
+// it through two SECURITY DEFINER functions, never through this model.
+model AccountInvitation {
+  id                String    @id @db.Uuid
+  contextId         String
+  memberId          String    @db.Uuid
+  email             String
+  tokenHash         String    @unique @db.Char(64)
+  invitedByMemberId String    @db.Uuid
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt         DateTime  @db.Timestamptz(3)
+  usedAt            DateTime? @db.Timestamptz(3)
+  supersededAt      DateTime? @db.Timestamptz(3)
+  accountId         String?   @unique @db.Uuid
+  member            Member    @relation("InvitationTarget", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  invitedBy         Member    @relation("InvitationSender", fields: [invitedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  account           Account?  @relation(fields: [accountId, contextId], references: [id, contextId], onDelete: Restrict)
+
+  @@index([contextId, memberId, createdAt])
 }

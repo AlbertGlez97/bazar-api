@@ -25,6 +25,7 @@ const TENANT_SCOPED_MODELS = new Set([
   'FinanceRuleSet',
   'FinanceRuleApproval',
   'FinanceRuleReminder',
+  'AccountInvitation',
   'Contribution',
   'ContributionReversal',
   'Expense',
