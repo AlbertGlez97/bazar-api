@@ -82,7 +82,7 @@ describe('parseRulesConfig: lo válido', () => {
 describe('parseRulesConfig: la única restricción dura es que el reparto sume 100', () => {
   it('rechaza una base de utilidad que no suma 100, diciendo cuánto suma', () => {
     const errors = errorsOf((c) => (c.profitBase = { partnerPct: 50, capitalPct: 30, workPct: 10 }));
-    expect(errors).toEqual(['profitBase: partnerPct, capitalPct and workPct must add up to 100 (they add up to 90)']);
+    expect(errors).toEqual(['profitBase: partnerPct, capitalPct y workPct deben sumar 100 (hoy suman 90)']);
   });
 
   it('suma exacta con decimales (sin errores de coma flotante)', () => {
@@ -120,8 +120,8 @@ describe('parseRulesConfig: la forma', () => {
   });
 
   it('exige la versión de esquema vigente', () => {
-    expect(errorsOf((c) => (c.schemaVersion = 2))).toEqual(['schemaVersion: must be 1']);
-    expect(errorsOf((c) => delete c.schemaVersion)).toEqual(['schemaVersion: must be 1']);
+    expect(errorsOf((c) => (c.schemaVersion = 2))).toEqual(['schemaVersion: debe ser 1']);
+    expect(errorsOf((c) => delete c.schemaVersion)).toEqual(['schemaVersion: debe ser 1']);
   });
 
   it.each(['profitBase', 'reinvestment', 'capitalRecovery', 'work', 'partnerExpenses', 'reserves', 'partnerLoans'])(
@@ -132,9 +132,9 @@ describe('parseRulesConfig: la forma', () => {
   );
 
   it('rechaza claves desconocidas, también dentro de cada engrane', () => {
-    expect(errorsOf((c) => (c.extra = 1))).toEqual(['extra: is not allowed']);
-    expect(errorsOf((c) => (c.profitBase.extra = 1))).toEqual(['profitBase.extra: is not allowed']);
-    expect(errorsOf((c) => (c.work.pay.extra = 1))).toEqual(['work.pay.extra: is not allowed']);
+    expect(errorsOf((c) => (c.extra = 1))).toEqual(['extra: no está permitido']);
+    expect(errorsOf((c) => (c.profitBase.extra = 1))).toEqual(['profitBase.extra: no está permitido']);
+    expect(errorsOf((c) => (c.work.pay.extra = 1))).toEqual(['work.pay.extra: no está permitido']);
   });
 
   it('rechaza opciones que no existen y tipos equivocados', () => {

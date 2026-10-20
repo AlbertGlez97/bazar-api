@@ -96,12 +96,20 @@ class ResendRejectionError extends Error {
 
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
+export interface FinanceRulesReminderEmailInput {
+  to: string;
+  memberName: string;
+  proposerName: string;
+  businessName: string;
+}
+
 type EmailKind =
   | 'approval'
   | 'credentials'
   | 'activation'
   | 'member credentials'
-  | 'verification';
+  | 'verification'
+  | 'finance rules reminder';
 
 interface EmailMessage {
   to: string;
@@ -278,6 +286,35 @@ export class EmailService {
       }),
       REGISTRATION_EMAIL_TIMEOUT_MS,
       'Resend verification email',
+    );
+  }
+
+  /**
+   * Tells a socio that a proposal of profit-sharing rules waits for their
+   * approval. Carries no link or secret: they approve from their own session.
+   */
+  async sendFinanceRulesReminderEmail(
+    input: FinanceRulesReminderEmailInput,
+  ): Promise<void> {
+    const business = escapeHtml(input.businessName);
+    const name = escapeHtml(input.memberName);
+    const proposer = escapeHtml(input.proposerName);
+    await withTimeout(
+      this.deliver('finance rules reminder', {
+        to: input.to,
+        subject: `Reglas de reparto por aprobar: ${input.businessName}`,
+        html:
+          `<p>Hola, ${name}.</p>` +
+          `<p>${proposer} propuso reglas de reparto para ${business}.</p>` +
+          '<p>Falta tu aprobación. Entra a Finanzas, abre el Simulador y revisa las reglas.</p>' +
+          '<p>Las reglas solo valen cuando todos los socios las aprueban.</p>',
+        text:
+          `Hola, ${input.memberName}.\n${input.proposerName} propuso reglas de reparto para ${input.businessName}.\n` +
+          'Falta tu aprobación. Entra a Finanzas, abre el Simulador y revisa las reglas.\n' +
+          'Las reglas solo valen cuando todos los socios las aprueban.',
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend finance rules reminder email',
     );
   }
 

@@ -100,7 +100,7 @@ class Reader {
   ) {
     if (raw)
       for (const key of Object.keys(raw))
-        if (!allowed.includes(key)) this.fail(key, 'is not allowed');
+        if (!allowed.includes(key)) this.fail(key, 'no está permitido');
   }
   private at(key: string) {
     return this.path ? `${this.path}.${key}` : key;
@@ -111,31 +111,31 @@ class Reader {
   pct(key: string): number | null {
     const value = this.raw?.[key];
     if (isPct(value)) return value;
-    this.fail(key, 'must be a number from 0 to 100 with at most 2 decimals');
+    this.fail(key, 'debe ser un número de 0 a 100 con máximo 2 decimales');
     return null;
   }
   minor(key: string): number | null {
     const value = this.raw?.[key];
     if (isMinor(value)) return value;
-    this.fail(key, `must be a whole number from 0 to ${MAX_MINOR_UNITS}`);
+    this.fail(key, `debe ser un número entero de 0 a ${MAX_MINOR_UNITS}`);
     return null;
   }
   bool(key: string): boolean | null {
     const value = this.raw?.[key];
     if (typeof value === 'boolean') return value;
-    this.fail(key, 'must be true or false');
+    this.fail(key, 'debe ser verdadero o falso');
     return null;
   }
   choice<T extends string>(key: string, list: readonly T[]): T | null {
     const value = this.raw?.[key];
     if (oneOf(list, value)) return value;
-    this.fail(key, `must be one of ${list.join(', ')}`);
+    this.fail(key, `debe ser uno de: ${list.join(', ')}`);
     return null;
   }
   object(key: string): Raw | null {
     const value = this.raw?.[key];
     if (isRecord(value)) return value;
-    this.fail(key, 'must be an object');
+    this.fail(key, 'debe ser un objeto');
     return null;
   }
 }
@@ -150,7 +150,8 @@ function formatPct(totalHundredths: number): string {
  */
 export function parseRulesConfig(input: unknown): ParsedRules {
   const errors: string[] = [];
-  if (!isRecord(input)) return { ok: false, errors: ['config: must be an object'] };
+  if (!isRecord(input))
+    return { ok: false, errors: ['config: debe ser un objeto'] };
   const root = new Reader(errors, '', input, [
     'schemaVersion',
     'profitBase',
@@ -162,7 +163,7 @@ export function parseRulesConfig(input: unknown): ParsedRules {
     'partnerLoans',
   ]);
   if (input.schemaVersion !== RULES_SCHEMA_VERSION)
-    root.fail('schemaVersion', `must be ${RULES_SCHEMA_VERSION}`);
+    root.fail('schemaVersion', `debe ser ${RULES_SCHEMA_VERSION}`);
 
   const baseRaw = root.object('profitBase');
   const base = new Reader(errors, 'profitBase', baseRaw, [
@@ -178,7 +179,7 @@ export function parseRulesConfig(input: unknown): ParsedRules {
       hundredths(partnerPct) + hundredths(capitalPct) + hundredths(workPct);
     if (total !== 10000)
       errors.push(
-        `profitBase: partnerPct, capitalPct and workPct must add up to 100 (they add up to ${formatPct(total)})`,
+        `profitBase: partnerPct, capitalPct y workPct deben sumar 100 (hoy suman ${formatPct(total)})`,
       );
   }
 
@@ -198,7 +199,7 @@ export function parseRulesConfig(input: unknown): ParsedRules {
   if (reinvRaw && reinvRaw.untilAmountMinor !== null)
     untilAmountMinor = reinv.minor('untilAmountMinor');
   else if (reinvRaw && !('untilAmountMinor' in reinvRaw))
-    reinv.fail('untilAmountMinor', 'is required (use null for no ceiling)');
+    reinv.fail('untilAmountMinor', 'es obligatorio (usa null si no hay tope)');
 
   const recRaw = root.object('capitalRecovery');
   const rec = new Reader(errors, 'capitalRecovery', recRaw, ['mode', 'timing']);
@@ -230,7 +231,7 @@ export function parseRulesConfig(input: unknown): ParsedRules {
     } else {
       new Reader(errors, 'work.pay', payRaw, ['kind']).fail(
         'kind',
-        'must be one of por_hora, porcentaje',
+        'debe ser uno de: por_hora, porcentaje',
       );
     }
   }
@@ -254,7 +255,7 @@ export function parseRulesConfig(input: unknown): ParsedRules {
     } else {
       new Reader(errors, 'reserves', resRaw, ['kind']).fail(
         'kind',
-        'must be one of porcentaje, monto',
+        'debe ser uno de: porcentaje, monto',
       );
     }
   }

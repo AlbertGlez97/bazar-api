@@ -31,6 +31,13 @@ import { withTestTenant } from './tenant-scope.js';
 
 /** Handlers protected by SocioGuard: only an active socio may call them. */
 const SOCIO_ROUTES = [
+  'GET /finance/rules',
+  'PUT /finance/rules/draft',
+  'POST /finance/rules/:id/discard',
+  'POST /finance/rules/:id/submit',
+  'POST /finance/rules/:id/withdraw',
+  'POST /finance/rules/:id/approve',
+  'POST /finance/rules/:id/remind',
   'GET /finance/overview',
   'POST /finance/distribution-simulations',
   'POST /finance/distribution-agreements',
@@ -221,6 +228,8 @@ describe('impersonation matrix: a bound login can only act as its own member', (
           return http().get(url);
         case 'POST':
           return http().post(url).send({});
+        case 'PUT':
+          return http().put(url).send({});
         case 'PATCH':
           return http().patch(url).send({});
         case 'DELETE':
