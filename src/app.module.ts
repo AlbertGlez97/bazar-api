@@ -5,6 +5,7 @@ import { DatabaseModule } from './database/database.module.js';
 import { TenantContextMiddleware } from './database/tenant-context.middleware.js';
 import { AuthModule } from './auth/auth.module.js';
 import { MembersModule } from './members/members.module.js';
+import { InvitationsModule } from './invitations/invitations.module.js';
 import { DevicesModule } from './devices/devices.module.js';
 import { ProductsModule } from './products/products.module.js';
 import { SalesModule } from './sales/sales.module.js';
@@ -24,6 +25,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
     DatabaseModule,
     AuthModule,
     MembersModule,
+    InvitationsModule,
     DevicesModule,
     ProductsModule,
     SalesModule,

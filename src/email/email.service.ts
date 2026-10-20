@@ -103,13 +103,24 @@ export interface FinanceRulesReminderEmailInput {
   businessName: string;
 }
 
+export interface AccountInvitationEmailInput {
+  to: string;
+  memberName: string;
+  inviterName: string;
+  businessName: string;
+  /** Link to the public page; it carries the single-use token and nothing else. */
+  inviteUrl: string;
+  expiresInHours: number;
+}
+
 type EmailKind =
   | 'approval'
   | 'credentials'
   | 'activation'
   | 'member credentials'
   | 'verification'
-  | 'finance rules reminder';
+  | 'finance rules reminder'
+  | 'account invitation';
 
 interface EmailMessage {
   to: string;
@@ -286,6 +297,40 @@ export class EmailService {
       }),
       REGISTRATION_EMAIL_TIMEOUT_MS,
       'Resend verification email',
+    );
+  }
+
+  /**
+   * Invites an existing socio to create their own login. The email carries a
+   * single-use link and NO password: the person chooses theirs on the page
+   * that the link opens. Opening the link consumes nothing; only the button on
+   * that page does.
+   */
+  async sendAccountInvitationEmail(
+    input: AccountInvitationEmailInput,
+  ): Promise<void> {
+    const name = escapeHtml(input.memberName);
+    const inviter = escapeHtml(input.inviterName);
+    const business = escapeHtml(input.businessName);
+    const url = escapeHtml(input.inviteUrl);
+    await withTimeout(
+      this.deliver('account invitation', {
+        to: input.to,
+        subject: `Te invitaron a crear tu cuenta en ${input.businessName}`,
+        html:
+          `<p>Hola, ${name}.</p>` +
+          `<p>${inviter} te invitó a crear tu cuenta personal en ${business}.</p>` +
+          `<p><a href="${url}">Crear mi cuenta</a></p>` +
+          `<p>El enlace sirve una sola vez y dura ${input.expiresInHours} horas.</p>` +
+          '<p>Tú eliges tu contraseña. No compartas este correo con nadie.</p>',
+        text:
+          `Hola, ${input.memberName}.\n${input.inviterName} te invitó a crear tu cuenta personal en ${input.businessName}.\n` +
+          `Crea tu cuenta aquí: ${input.inviteUrl}\n` +
+          `El enlace sirve una sola vez y dura ${input.expiresInHours} horas.\n` +
+          'Tú eliges tu contraseña. No compartas este correo con nadie.',
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend account invitation email',
     );
   }
 

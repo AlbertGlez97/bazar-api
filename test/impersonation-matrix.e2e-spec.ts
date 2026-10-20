@@ -81,6 +81,8 @@ const SOCIO_ROUTES = [
   'PATCH /deudas/:id/cuotas/:cuotaId',
   'DELETE /deudas/:id/cuotas/:cuotaId',
   'POST /members',
+  'GET /members/account-status',
+  'POST /members/:id/invitation',
   'PATCH /members/:id/commission-rate',
   'PATCH /members/:id',
   'DELETE /members/:id',
@@ -124,6 +126,9 @@ const PUBLIC_ROUTES = [
   'POST /business-registration/resend',
   'GET /business-registration/approve',
   'GET /business-registration/reject',
+  // Invitation page: the link's single-use token is the only credential.
+  'POST /invitations/inspect',
+  'POST /invitations/accept',
 ];
 
 const GENERIC_403 = 'Selection is not authorized for this context';
