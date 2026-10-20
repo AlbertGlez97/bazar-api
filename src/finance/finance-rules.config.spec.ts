@@ -210,6 +210,8 @@ describe('rulesWarnings: avisos que orientan y nunca bloquean', () => {
 
   it('avisa cuando en el cierre se reinvierte mucho', () => {
     expect(codes((c) => (c.reinvestment.cierrePct = 60))).toContain('REINVEST_HIGH_AT_CLOSE');
+    expect(codes((c) => (c.reinvestment.cierrePct = 50))).toContain('REINVEST_HIGH_AT_CLOSE');
+    expect(codes((c) => (c.reinvestment.cierrePct = 49.99))).not.toContain('REINVEST_HIGH_AT_CLOSE');
   });
 
   it('avisa si se devuelve todo el capital durante la operación', () => {
@@ -234,6 +236,14 @@ describe('rulesWarnings: avisos que orientan y nunca bloquean', () => {
         c.profitBase = { partnerPct: 0, capitalPct: 100, workPct: 0 };
       }),
     ).toContain('CAPITAL_RETURNED_TWICE');
+    // Con el capital en 50 % no es lo mismo: no avisa; con 100 % y sin devolución tampoco.
+    expect(codes((c) => (c.profitBase = { partnerPct: 50, capitalPct: 50, workPct: 0 }))).not.toContain('CAPITAL_RETURNED_TWICE');
+    expect(
+      codes((c) => {
+        c.profitBase = { partnerPct: 0, capitalPct: 100, workPct: 0 };
+        c.capitalRecovery = { mode: 'ninguna', timing: 'durante' };
+      }),
+    ).not.toContain('CAPITAL_RETURNED_TWICE');
   });
 
   it('avisa de reservas muy altas', () => {
