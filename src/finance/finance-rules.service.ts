@@ -263,9 +263,12 @@ export class FinanceRulesService {
           message: `No se puede enviar. Falta el correo de ${listNames(missing.map((p) => p.name))}.`,
           missing: missing.map(({ memberId, name }) => ({ memberId, name })),
         });
-      const open = await tx.financeRuleSet.findFirst({
+      const found = await tx.financeRuleSet.findFirst({
         where: { contextId, status: { in: OPEN } },
       });
+      // Lock it and look again: an answer may have just made it effective, and a rule set in
+      // force can no longer be closed. (The SQL function that records an answer locks the same row.)
+      const open = found ? await this.openAfterLock(tx, contextId, found.id) : null;
       // The open proposal this one was copied from is replaced by it; any other blocks it.
       if (open && open.id !== row.basedOnId)
         throw fail(
@@ -528,6 +531,12 @@ export class FinanceRulesService {
     if (!rows.length)
       throw fail(NotFoundException, 'FINANCE_RULES_NOT_FOUND', 'No encontramos esas reglas.');
     return rows[0]!;
+  }
+
+  /** The locked rule set when it is still open (waiting or in review), otherwise null. */
+  private async openAfterLock(tx: Tx, contextId: string, id: string) {
+    const locked = await this.lockRow(tx, contextId, id);
+    return OPEN.includes(locked.status) ? locked : null;
   }
 
   private requireStatus(row: { status: string }, expected: string, message: string) {

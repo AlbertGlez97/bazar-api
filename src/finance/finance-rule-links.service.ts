@@ -235,7 +235,7 @@ export class FinanceRuleLinksService {
     this.limit(token, ip);
     let reason = '';
     if (decision === 'object') {
-      reason = String(cleanText(rawReason ?? '')).trim();
+      reason = String(cleanText(rawReason ?? ''));
       if (!reason)
         throw new BadRequestException({
           code: 'AGREEMENT_REASON_REQUIRED',

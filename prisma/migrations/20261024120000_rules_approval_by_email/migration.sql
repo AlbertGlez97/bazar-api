@@ -154,7 +154,7 @@ CREATE TABLE "FinanceRuleObjection" (
  "memberId" UUID NOT NULL,
  "linkId" UUID NOT NULL REFERENCES "FinanceRuleLink"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
  "correo" TEXT NOT NULL,
- "reason" TEXT NOT NULL CHECK (length(btrim("reason")) BETWEEN 1 AND 500),
+ "reason" TEXT NOT NULL CHECK (length(btrim("reason", E' \t\r\n')) BETWEEN 1 AND 500),
  "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE ("ruleSetId", "memberId"),
  FOREIGN KEY ("ruleSetId", "contextId") REFERENCES "FinanceRuleSet"("id", "contextId") ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -295,7 +295,7 @@ BEGIN
    result := CASE WHEN "finance_rule_set_settle"(l."contextId", l."ruleSetId") THEN 'vigente' ELSE 'aprobada' END;
   ELSE
    INSERT INTO "FinanceRuleObjection" ("id", "contextId", "ruleSetId", "memberId", "linkId", "correo", "reason")
-   VALUES (p_record_id, l."contextId", l."ruleSetId", l."memberId", l."id", l."correo", btrim(p_reason));
+   VALUES (p_record_id, l."contextId", l."ruleSetId", l."memberId", l."id", l."correo", btrim(p_reason, E' \t\r\n'));
    UPDATE "FinanceRuleLink" SET "usedAt" = now() WHERE "id" = l."id";
    UPDATE "FinanceRuleSet" SET "status" = 'en_revision', "inReviewAt" = now(), "updatedAt" = now()
     WHERE "id" = l."ruleSetId" AND "contextId" = l."contextId";

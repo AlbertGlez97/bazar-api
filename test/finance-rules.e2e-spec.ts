@@ -742,6 +742,107 @@ describe('finance rules: approval by email', () => {
     });
   });
 
+  describe('one link, one answer', () => {
+    const counts = (s: Scenario, ruleSetId: string) =>
+      withTestTenant(s.contextId, async () => ({
+        approvals: await prisma.financeRuleApproval.count({ where: { ruleSetId } }),
+        objections: await prisma.financeRuleObjection.count({ where: { ruleSetId } }),
+      }));
+
+    it('a link used to approve cannot be used again to disagree, and the other way round', async () => {
+      const s = await scenario('reuse', 3);
+      const { set, links } = await propose(s, s.socios[0]!);
+      const [ana, beto] = s.socios as [Who, Who];
+
+      await respond(tokenOf(ana, links), 'approve').expect(200);
+      expect((await respond(tokenOf(ana, links), 'object', 'Ahora no').expect(404)).body.code).toBe('AGREEMENT_LINK_INVALID');
+      expect(await counts(s, set.id)).toEqual({ approvals: 1, objections: 0 });
+      expect((await row(s, set.id)).status).toBe('pendiente');
+
+      await respond(tokenOf(beto, links), 'object', 'No').expect(200);
+      expect((await respond(tokenOf(beto, links), 'approve').expect(404)).body.code).toBe('AGREEMENT_LINK_INVALID');
+      expect(await counts(s, set.id)).toEqual({ approvals: 1, objections: 1 });
+    });
+
+    it('a link replaced by a re-send cannot answer, only the new one can', async () => {
+      const s = await scenario('replaced', 2);
+      const { set, links } = await propose(s, s.socios[0]!);
+      await call(s, s.socios[1]!, 'post', `/${set.id}/resend`).expect(200);
+      const fresh = lastLinks(2);
+
+      for (const decision of ['approve', 'object'] as const)
+        await respond(tokenOf(s.socios[0]!, links), decision, 'Motivo').expect(404);
+      expect(await counts(s, set.id)).toEqual({ approvals: 0, objections: 0 });
+      await respond(tokenOf(s.socios[0]!, fresh), 'approve').expect(200);
+      expect(await counts(s, set.id)).toEqual({ approvals: 1, objections: 0 });
+    });
+  });
+
+  describe('the SQL functions, called straight (they are public to the application role)', () => {
+    const respondSql = (token: string, decision: string, reason = '') =>
+      prisma.$queryRaw<{ outcome: string }[]>`
+        SELECT "outcome" FROM finance_rule_link_respond(${hashSingleUseToken(token)}, ${decision}, ${reason}, ${v7()}::uuid)`;
+
+    it('a decision it does not know records nothing', async () => {
+      const s = await scenario('sql-decision', 2);
+      const { set, links } = await propose(s, s.socios[0]!);
+
+      // With a valid reason, so that only the unknown decision can be the reason it is refused.
+      expect(await respondSql(tokenOf(s.socios[0]!, links), 'maybe', 'Un motivo')).toEqual([]);
+      expect(await respondSql(tokenOf(s.socios[0]!, links), '', 'Un motivo')).toEqual([]);
+      expect(await withTestTenant(s.contextId, () => prisma.financeRuleApproval.count({ where: { ruleSetId: set.id } }))).toBe(0);
+      expect(await withTestTenant(s.contextId, () => prisma.financeRuleObjection.count({ where: { ruleSetId: set.id } }))).toBe(0);
+      expect((await row(s, set.id)).status).toBe('pendiente');
+      // The link was not spent by the refused attempts.
+      expect(await respondSql(tokenOf(s.socios[0]!, links), 'approve')).toEqual([{ outcome: 'aprobada' }]);
+    });
+
+    it('the reason is stored without surrounding spaces', async () => {
+      const s = await scenario('sql-reason', 2);
+      const { set, links } = await propose(s, s.socios[0]!);
+
+      expect(await respondSql(tokenOf(s.socios[1]!, links), 'object', '  Más reservas \n')).toEqual([{ outcome: 'objetada' }]);
+      const [objection] = await withTestTenant(s.contextId, () => prisma.financeRuleObjection.findMany({ where: { ruleSetId: set.id } }));
+      expect(objection!.reason).toBe('Más reservas');
+    });
+
+    it('an empty or too long reason is refused by the database itself', async () => {
+      const s = await scenario('sql-limits', 3);
+      const { links } = await propose(s, s.socios[0]!);
+
+      expect(await respondSql(tokenOf(s.socios[1]!, links), 'object', '   ')).toEqual([]);
+      expect(await respondSql(tokenOf(s.socios[1]!, links), 'object', 'x'.repeat(501))).toEqual([]);
+      expect(await respondSql(tokenOf(s.socios[1]!, links), 'object', 'x'.repeat(500))).toEqual([{ outcome: 'objetada' }]);
+    });
+
+    it('"settle" only activates a proposal that is waiting, never one in review, even with every active socio approved', async () => {
+      const s = await scenario('sql-settle', 3);
+      const [a, b, c] = s.socios as [Who, Who, Who];
+      const { set, links } = await propose(s, a);
+      await respond(tokenOf(a, links), 'approve').expect(200);
+      await respond(tokenOf(b, links), 'approve').expect(200);
+      await respond(tokenOf(c, links), 'object', 'No').expect(200);
+      // The one who disagreed leaves: every ACTIVE socio has approved, but the proposal is in review.
+      await withTestTenant(s.contextId, () => prisma.member.update({ where: { id: c.memberId }, data: { active: false } }));
+
+      // Inside a transaction, so the business (row-level security) is set for the raw query too.
+      const settle = () =>
+        withTestTenant(s.contextId, () =>
+          prisma.$transaction((tx) =>
+            tx.$queryRaw<{ done: boolean }[]>`SELECT finance_rule_set_settle(${s.contextId}, ${set.id}::uuid) AS done`,
+          ),
+        );
+      expect(await settle()).toEqual([{ done: false }]);
+      expect((await row(s, set.id)).status).toBe('en_revision');
+      // And a waiting proposal with every active socio approved does activate (the same call).
+      await call(s, a, 'post', `/${set.id}/discard`).expect(200);
+      const waiting = await propose(s, a, 40);
+      await respond(tokenOf(a, waiting.links), 'approve').expect(200);
+      await respond(tokenOf(b, waiting.links), 'approve').expect(200);
+      expect((await row(s, waiting.set.id)).status).toBe('vigente');
+    });
+  });
+
   describe('what stays out of logs and responses', () => {
     it('no token appears in any log line while sending, re-sending, reading and answering', async () => {
       const logged: string[] = [];

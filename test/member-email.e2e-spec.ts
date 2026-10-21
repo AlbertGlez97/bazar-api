@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Logger, type INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import { v7 } from 'uuid';
 import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { hashPassword } from '../src/common/password.js';
@@ -249,10 +250,49 @@ describe('a socio writes their own address, and confirms it with a link', () => 
       const second = lastToken();
 
       await confirm(first).expect(200);
+      // The second link is dead for reading too, not only for confirming.
+      expect((await inspect(second)).status).toBe(404);
       expect((await confirm(second)).status).toBe(404);
       expect(await correoOf(a, a.socios[0]!)).toBe(shared);
       expect(await correoOf(c, c.socios[0]!)).toBeNull();
       expect((await status(c, c.socios[0]!).expect(200)).body.correo).toBeNull();
+    });
+
+    it('a person who got an address some other way while the link was waiting keeps it: the link no longer works', async () => {
+      const b = await business('got-it', 1);
+      await write(b, b.socios[0]!, unique('late')).expect(200);
+      const token = lastToken();
+      const own = unique('own');
+      await withTestTenant(b.contextId, () => prisma.member.update({ where: { id: b.socios[0]!.memberId }, data: { correo: own } }));
+
+      expect((await inspect(token)).status).toBe(404);
+      expect((await confirm(token)).status).toBe(404);
+      expect(await correoOf(b, b.socios[0]!)).toBe(own);
+    });
+
+    it('confirming retires the other live confirmations of that person', async () => {
+      const b = await business('retire', 1);
+      await write(b, b.socios[0]!, unique('main')).expect(200);
+      const main = lastToken();
+      // A second live confirmation (written straight, since the service never leaves two).
+      const extraId = await withTestTenant(b.contextId, async () =>
+        (await prisma.memberEmailConfirmation.create({
+          data: {
+            id: v7(),
+            contextId: b.contextId,
+            memberId: b.socios[0]!.memberId,
+            correo: unique('other'),
+            tokenHash: hashSingleUseToken('E'.repeat(43)),
+            requestedByAccountId: (await prisma.account.findFirstOrThrow({ where: { memberId: b.socios[0]!.memberId } })).id,
+            expiresAt: new Date(Date.now() + DAY),
+          },
+        })).id,
+      );
+
+      await confirm(main).expect(200);
+      const extra = await withTestTenant(b.contextId, () => prisma.memberEmailConfirmation.findUniqueOrThrow({ where: { id: extraId } }));
+      expect(extra.supersededAt).toBeInstanceOf(Date);
+      expect(extra.usedAt).toBeNull();
     });
 
     it('two confirmations of the same link at the same moment give the address once', async () => {

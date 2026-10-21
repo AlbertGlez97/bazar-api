@@ -313,6 +313,22 @@ describe('FinanceRulesService', () => {
       expect(s.sendApproval).not.toHaveBeenCalled();
     });
 
+    it('si la propuesta abierta se volvió vigente justo antes de bloquearla, ya no estorba y no se intenta cerrar', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      await propose(s);
+      const draft = await s.service.saveDraft(actor('ana'), config(30));
+      // Another request answered it a moment ago: what was read is stale, what is locked is not.
+      const stale = { ...s.sets.rows[0]! };
+      s.sets.rows[0]!.status = 'vigente';
+      const realFindFirst = s.sets.findFirst;
+      s.sets.findFirst = async (args: Row) => (args?.where?.status?.in ? stale : realFindFirst(args));
+
+      const sent = await s.service.submit(actor('ana'), draft.id);
+
+      expect(sent.status).toBe('pendiente');
+      expect(s.sets.rows[0]!.status).toBe('vigente');
+    });
+
     it('compara con las reglas vigentes: "qué cambió" va en la propuesta y en el correo', async () => {
       const s = setup({ partners: [partner('ana', 'Ana', 1)] });
       const first = await propose(s, 'ana', 10);
