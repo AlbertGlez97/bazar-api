@@ -27,6 +27,22 @@ No hay contraseña temporal por correo. El correo lleva un enlace de un solo uso
 - Contraseña: de 10 a 128 caracteres, igual que el cambio de contraseña. Se usa tal como se escribe.
 - Solo socios activos del mismo negocio invitan. Los colaboradores reciben 403.
 - Se invita solo a un socio activo sin cuenta atada. Si ya tiene, 409.
+- Máximo 10 personas nuevas por socio que invita en 24 horas. Los reenvíos no cuentan. Al pasarse, 429 `INVITATION_NEW_DAILY_LIMIT`.
+
+## Quién puede invitar a quién
+
+El acceso compartido (cuenta sin `memberId`) no puede probar quién lo usa. Por eso:
+
+1. Mientras **ningún socio activo** tenga cuenta personal atada, el acceso compartido solo puede invitar al **socio elegido en ese
+   momento** (`x-member-id`). Invitar a otro da 403 `INVITATION_SHARED_SELF_ONLY`.
+2. En cuanto existe al menos una cuenta personal atada de un socio activo, el acceso compartido **no invita a nadie**:
+   403 `INVITATION_SHARED_BLOCKED`, "Pídele a un socio con cuenta personal que te invite".
+   La cuenta atada de un colaborador no cuenta para esto.
+3. Una cuenta personal sí invita a otros socios sin cuenta. Un socio con cuenta atada sigue dando 409.
+4. Con un solo socio activo, todo queda como antes: el acceso compartido se invita a sí mismo.
+
+`GET /members/account-status` trae por cada socio `invite: { allowed, reason }`, para que la pantalla muestre el botón
+deshabilitado con su explicación. La restricción va antes que el 409.
 
 ## Qué no revela
 
@@ -62,6 +78,7 @@ escribe una vez, junto con la aprobación. No se calcula después.
 | --- | --- |
 | `invited` | Cuenta creada por invitación. Trae quién invitó, cuándo, cuándo se aceptó y `recent` (aceptada 7 días antes de aprobar o menos). |
 | `own_account` | Cuenta atada que no vino de una invitación, con su fecha de creación. |
+| `invited_from_shared_login` | Cuenta creada por una invitación hecha desde el acceso compartido. No se guarda quién invitó, porque no se puede saber. Siempre entra en el aviso de vigencia, sin importar cuántos días pasaron. |
 | `shared_single_partner` | Acceso compartido de un solo socio. |
 
 Las aprobaciones anteriores a este cambio no tienen dato (`origin: null`).
