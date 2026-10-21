@@ -101,7 +101,7 @@ export class AccountInvitationsService {
         throw new UnprocessableEntityException(
           'Solo se puede invitar a un socio activo.',
         );
-      if (await tx.account.findFirst({ where: { memberId } }))
+      if (await tx.account.findFirst({ where: { memberId, contextId } }))
         throw new ConflictException('Este socio ya tiene su cuenta personal.');
 
       await this.enforceSendLimits(tx, contextId, memberId, now);
