@@ -1072,20 +1072,22 @@ model FinanceRuleReminder {
 // 20261021120000). Only the SHA-256 of the token is stored. The public page reaches
 // it through two SECURITY DEFINER functions, never through this model.
 model AccountInvitation {
-  id                String    @id @db.Uuid
-  contextId         String
-  memberId          String    @db.Uuid
-  email             String
-  tokenHash         String    @unique @db.Char(64)
-  invitedByMemberId String    @db.Uuid
-  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
-  expiresAt         DateTime  @db.Timestamptz(3)
-  usedAt            DateTime? @db.Timestamptz(3)
-  supersededAt      DateTime? @db.Timestamptz(3)
-  accountId         String?   @unique @db.Uuid
-  member            Member    @relation("InvitationTarget", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
-  invitedBy         Member    @relation("InvitationSender", fields: [invitedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
-  account           Account?  @relation(fields: [accountId, contextId], references: [id, contextId], onDelete: Restrict)
+  id                    String    @id @db.Uuid
+  contextId             String
+  memberId              String    @db.Uuid
+  email                 String
+  tokenHash             String    @unique @db.Char(64)
+  invitedByMemberId     String    @db.Uuid
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt             DateTime  @db.Timestamptz(3)
+  usedAt                DateTime? @db.Timestamptz(3)
+  supersededAt          DateTime? @db.Timestamptz(3)
+  // Created from the shared login, which cannot prove who is using it (migration 20261022120000).
+  invitedViaSharedLogin Boolean   @default(false)
+  accountId             String?   @unique @db.Uuid
+  member                Member    @relation("InvitationTarget", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  invitedBy             Member    @relation("InvitationSender", fields: [invitedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  account               Account?  @relation(fields: [accountId, contextId], references: [id, contextId], onDelete: Restrict)
 
   @@index([contextId, memberId, createdAt])
 }
