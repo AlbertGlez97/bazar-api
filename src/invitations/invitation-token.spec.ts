@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  INVITATION_MAX_NEW_PER_DAY,
   INVITATION_MAX_PER_DAY,
   INVITATION_MIN_GAP_MS,
   INVITATION_TOKEN_PATTERN,
@@ -38,5 +39,6 @@ describe('invitation token', () => {
     expect(INVITATION_TTL_MS).toBe(72 * 60 * 60 * 1000);
     expect(INVITATION_MAX_PER_DAY).toBe(3);
     expect(INVITATION_MIN_GAP_MS).toBe(60_000);
+    expect(INVITATION_MAX_NEW_PER_DAY).toBe(10);
   });
 });

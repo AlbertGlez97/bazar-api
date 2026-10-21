@@ -19,6 +19,7 @@ import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { EmailService } from '../email/email.service.js';
 import {
+  INVITATION_MAX_NEW_PER_DAY,
   INVITATION_MAX_PER_DAY,
   INVITATION_MIN_GAP_MS,
   INVITATION_TTL_MS,
@@ -104,6 +105,7 @@ export class AccountInvitationsService {
         throw new ConflictException('Este socio ya tiene su cuenta personal.');
 
       await this.enforceSendLimits(tx, contextId, memberId, now);
+      await this.enforceNewInvitationLimit(tx, contextId, memberId, inviterId, now);
       // Any account with this address, in any business, gets the same generic answer.
       if (await tx.account.findFirst({ where: { username: email } })) throw notSent();
 
@@ -239,6 +241,42 @@ export class AccountInvitationsService {
       throw tooMany(
         'INVITATION_DAILY_LIMIT',
         `Ya se enviaron ${INVITATION_MAX_PER_DAY} invitaciones hoy. Intenta mañana.`,
+      );
+  }
+
+  /**
+   * A socio can invite at most {@link INVITATION_MAX_NEW_PER_DAY} different people for the
+   * first time in 24 hours. Re-sending to someone already invited is not a new person and
+   * is governed only by the per-person limits above.
+   */
+  private async enforceNewInvitationLimit(
+    tx: Prisma.TransactionClient,
+    contextId: string,
+    memberId: string,
+    inviterId: string,
+    now: Date,
+  ) {
+    if ((await tx.accountInvitation.count({ where: { contextId, memberId } })) > 0) return;
+    const since = new Date(now.getTime() - DAY_MS);
+    const recent = await tx.accountInvitation.findMany({
+      where: { contextId, invitedByMemberId: inviterId, createdAt: { gte: since } },
+    });
+    if (!recent.length) return;
+    const everything = await tx.accountInvitation.findMany({
+      where: { contextId, memberId: { in: [...new Set(recent.map((i) => i.memberId))] } },
+      orderBy: { createdAt: 'asc' },
+    });
+    // A person counts once, by their very first invitation.
+    const first = new Map<string, (typeof everything)[number]>();
+    for (const invitation of everything)
+      if (!first.has(invitation.memberId)) first.set(invitation.memberId, invitation);
+    const fresh = [...first.values()].filter(
+      (i) => i.invitedByMemberId === inviterId && i.createdAt >= since,
+    ).length;
+    if (fresh >= INVITATION_MAX_NEW_PER_DAY)
+      throw tooMany(
+        'INVITATION_NEW_DAILY_LIMIT',
+        `Ya invitaste a ${INVITATION_MAX_NEW_PER_DAY} personas hoy. Intenta mañana.`,
       );
   }
 

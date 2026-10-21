@@ -239,6 +239,30 @@ describe('account invitations', () => {
     });
   });
 
+  describe('tope de personas nuevas por socio que invita', () => {
+    it('la número 11 del día se rechaza con un mensaje claro; los reenvíos y otro socio no se afectan', async () => {
+      const b = await business('new-cap');
+      const targets = await withTestTenant(b.contextId, async () => {
+        const ids: string[] = [];
+        for (let i = 0; i < 11; i++)
+          ids.push((await prisma.member.create({ data: { contextId: b.contextId, name: `Extra ${i}`, role: 'socio' } })).id);
+        return ids;
+      });
+      for (const id of targets.slice(0, 10)) await invite(b, id, uniqueEmail('n')).expect(201);
+
+      const res = await invite(b, targets[10]!, uniqueEmail('n')).expect(429);
+      expect(res.body).toEqual({ code: 'INVITATION_NEW_DAILY_LIMIT', message: 'Ya invitaste a 10 personas hoy. Intenta mañana.' });
+      expect(sendInvitation).toHaveBeenCalledTimes(10);
+
+      // Reenviar a alguien ya invitado no es una persona nueva.
+      await backdate(b, 2 * 60 * 1000);
+      await invite(b, targets[0]!, uniqueEmail('n')).expect(201);
+      // Pasado el día, se puede invitar a otra persona.
+      await backdate(b, 24 * 60 * 60 * 1000);
+      await invite(b, targets[10]!, uniqueEmail('n')).expect(201);
+    });
+  });
+
   describe('public page', () => {
     it('ver la invitación no consume nada y las cabeceras impiden guardar el enlace', async () => {
       const b = await business('inspect');

@@ -183,6 +183,55 @@ describe('AccountInvitationsService.invite', () => {
     await expect(s.service.invite(actor(), 'beto', 'beto@example.test', nextDay)).resolves.toMatchObject({ ok: true });
   });
 
+  describe('tope de invitaciones nuevas por socio que invita', () => {
+    const manyMembers = (n: number): Row[] => [
+      { id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 0 },
+      ...Array.from({ length: n }, (_, i) => ({ id: `m${i}`, name: `Socio ${i}`, role: 'socio', active: true, contextId: CONTEXT, createdAt: i + 1 })),
+    ];
+    const invite = (s: ReturnType<typeof setup>, i: number, at: Date, who = 'ana') =>
+      s.service.invite(actor(who), `m${i}`, `m${i}@example.test`, at);
+
+    it('la invitación número 11 del día a personas distintas se rechaza con un mensaje claro', async () => {
+      const s = setup({ members: manyMembers(12) });
+      for (let i = 0; i < 10; i++) await invite(s, i, new Date(NOW.getTime() + i * MIN));
+      const error = await invite(s, 10, new Date(NOW.getTime() + 11 * MIN)).catch((e) => e);
+      expect(error.getStatus()).toBe(429);
+      expect(error.getResponse()).toEqual({
+        code: 'INVITATION_NEW_DAILY_LIMIT',
+        message: 'Ya invitaste a 10 personas hoy. Intenta mañana.',
+      });
+      expect(s.invitations.rows).toHaveLength(10);
+      expect(s.email).toHaveBeenCalledTimes(10);
+    });
+
+    it('los reenvíos a quien ya invitaste no cuentan como nuevos ni se bloquean por este tope', async () => {
+      const s = setup({ members: manyMembers(12) });
+      for (let i = 0; i < 10; i++) await invite(s, i, new Date(NOW.getTime() + i * MIN));
+      await expect(invite(s, 0, new Date(NOW.getTime() + 20 * MIN))).resolves.toMatchObject({ ok: true });
+    });
+
+    it('pasadas 24 horas se pueden invitar más personas', async () => {
+      const s = setup({ members: manyMembers(12) });
+      for (let i = 0; i < 10; i++) await invite(s, i, new Date(NOW.getTime() + i * MIN));
+      await expect(invite(s, 10, new Date(NOW.getTime() + 24 * HOUR + 11 * MIN))).resolves.toMatchObject({ ok: true });
+    });
+
+    it('el tope es de cada socio que invita: lo de otro socio no suma', async () => {
+      const members = [...manyMembers(12), { id: 'otro', name: 'Otro', role: 'socio', active: true, contextId: CONTEXT, createdAt: 99 }];
+      const s = setup({ members });
+      for (let i = 0; i < 10; i++) await invite(s, i, new Date(NOW.getTime() + i * MIN));
+      await expect(invite(s, 10, new Date(NOW.getTime() + 11 * MIN), 'otro')).resolves.toMatchObject({ ok: true });
+    });
+
+    it('una invitación a alguien que antes fue invitada por otro socio no cuenta como nueva para quien reenvía', async () => {
+      const members = [...manyMembers(12), { id: 'otro', name: 'Otro', role: 'socio', active: true, contextId: CONTEXT, createdAt: 99 }];
+      const s = setup({ members });
+      for (let i = 0; i < 10; i++) await invite(s, i, new Date(NOW.getTime() + i * MIN), 'otro');
+      // Ana reenvía a m0, a quien ya había invitado `otro`: no es una persona nueva.
+      await expect(invite(s, 0, new Date(NOW.getTime() + 30 * MIN))).resolves.toMatchObject({ ok: true });
+    });
+  });
+
   it('sin PUBLIC_SITE_URL en producción no manda nada y da la respuesta genérica; en desarrollo usa localhost', async () => {
     vi.stubEnv('PUBLIC_SITE_URL', '');
     vi.stubEnv('NODE_ENV', 'production');
