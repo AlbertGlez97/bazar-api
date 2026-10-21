@@ -72,6 +72,101 @@ const created = {
   credentialsEmail: 'member' as const,
 };
 
+/** A transaction stand-in that lets the real `create` logic run, to pin what it stores and refuses. */
+function runCreate(opts: { usernameTaken?: string[] } = {}) {
+  const members: Record<string, unknown>[] = [];
+  const accounts: Record<string, unknown>[] = [];
+  const tx = {
+    account: {
+      findFirst: async () => ({ id: 'account-id' }),
+      findUnique: async ({ where }: { where: { username: string } }) =>
+        opts.usernameTaken?.includes(where.username) ? { id: 'taken' } : null,
+      create: async ({ data }: { data: Record<string, unknown> }) => (accounts.push(data), data),
+    },
+    member: {
+      findFirst: async () => ({ id: 'socio-id', name: 'Socio', role: 'socio', active: true }),
+      create: async ({ data }: { data: Record<string, unknown> }) => (members.push(data), data),
+    },
+    device: { findFirst: async () => ({ id: 'device-id' }) },
+  };
+  const sendMemberCredentialsEmail = vi.fn().mockResolvedValue({ deliveredTo: 'member' });
+  const members$ = new MembersService(
+    { $transaction: async (fn: (t: typeof tx) => unknown) => fn(tx) } as never,
+    { sendMemberCredentialsEmail } as never,
+  );
+  return { service: members$, members, accounts, sendMemberCredentialsEmail };
+}
+
+describe('MembersService.create: the correo', () => {
+  it('queda guardado en minúsculas en la persona (para sus aprobaciones) y no sale en la respuesta', async () => {
+    const run = runCreate();
+    const res = await run.service.create(actor, dto({ correo: '  Ana@Example.TEST ' }));
+
+    expect(run.members[0]).toMatchObject({ name: 'Ana Nueva', correo: 'ana@example.test' });
+    expect(run.accounts[0]).toMatchObject({ username: 'ana@example.test' });
+    expect(res).not.toHaveProperty('correo');
+    expect(run.sendMemberCredentialsEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('un correo que ya es el usuario de alguien da un 409 claro, no crea nada y no manda correo', async () => {
+    const run = runCreate({ usernameTaken: ['ana@example.test'] });
+
+    await expect(run.service.create(actor, dto())).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MEMBER_EMAIL_IN_USE', message: 'Ese correo ya está en uso. Usa otro correo.' },
+    });
+    expect(run.members).toEqual([]);
+    expect(run.accounts).toEqual([]);
+    expect(run.sendMemberCredentialsEmail).not.toHaveBeenCalled();
+  });
+
+  it('un correo demasiado largo para ser usuario sigue recibiendo uno inventado y se guarda completo', async () => {
+    const long = `a-1@${'b'.repeat(60)}.${'c'.repeat(60)}.example.test`;
+    const run = runCreate({ usernameTaken: [long] });
+    await run.service.create(actor, dto({ correo: long }));
+
+    expect(run.members[0]).toMatchObject({ correo: long });
+    expect(run.accounts[0]!.username).toMatch(/^[a-z0-9-]+-[0-9a-f]{6}$/);
+  });
+});
+
+describe('MembersService: las respuestas de las rutas de personas no llevan el correo', () => {
+  const row = { id: 'm1', name: 'Ana', role: 'colaborador', active: true, contextId: 'ctx', correo: 'ana@example.test' };
+  const build = (active: boolean) => {
+    const updates: Record<string, unknown>[] = [];
+    const tx = {
+      $queryRaw: async () => [],
+      account: { findFirst: async () => ({ id: 'account-id' }) },
+      device: { findFirst: async () => ({ id: 'device-id' }) },
+      member: {
+        findFirst: async ({ where }: { where: { id: string } }) =>
+          where.id === 'm1' ? { ...row, active } : { id: 'socio-id', name: 'Socio', role: 'socio', active: true },
+        update: async (args: Record<string, unknown>) => (updates.push(args), { id: 'm1' }),
+      },
+    };
+    const service = new MembersService({ $transaction: async (fn: (t: typeof tx) => unknown) => fn(tx) } as never, {} as never);
+    return { service, updates };
+  };
+
+  it('desactivar y reactivar piden la fila sin correo, y si no hay nada que cambiar la devuelven sin él', async () => {
+    const off = build(false);
+    expect(await off.service.deactivate(actor, 'm1')).not.toHaveProperty('correo');
+    expect(await off.service.reactivate(actor, 'm1')).toEqual({ id: 'm1' });
+    expect(off.updates[0]).toMatchObject({ omit: { correo: true } });
+
+    const on = build(true);
+    expect(await on.service.reactivate(actor, 'm1')).not.toHaveProperty('correo');
+    expect(await on.service.deactivate(actor, 'm1')).toEqual({ id: 'm1' });
+    expect(on.updates[0]).toMatchObject({ omit: { correo: true } });
+  });
+
+  it('editar a una persona pide la fila sin correo', async () => {
+    const run = build(true);
+    await run.service.patch(actor, 'm1', { name: 'Otro' } as never);
+    expect(run.updates[0]).toMatchObject({ omit: { correo: true } });
+  });
+});
+
 describe('MembersService.create failure handling', () => {
   const service = (transaction: ReturnType<typeof vi.fn>) =>
     new MembersService({ $transaction: transaction } as never, {} as never);
@@ -115,6 +210,20 @@ describe('MembersService.create failure handling', () => {
       ConflictException,
     );
     expect(transaction).toHaveBeenCalledTimes(3);
+  });
+
+  it('answers a clear 409 when another person has the correo, and does not retry', async () => {
+    const taken = Object.assign(new Error('Unique constraint failed on Member_correo_key'), {
+      code: 'P2002',
+      meta: { modelName: 'Member', driverAdapterError: { cause: { constraint: { index: 'Member_correo_key' } } } },
+    });
+    const transaction = vi.fn().mockRejectedValue(taken);
+
+    await expect(service(transaction).create(actor, dto())).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MEMBER_EMAIL_IN_USE', message: 'Ese correo ya está en uso. Usa otro correo.' },
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
   });
 
   it('answers 502 when the transaction expires, and does not retry', async () => {

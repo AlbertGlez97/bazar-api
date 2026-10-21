@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client.js';
 import {
   isAccountUsernameConflict,
+  isMemberCorreoConflict,
   isTransactionExpired,
 } from './approve-failures.js';
 
@@ -95,6 +96,35 @@ describe('isAccountUsernameConflict', () => {
     ['undefined', undefined],
   ])('does not classify %s', (_label, error) => {
     expect(isAccountUsernameConflict(error)).toBe(false);
+  });
+});
+
+describe('isMemberCorreoConflict', () => {
+  it('recognizes the real P2002 on Member.correo (adapter-pg shape)', () => {
+    expect(isMemberCorreoConflict(uniqueViolation('Member_correo_key', 'Member'))).toBe(true);
+  });
+
+  it('recognizes the legacy engine shape and the constraint name in the message', () => {
+    const engine = new Prisma.PrismaClientKnownRequestError('Unique constraint', {
+      code: 'P2002',
+      clientVersion,
+      meta: { modelName: 'Member', target: ['correo'] },
+    });
+    const byMessage = new Prisma.PrismaClientKnownRequestError(
+      'Unique constraint failed on the constraint: `Member_correo_key`',
+      { code: 'P2002', clientVersion },
+    );
+    expect(isMemberCorreoConflict(engine)).toBe(true);
+    expect(isMemberCorreoConflict(byMessage)).toBe(true);
+  });
+
+  it.each([
+    ['the username constraint', uniqueViolation('Account_username_key', 'Account')],
+    ['another Member constraint', uniqueViolation('Member_pkey', 'Member')],
+    ['a plain Error', new Error('Member_correo_key')],
+    ['a non-error value', 'P2002'],
+  ])('does not classify %s', (_label, error) => {
+    expect(isMemberCorreoConflict(error)).toBe(false);
   });
 });
 

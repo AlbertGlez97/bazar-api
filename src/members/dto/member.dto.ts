@@ -24,8 +24,8 @@ export type MemberRoleName = (typeof MEMBER_ROLES)[number];
 /**
  * A socio adds a person to its own business (`POST /members`, BE-12). The
  * person gets their own login, created together with the Member and emailed
- * to `correo`, which is used ONLY to send those credentials (it is not
- * stored). `nombre`, `apellidos` and `correo` are trimmed before they are
+ * to `correo`, which is also kept on the Member (lower-case, unique across
+ * businesses) as the address its approvals go to. `nombre`, `apellidos` and `correo` are trimmed before they are
  * validated. The id, the context, the username and the password are always
  * chosen by the server: any of them in the body is rejected (400), like every
  * other unknown field.

@@ -19,9 +19,11 @@ import type {
 import { isRequestingSocio } from '../auth/socio-check.util.js';
 import {
   isAccountUsernameConflict,
+  isMemberCorreoConflict,
   isTransactionExpired,
 } from '../business-registration/approve-failures.js';
 import {
+  MAX_USERNAME_LENGTH,
   deriveUniqueUsername,
   generateTemporaryPassword,
   normalizeSocioEmail,
@@ -47,6 +49,20 @@ export const MEMBER_CREATE_TRANSACTION_OPTIONS = {
 
 /** How many times `create` re-derives a username lost to a racing insert. */
 const USERNAME_RACE_ATTEMPTS = 3;
+
+/** The address typed for a new person already belongs to someone (a person or a login). */
+const emailInUse = () =>
+  new ConflictException({
+    code: 'MEMBER_EMAIL_IN_USE',
+    message: 'Ese correo ya está en uso. Usa otro correo.',
+  });
+
+/** Member rows leave this service without the address: it is for approvals, not for lists. */
+const WITHOUT_CORREO = { correo: true } as const;
+const withoutCorreo = <T extends { correo: string | null }>(member: T): Omit<T, 'correo'> => {
+  const { correo: _correo, ...rest } = member;
+  return rest;
+};
 
 /** What `POST /members` answers; never the password or its hash. */
 export interface CreatedMember {
@@ -136,11 +152,13 @@ export class MembersService {
    * login can only ever act as this Member) are created in ONE transaction,
    * and the credentials (username + a random temporary password) are emailed
    * to `dto.correo` as its LAST step. If the email cannot be sent nothing is
-   * persisted and the answer is 502. The correo is used only for that email;
-   * it is not stored.
+   * persisted and the answer is 502. The correo is also stored, lower-case, on
+   * the Member (`Member.correo`, unique across businesses): it is where the
+   * person's approvals go. One already in use is a 409, never a silent fallback.
    *
    * The username comes from {@link deriveUniqueUsername} (the normalized
-   * correo when free, otherwise a random-suffix fallback). Two requests racing
+   * correo; only an address too long to be a username gets a random-suffix
+   * fallback, and only a 409 follows a taken one). Two requests racing
    * for the same username end in a unique violation on `Account.username`,
    * which rolls the transaction back; it is retried a bounded number of times
    * (a fresh derivation each time) and then answered as 409.
@@ -171,6 +189,9 @@ export class MembersService {
           MEMBER_CREATE_TRANSACTION_OPTIONS,
         );
       } catch (error) {
+        // Another person already has this address (in any business): say so, never fall back to
+        // an invented username and lose the address.
+        if (isMemberCorreoConflict(error)) throw emailInUse();
         if (isAccountUsernameConflict(error)) {
           if (attempt < USERNAME_RACE_ATTEMPTS) continue;
           this.logger.error(
@@ -201,6 +222,14 @@ export class MembersService {
     const contextId = actor.account.contextId;
     const name = fullName(dto.nombre, dto.apellidos);
 
+    // A login that already carries this address means it is taken. Only an address too long to
+    // be a username (over 100 characters) still gets an invented one, as before.
+    if (
+      correo.length <= MAX_USERNAME_LENGTH &&
+      (await tx.account.findUnique({ where: { username: correo }, select: { id: true } }))
+    )
+      throw emailInUse();
+
     const username = await deriveUniqueUsername(
       { correo, nombreNegocio: name },
       async (candidate) =>
@@ -215,6 +244,7 @@ export class MembersService {
       data: {
         id: createServerId(),
         name,
+        correo,
         role: dto.role,
         contextId,
         active: true,
@@ -343,6 +373,7 @@ export class MembersService {
             ? { commissionRateBps: dto.commissionRateBps }
             : {}),
         },
+        omit: WITHOUT_CORREO,
       });
       return updated;
     });
@@ -381,8 +412,12 @@ export class MembersService {
       if (!target) throw new NotFoundException();
       if (target.role === 'socio')
         throw new BadRequestException('No se puede desactivar a un socio');
-      if (!target.active) return target;
-      return tx.member.update({ where: { id }, data: { active: false } });
+      if (!target.active) return withoutCorreo(target);
+      return tx.member.update({
+        where: { id },
+        data: { active: false },
+        omit: WITHOUT_CORREO,
+      });
     });
   }
 
@@ -402,8 +437,12 @@ export class MembersService {
         where: { id, contextId: actor.account.contextId },
       });
       if (!target) throw new NotFoundException();
-      if (target.active) return target;
-      return tx.member.update({ where: { id }, data: { active: true } });
+      if (target.active) return withoutCorreo(target);
+      return tx.member.update({
+        where: { id },
+        data: { active: true },
+        omit: WITHOUT_CORREO,
+      });
     });
   }
 }

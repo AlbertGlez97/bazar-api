@@ -10,7 +10,7 @@ export const INITIAL_DEVICE_NAME = 'Dispositivo principal';
 const EMAIL_PATTERN = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
 const MAX_EMAIL_LENGTH = 254;
 // `LoginDto.username` accepts at most 100 characters.
-const MAX_USERNAME_LENGTH = 100;
+export const MAX_USERNAME_LENGTH = 100;
 const MAX_SLUG_LENGTH = 30;
 const USERNAME_ATTEMPTS = 5;
 

@@ -42,9 +42,15 @@ export class AuthService {
    * is inactive, or the password does not match.
    */
   async login(username: string, password: string) {
-    const account = await this.prisma.account.findUnique({
-      where: { username },
-    });
+    // The exact name first (an older account may have been stored with capitals); every address
+    // the system creates is lower-case, so a person who types "Ana@Correo.com" still gets in.
+    const typed = await this.prisma.account.findUnique({ where: { username } });
+    const lowered = username.trim().toLowerCase();
+    const account =
+      typed ??
+      (lowered === username
+        ? null
+        : await this.prisma.account.findUnique({ where: { username: lowered } }));
     const matches = await verifyPassword(
       account?.passwordHash ?? (await this.dummyHash),
       password,

@@ -53,6 +53,24 @@ export function isAccountUsernameConflict(error: unknown): boolean {
   return error.message.includes(`\`${ACCOUNT_USERNAME_CONSTRAINT}\``);
 }
 
+/** Postgres name of the unique index behind `Member.correo`. */
+export const MEMBER_CORREO_CONSTRAINT = 'Member_correo_key';
+
+/** A unique violation on `Member.correo` (and only on it): another person has that address. */
+export function isMemberCorreoConflict(error: unknown): boolean {
+  if (!prismaCode(error, 'P2002')) return false;
+  const meta = error.meta;
+  if (meta?.driverAdapterError?.cause?.constraint?.index === MEMBER_CORREO_CONSTRAINT)
+    return true;
+  if (
+    meta?.modelName === 'Member' &&
+    Array.isArray(meta.target) &&
+    meta.target.includes('correo')
+  )
+    return true;
+  return error.message.includes(`\`${MEMBER_CORREO_CONSTRAINT}\``);
+}
+
 /** The interactive transaction outlived its timeout (a query or the commit). */
 export function isTransactionExpired(error: unknown): boolean {
   if (!prismaCode(error, 'P2028')) return false;

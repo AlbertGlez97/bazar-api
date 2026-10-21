@@ -15,8 +15,9 @@ import { expectUuidV7 } from './uuid-v7.js';
  * inside its own business. The endpoint creates the Member AND its own login
  * (Account bound to that Member through `Account.memberId`) in one
  * transaction, then emails the username and a temporary password. If the
- * email cannot be sent nothing is persisted (502). The `correo` is only used
- * to send the credentials: it is not stored.
+ * email cannot be sent nothing is persisted (502). The `correo` is stored
+ * lower-case on the Member (it is where approvals go), is unique across
+ * businesses and never leaves through the API; one already in use is a 409.
  *
  * `POST /sales` with an empty body is the probe for "did ContextGuard let the
  * request through": 400 when the guard passes, 403 when it does not.
@@ -247,25 +248,29 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       expect(res.body).not.toHaveProperty('temporaryPassword');
     });
 
-    it('does not store the correo anywhere', async () => {
+    it('stores the correo lower-case on the member (for approvals) and never returns it', async () => {
       const correo = uniqueCorreo();
       const res = await asSocio(http().post('/members'))
-        .send(valid({ correo }))
+        .send(valid({ correo: `  ${correo.toUpperCase()} `, role: 'socio' }))
         .expect(201);
 
-      const member = await memberRow(res.body.id);
-      const account = await prisma.account.findUniqueOrThrow({
-        where: { username: res.body.username },
-      });
-      const stored = JSON.stringify({ member, account: { ...account } });
-      // The username is derived from the correo (most memorable choice), but
-      // no column holds the address itself besides that.
-      expect(
-        Object.entries({ ...member, ...account })
-          .filter(([key]) => key !== 'username')
-          .map(([, value]) => String(value)),
-      ).not.toContain(correo);
-      expect(stored).not.toMatch(/correo/i);
+      expect((await memberRow(res.body.id))!.correo).toBe(correo);
+      expect(res.body.username).toBe(correo);
+      expect(res.body).not.toHaveProperty('correo');
+    });
+
+    it('never returns the correo of anyone through the member routes', async () => {
+      const created = await asSocio(http().post('/members')).send(valid()).expect(201);
+      const patched = await asSocio(http().patch(`/members/${created.body.id}`)).send({ name: 'Otro nombre' }).expect(200);
+      const deactivated = await asSocio(http().delete(`/members/${created.body.id}`)).expect(200);
+      const again = await asSocio(http().delete(`/members/${created.body.id}`)).expect(200);
+      const reactivated = await asSocio(http().patch(`/members/${created.body.id}/reactivate`)).expect(200);
+      const noop = await asSocio(http().patch(`/members/${created.body.id}/reactivate`)).expect(200);
+      const rate = await asSocio(http().patch(`/members/${created.body.id}/commission-rate`)).send({ rateBps: 100 }).expect(200);
+      for (const res of [patched, deactivated, again, reactivated, noop, rate]) {
+        expect(res.body).not.toHaveProperty('correo');
+        expect(res.body.id).toBe(created.body.id);
+      }
     });
 
     it('creates another socio, without a commission rate', async () => {
@@ -302,19 +307,63 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       expect(max.body.commissionRateBps).toBe(10000);
     });
 
-    it('derives the username from the correo and gives a taken one a random suffix', async () => {
+    it('derives the username from the correo', async () => {
       const correo = uniqueCorreo();
-      const first = await asSocio(http().post('/members'))
-        .send(valid({ correo }))
-        .expect(201);
-      const second = await asSocio(http().post('/members'))
-        .send(valid({ correo }))
-        .expect(201);
-
+      const first = await asSocio(http().post('/members')).send(valid({ correo })).expect(201);
       expect(first.body.username).toBe(correo);
-      expect(second.body.username).not.toBe(first.body.username);
-      expect(second.body.username).toMatch(/^[a-z0-9-]+-[0-9a-f]{6}$/);
-      expect(second.body.id).not.toBe(first.body.id);
+    });
+
+    describe('a correo that is already in use', () => {
+      const IN_USE = { code: 'MEMBER_EMAIL_IN_USE', message: 'Ese correo ya está en uso. Usa otro correo.' };
+      const countMembers = () => withTestTenant(contextId, () => prisma.member.count({ where: { contextId } }));
+
+      it('is refused with a clear message, creates nothing and sends no email, however it is written', async () => {
+        const correo = uniqueCorreo();
+        await asSocio(http().post('/members')).send(valid({ correo })).expect(201);
+        sendCredentials.mockClear();
+        const before = await countMembers();
+
+        for (const typed of [correo, correo.toUpperCase(), `  ${correo} `]) {
+          const res = await asSocio(http().post('/members')).send(valid({ correo: typed })).expect(409);
+          expect(res.body).toMatchObject(IN_USE);
+        }
+        expect(await countMembers()).toBe(before);
+        expect(sendCredentials).not.toHaveBeenCalled();
+      });
+
+      it('is refused when a person of ANOTHER business has it, without saying so', async () => {
+        const correo = uniqueCorreo();
+        await withTestTenant(otherContextId, () =>
+          prisma.member.create({ data: { name: 'Otro', role: 'socio', contextId: otherContextId, correo } }),
+        );
+        const res = await asSocio(http().post('/members')).send(valid({ correo })).expect(409);
+        expect(res.body).toMatchObject(IN_USE);
+        expect(JSON.stringify(res.body)).not.toContain(otherContextId);
+      });
+
+      it('is refused when a login already carries it (the founder who registered with it)', async () => {
+        const correo = uniqueCorreo();
+        await prisma.account.create({ data: { username: correo, passwordHash: 'x', contextId: otherContextId } });
+        const res = await asSocio(http().post('/members')).send(valid({ correo })).expect(409);
+        expect(res.body).toMatchObject(IN_USE);
+      });
+
+      it('two requests for the same new correo at the same moment create exactly one person', async () => {
+        const correo = uniqueCorreo();
+        const results = await Promise.all([
+          asSocio(http().post('/members')).send(valid({ correo })),
+          asSocio(http().post('/members')).send(valid({ correo })),
+        ]);
+        expect(results.map((r) => r.status).sort((a, b) => a - b)).toEqual([201, 409]);
+        expect(await withTestTenant(contextId, () => prisma.member.count({ where: { contextId, correo } }))).toBe(1);
+      });
+
+      it('does not change the other cases: an address too long for a login still gets one and is stored', async () => {
+        const correo = `a-${randomUUID()}@${'b'.repeat(60)}.${'c'.repeat(60)}.example.test`;
+        const res = await asSocio(http().post('/members')).send(valid({ correo })).expect(201);
+        expect(res.body.username).toMatch(/^[a-z0-9-]+-[0-9a-f]{6}$/);
+        expect((await memberRow(res.body.id))!.correo).toBe(correo);
+      });
     });
 
     it('gives two people with the same name and different correos different logins', async () => {

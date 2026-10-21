@@ -92,6 +92,8 @@ export class CommissionsService {
     return this.prisma.member.update({
       where: { id: memberId },
       data: { commissionRateBps: rateBps },
+      // The address is for approvals: it never leaves through this endpoint.
+      omit: { correo: true },
     });
   }
 

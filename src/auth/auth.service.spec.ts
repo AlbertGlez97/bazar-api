@@ -56,6 +56,48 @@ describe('AuthService.login', () => {
       message: 'Invalid credentials',
     });
   });
+
+  describe('the address is treated the same however it is typed', () => {
+    const accounts = async (stored: string) => {
+      const passwordHash = await hashPassword('right-pass');
+      const findUnique = vi.fn(async ({ where }: { where: { username: string } }) =>
+        where.username === stored ? { id: 'acc-1', active: true, passwordHash } : null,
+      );
+      const service = new AuthService(
+        { account: { findUnique } } as unknown as PrismaService,
+        { signAsync: vi.fn().mockResolvedValue('signed.jwt') } as unknown as JwtService,
+      );
+      return { service, findUnique };
+    };
+
+    it.each(['Ana@Example.TEST', '  ana@example.test  ', 'ANA@EXAMPLE.TEST'])(
+      'finds the lower-case account for %j',
+      async (typed) => {
+        const { service } = await accounts('ana@example.test');
+        await expect(service.login(typed, 'right-pass')).resolves.toMatchObject({ accessToken: 'signed.jwt' });
+      },
+    );
+
+    it('looks up the exact name first and only then the lower-case one', async () => {
+      const { service, findUnique } = await accounts('ana@example.test');
+      await service.login('ana@example.test', 'right-pass');
+      expect(findUnique).toHaveBeenCalledTimes(1);
+      findUnique.mockClear();
+      await service.login('Ana@Example.test', 'right-pass');
+      expect(findUnique.mock.calls.map(([arg]) => arg.where.username)).toEqual(['Ana@Example.test', 'ana@example.test']);
+    });
+
+    it('an older account stored with capitals keeps working exactly as typed, and only that way', async () => {
+      const { service } = await accounts('Antiguo@Example.test');
+      await expect(service.login('Antiguo@Example.test', 'right-pass')).resolves.toMatchObject({ accessToken: 'signed.jwt' });
+      await expect(service.login('antiguo@example.test', 'right-pass')).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('a wrong password is still refused after the lower-case lookup', async () => {
+      const { service } = await accounts('ana@example.test');
+      await expect(service.login('ANA@example.test', 'wrong-pass')).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
 });
 
 // Stubbed Prisma: pins the change-password outcomes without a database. The

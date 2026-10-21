@@ -81,6 +81,7 @@ model Account {
   proposedFinanceRuleSets        FinanceRuleSet[]
   financeRuleApprovals           FinanceRuleApproval[]
   invitationsUsed                AccountInvitation[]
+  emailConfirmationsRequested    MemberEmailConfirmation[]
   recordedDistributionAgreements DistributionAgreement[]
   distributionAgreementReversals DistributionAgreementReversal[]
   recordedDistributionPayments   DistributionPayment[]
@@ -118,6 +119,10 @@ model Member {
   financeRuleApprovals                FinanceRuleApproval[]
   financeRuleRemindersReceived        FinanceRuleReminder[]              @relation("RuleReminderTarget")
   financeRuleRemindersSent            FinanceRuleReminder[]              @relation("RuleReminderSender")
+  financeRuleLinks                    FinanceRuleLink[]                  @relation("RuleLinkTarget")
+  financeRuleLinksSent                FinanceRuleLink[]                  @relation("RuleLinkSender")
+  financeRuleObjections               FinanceRuleObjection[]
+  emailConfirmations                  MemberEmailConfirmation[]
   accountInvitations                  AccountInvitation[]                @relation("InvitationTarget")
   accountInvitationsSent              AccountInvitation[]                @relation("InvitationSender")
   recordedDistributionAgreements      DistributionAgreement[]
@@ -129,6 +134,9 @@ model Member {
   financeReserveReversals             FinanceReserveReversal[]
   id                                  String                             @id @default(uuid()) @db.Uuid
   name                                String
+  // The address approvals and confirmations go to (migration 20261024120000): one per person,
+  // unique across businesses, always lower-case. Separate from the login.
+  correo                              String?                            @unique
   role                                MemberRole                         @default(colaborador)
   contextId                           String                             @default("legacy-unassigned")
   createdAt                           DateTime                           @default(now()) @db.Timestamptz(3)
@@ -1010,43 +1018,121 @@ model DistributionPaymentReversal {
 // Versioned profit-sharing rules (migration 20261020120000). Once submitted the
 // config and its hash never change; DB triggers enforce it. See doc/finance-rules.md.
 model FinanceRuleSet {
-  id                  String                @id @db.Uuid
+  id                  String                 @id @db.Uuid
   contextId           String
   version             Int
   status              String
   config              Json
   configHash          String
-  proposedByMemberId  String                @db.Uuid
-  proposedByAccountId String                @db.Uuid
-  createdAt           DateTime              @default(now()) @db.Timestamptz(3)
-  updatedAt           DateTime              @default(now()) @db.Timestamptz(3)
-  submittedAt         DateTime?             @db.Timestamptz(3)
-  activatedAt         DateTime?             @db.Timestamptz(3)
-  supersededAt        DateTime?             @db.Timestamptz(3)
-  withdrawnAt         DateTime?             @db.Timestamptz(3)
-  proposedByMember    Member                @relation(fields: [proposedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
-  proposedByAccount   Account               @relation(fields: [proposedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  proposedByMemberId  String                 @db.Uuid
+  proposedByAccountId String                 @db.Uuid
+  createdAt           DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime               @default(now()) @db.Timestamptz(3)
+  submittedAt         DateTime?              @db.Timestamptz(3)
+  activatedAt         DateTime?              @db.Timestamptz(3)
+  supersededAt        DateTime?              @db.Timestamptz(3)
+  withdrawnAt         DateTime?              @db.Timestamptz(3)
+  // Rules approved by email (migration 20261024120000). `basedOnId` is the version a draft was
+  // copied from (Modify); `changeSummary` is "what changed", frozen when the proposal is sent.
+  basedOnId           String?                @db.Uuid
+  changeSummary       Json?
+  inReviewAt          DateTime?              @db.Timestamptz(3)
+  discardedAt         DateTime?              @db.Timestamptz(3)
+  closedNote          String?
+  proposedByMember    Member                 @relation(fields: [proposedByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  proposedByAccount   Account                @relation(fields: [proposedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  basedOn             FinanceRuleSet?        @relation("RuleSetBasedOn", fields: [basedOnId, contextId], references: [id, contextId], onDelete: Restrict)
+  derivedSets         FinanceRuleSet[]       @relation("RuleSetBasedOn")
   approvals           FinanceRuleApproval[]
   reminders           FinanceRuleReminder[]
+  links               FinanceRuleLink[]
+  objections          FinanceRuleObjection[]
 
   @@unique([id, contextId])
   @@unique([contextId, version])
   @@index([contextId, status])
 }
 
+// One emailed link per socio and proposal (migration 20261024120000). Only the SHA-256 of the
+// token is stored; the public page reaches it through SECURITY DEFINER functions.
+model FinanceRuleLink {
+  id             String                 @id @db.Uuid
+  contextId      String
+  ruleSetId      String                 @db.Uuid
+  memberId       String                 @db.Uuid
+  correo         String
+  tokenHash      String                 @unique @db.Char(64)
+  kind           String
+  sentByMemberId String                 @db.Uuid
+  emailSent      Boolean                @default(false)
+  createdAt      DateTime               @default(now()) @db.Timestamptz(3)
+  expiresAt      DateTime               @db.Timestamptz(3)
+  usedAt         DateTime?              @db.Timestamptz(3)
+  supersededAt   DateTime?              @db.Timestamptz(3)
+  ruleSet        FinanceRuleSet         @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
+  member         Member                 @relation("RuleLinkTarget", fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  sentBy         Member                 @relation("RuleLinkSender", fields: [sentByMemberId, contextId], references: [id, contextId], onDelete: Restrict)
+  approvals      FinanceRuleApproval[]
+  objections     FinanceRuleObjection[]
+
+  @@index([ruleSetId, memberId, createdAt])
+  @@index([contextId])
+}
+
+// "No estoy de acuerdo": the reason is mandatory (1 to 500 characters). Immutable (trigger).
+model FinanceRuleObjection {
+  id        String          @id @db.Uuid
+  contextId String
+  ruleSetId String          @db.Uuid
+  memberId  String          @db.Uuid
+  linkId    String          @db.Uuid
+  correo    String
+  reason    String
+  createdAt DateTime        @default(now()) @db.Timestamptz(3)
+  ruleSet   FinanceRuleSet  @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
+  member    Member          @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  link      FinanceRuleLink @relation(fields: [linkId], references: [id], onDelete: Restrict)
+
+  @@unique([ruleSetId, memberId])
+  @@index([contextId, ruleSetId])
+}
+
+// The address only becomes the member's after they open this link (migration 20261024120000).
+model MemberEmailConfirmation {
+  id                   String    @id @db.Uuid
+  contextId            String
+  memberId             String    @db.Uuid
+  correo               String
+  tokenHash            String    @unique @db.Char(64)
+  requestedByAccountId String    @db.Uuid
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt            DateTime  @db.Timestamptz(3)
+  usedAt               DateTime? @db.Timestamptz(3)
+  supersededAt         DateTime? @db.Timestamptz(3)
+  member               Member    @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  requestedBy          Account   @relation(fields: [requestedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+
+  @@index([memberId, createdAt])
+}
+
 model FinanceRuleApproval {
-  id                  String         @id @db.Uuid
+  id                  String           @id @db.Uuid
   contextId           String
-  ruleSetId           String         @db.Uuid
-  memberId            String         @db.Uuid
-  approvedByAccountId String         @db.Uuid
+  ruleSetId           String           @db.Uuid
+  memberId            String           @db.Uuid
+  // Null for approvals given from an emailed link (there is no account behind them).
+  approvedByAccountId String?          @db.Uuid
   approvedHash        String
-  approvedAt          DateTime       @default(now()) @db.Timestamptz(3)
+  approvedAt          DateTime         @default(now()) @db.Timestamptz(3)
   // How the approving account was created, frozen with the approval (never recomputed).
   accountOrigin       Json?
-  ruleSet             FinanceRuleSet @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
-  member              Member         @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
-  approvedByAccount   Account        @relation(fields: [approvedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  // The complete address the link was sent to, and the link used (email approvals).
+  correo              String?
+  linkId              String?          @db.Uuid
+  ruleSet             FinanceRuleSet   @relation(fields: [ruleSetId, contextId], references: [id, contextId], onDelete: Restrict)
+  member              Member           @relation(fields: [memberId, contextId], references: [id, contextId], onDelete: Restrict)
+  approvedByAccount   Account?         @relation(fields: [approvedByAccountId, contextId], references: [id, contextId], onDelete: Restrict)
+  link                FinanceRuleLink? @relation(fields: [linkId], references: [id], onDelete: Restrict)
 
   @@unique([ruleSetId, memberId])
   @@index([contextId, ruleSetId])
