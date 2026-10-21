@@ -64,6 +64,13 @@ export type AccountOrigin =
       acceptedAt: string;
       recent: boolean;
     }
+  | {
+      /** Invited from the shared login, which cannot prove who used it: no inviter is recorded. */
+      kind: 'invited_from_shared_login';
+      invitedAt: string;
+      acceptedAt: string;
+      recent: boolean;
+    }
   | { kind: 'own_account'; accountCreatedAt: string | null };
 
 export interface ApprovalView {
@@ -72,6 +79,29 @@ export interface ApprovalView {
   approvedAt: string;
   /** null for approvals recorded before origins were kept. */
   origin: AccountOrigin | null;
+}
+
+export interface InvitedApprover {
+  memberId: string;
+  name: string;
+  /** null when the account was created from the shared login: the inviter cannot be known. */
+  invitedByName: string | null;
+  acceptedAt: string;
+  fromSharedLogin: boolean;
+}
+
+/**
+ * Who deserves a notice when the rules take effect: approvals made with an account invited
+ * shortly before (recent), and ALWAYS those made with an account created from the shared
+ * login, however long ago. Read from what each approval recorded, never recomputed.
+ */
+function noticeFor(a: ApprovalView): InvitedApprover[] {
+  const origin = a.origin;
+  if (origin?.kind === 'invited_from_shared_login')
+    return [{ memberId: a.memberId, name: a.name, invitedByName: null, acceptedAt: origin.acceptedAt, fromSharedLogin: true }];
+  if (origin?.kind === 'invited' && origin.recent)
+    return [{ memberId: a.memberId, name: a.name, invitedByName: origin.invitedByName, acceptedAt: origin.acceptedAt, fromSharedLogin: false }];
+  return [];
 }
 
 export interface RuleSetView {
@@ -89,12 +119,7 @@ export interface RuleSetView {
   withdrawnAt: string | null;
   approvals: ApprovalView[];
   /** Approvers whose login was created by an invitation accepted shortly before approving. */
-  recentInvitedApprovers: {
-    memberId: string;
-    name: string;
-    invitedByName: string;
-    acceptedAt: string;
-  }[];
+  recentInvitedApprovers: InvitedApprover[];
   /** Active partners who have not approved yet (only meaningful while pending). */
   missing: { memberId: string; name: string }[];
 }
@@ -395,6 +420,15 @@ export class FinanceRulesService {
     const invitation = await tx.accountInvitation.findFirst({
       where: { contextId, accountId: actor.account.id },
     });
+    if (invitation?.usedAt && invitation.invitedViaSharedLogin) {
+      // The shared login cannot prove who sent it, so no inviter is recorded.
+      return {
+        kind: 'invited_from_shared_login',
+        invitedAt: invitation.createdAt.toISOString(),
+        acceptedAt: invitation.usedAt.toISOString(),
+        recent: Date.now() - invitation.usedAt.getTime() < RECENT_INVITE_MS,
+      };
+    }
     if (invitation?.usedAt) {
       const inviter = await tx.member.findFirst({
         where: { id: invitation.invitedByMemberId, contextId },
@@ -556,18 +590,7 @@ export class FinanceRulesService {
         supersededAt: iso(row.supersededAt),
         withdrawnAt: iso(row.withdrawnAt),
         approvals: approvalViews,
-        recentInvitedApprovers: approvalViews.flatMap((a) =>
-          a.origin?.kind === 'invited' && a.origin.recent
-            ? [
-                {
-                  memberId: a.memberId,
-                  name: a.name,
-                  invitedByName: a.origin.invitedByName,
-                  acceptedAt: a.origin.acceptedAt,
-                },
-              ]
-            : [],
-        ),
+        recentInvitedApprovers: approvalViews.flatMap((a) => noticeFor(a)),
         missing:
           row.status === 'pendiente'
             ? partners.filter((p) => !done.has(p.memberId))

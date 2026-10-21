@@ -347,7 +347,7 @@ describe('finance rules: versions and approvals', () => {
       });
       expect(done.status).toBe('vigente');
       expect(done.recentInvitedApprovers).toEqual([
-        { memberId: b.memberId, name: 'Socio 1', invitedByName: 'Socio 0', acceptedAt: acceptedAt.toISOString() },
+        { memberId: b.memberId, name: 'Socio 1', invitedByName: 'Socio 0', acceptedAt: acceptedAt.toISOString(), fromSharedLogin: false },
       ]);
       const stored = await withTestTenant(s.contextId, () =>
         prisma.financeRuleApproval.findMany({ where: { ruleSetId: pending.id }, orderBy: { approvedAt: 'asc' } }),

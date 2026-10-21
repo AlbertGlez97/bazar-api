@@ -335,8 +335,34 @@ describe('FinanceRulesService', () => {
       expect(origin.invitedAt).toEqual(expect.any(String));
       expect(origin.acceptedAt).toEqual(expect.any(String));
       expect(done.recentInvitedApprovers).toEqual([
-        { memberId: 'beto', name: 'Beto', invitedByName: 'Ana', acceptedAt: origin.acceptedAt },
+        { memberId: 'beto', name: 'Beto', invitedByName: 'Ana', acceptedAt: origin.acceptedAt, fromSharedLogin: false },
       ]);
+    });
+
+    it('una cuenta creada por invitación desde el acceso compartido tiene su propio origen y se avisa SIN importar cuántos días pasaron', async () => {
+      const old = 400 * DAY;
+      const s = setup({ invitations: [{ ...invited(old), invitedViaSharedLogin: true }] });
+      const pending = await propose(s);
+      const done = await s.service.approve(actor('beto'), pending.id);
+      const origin = done.approvals[0]!.origin as Record<string, unknown>;
+      expect(origin).toEqual({
+        kind: 'invited_from_shared_login',
+        invitedAt: expect.any(String),
+        acceptedAt: expect.any(String),
+        recent: false,
+      });
+      expect(s.approvals.rows[0]!.accountOrigin).toEqual(origin);
+      expect(done.recentInvitedApprovers).toEqual([
+        { memberId: 'beto', name: 'Beto', invitedByName: null, acceptedAt: origin.acceptedAt, fromSharedLogin: true },
+      ]);
+    });
+
+    it('la invitación desde acceso compartido no guarda quién la hizo, porque no se puede saber', async () => {
+      const s = setup({ invitations: [{ ...invited(DAY), invitedViaSharedLogin: true }] });
+      const pending = await propose(s);
+      const origin = (await s.service.approve(actor('beto'), pending.id)).approvals[0]!.origin as Record<string, unknown>;
+      expect(origin).not.toHaveProperty('invitedByName');
+      expect(origin).not.toHaveProperty('invitedByMemberId');
     });
 
     it('"hace poco" son 7 días: pasado ese tiempo la cuenta invitada ya no se marca', async () => {
