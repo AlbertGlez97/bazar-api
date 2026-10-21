@@ -86,5 +86,11 @@ Los índices únicos parciales garantizan una sola versión vigente y una sola p
 
 - Si un socio se da de baja y con eso ya están todas las aprobaciones, la versión se activa cuando
   alguien vuelva a pulsar aprobar. La consulta no escribe.
-- Mientras un socio use el acceso compartido y haya más de uno, no puede aprobar. Falta crear cuentas
-  personales para socios existentes (propuesta F1b, aún sin programar).
+- Mientras un socio use el acceso compartido y haya más de uno, no puede aprobar. Se resuelve invitándolo a crear su
+  cuenta personal (ver `doc/account-invitations.md`).
+
+## Cómo se creó la cuenta de quien aprobó
+
+Cada aprobación guarda `accountOrigin` (invitación, cuenta propia o acceso compartido de un solo socio). Se escribe con la
+aprobación y no se recalcula, para que quede en la constancia. El historial lo muestra por persona. Al pasar a vigente, la
+vista trae `recentInvitedApprovers`: quien aprobó con una cuenta invitada 7 días antes o menos.
