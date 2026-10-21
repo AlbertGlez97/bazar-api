@@ -10,6 +10,7 @@ import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
 import { hashInvitationToken } from '../src/invitations/invitation-token.js';
 import { withTestTenant } from './tenant-scope.js';
+import { purgeRuleData } from './rules-cleanup.js';
 
 const GENERIC_FAILURE = 'No pudimos enviar la invitación a ese correo.';
 const INVALID_LINK = 'Este enlace no sirve. Pide una invitación nueva.';
@@ -104,6 +105,7 @@ describe('account invitations', () => {
   });
   afterAll(async () => {
     if (prisma) {
+      await purgeRuleData(contexts); // approvals made with an invited account reference it
       for (const contextId of contexts) {
         await withTestTenant(contextId, () => prisma.accountInvitation.deleteMany({ where: { contextId } }));
         await prisma.account.deleteMany({ where: { contextId } });
@@ -478,6 +480,145 @@ describe('account invitations', () => {
     });
   });
 
+  describe('acceso compartido (cuenta sin socio atado)', () => {
+    const BLOCKED = 'Tu acceso es compartido y ya hay cuentas personales. Pídele a un socio con cuenta personal que te invite.';
+    const SELF_ONLY = 'Con el acceso compartido solo puedes invitar al socio que elegiste en este momento.';
+    interface Shared { contextId: string; deviceId: string; token: string; ana: string; beto: string }
+
+    /** A business as every legacy one starts: one shared login, two socios, nobody with a personal login. */
+    const sharedBusiness = async (label: string, socios = 2): Promise<Shared> => {
+      const contextId = `inv-${label}-${randomUUID()}`;
+      contexts.push(contextId);
+      const account = await prisma.account.create({ data: { username: uniqueEmail('shared'), passwordHash: 'x', contextId } });
+      const token = await app.get(JwtService).signAsync({ sub: account.id });
+      return withTestTenant(contextId, async () => {
+        const deviceId = (await prisma.device.create({ data: { contextId, name: 'Tablet', authorized: true } })).id;
+        const ana = (await prisma.member.create({ data: { contextId, name: 'Ana', role: 'socio' } })).id;
+        const beto = socios > 1 ? (await prisma.member.create({ data: { contextId, name: 'Beto', role: 'socio' } })).id : '';
+        return { contextId, deviceId, token, ana, beto };
+      });
+    };
+    const asShared = (s: Shared, as: string, req: request.Test) =>
+      req.auth(s.token, { type: 'bearer' }).set('x-member-id', as).set('x-device-id', s.deviceId);
+    const sharedInvite = (s: Shared, as: string, target: string, email: string) =>
+      asShared(s, as, request(app.getHttpServer()).post(`/api/v1/members/${target}/invitation`).send({ email }));
+    const sharedStatus = (s: Shared, as: string) =>
+      asShared(s, as, request(app.getHttpServer()).get('/api/v1/members/account-status'));
+    const login = async (email: string) =>
+      (await request(app.getHttpServer()).post('/api/v1/auth/login').send({ username: email, password: PASSWORD }).expect(200)).body.accessToken as string;
+
+    it('puede invitar al socio elegido si nadie tiene cuenta personal, y la invitación queda anotada', async () => {
+      const s = await sharedBusiness('sh-self');
+      const email = uniqueEmail();
+      await sharedInvite(s, s.ana, s.ana, email).expect(201);
+      const [row] = await withTestTenant(s.contextId, () => prisma.accountInvitation.findMany({ where: { contextId: s.contextId } }));
+      expect(row).toMatchObject({ memberId: s.ana, invitedByMemberId: s.ana, invitedViaSharedLogin: true });
+    });
+
+    it('no puede invitar a otro socio, ni siquiera cuando todavía no hay cuentas personales', async () => {
+      const s = await sharedBusiness('sh-other');
+      const res = await sharedInvite(s, s.ana, s.beto, uniqueEmail()).expect(403);
+      expect(res.body).toEqual({ code: 'INVITATION_SHARED_SELF_ONLY', message: SELF_ONLY });
+      expect(sendInvitation).not.toHaveBeenCalled();
+      expect(await withTestTenant(s.contextId, () => prisma.accountInvitation.count({ where: { contextId: s.contextId } }))).toBe(0);
+    });
+
+    it('en cuanto existe una cuenta personal, el acceso compartido no invita a nadie y se le explica qué hacer', async () => {
+      const s = await sharedBusiness('sh-blocked');
+      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
+      await accept(lastToken()).expect(200);
+      sendInvitation.mockClear();
+
+      for (const [as, target] of [[s.beto, s.beto], [s.ana, s.beto], [s.beto, s.ana]] as const) {
+        const res = await sharedInvite(s, as, target, uniqueEmail()).expect(403);
+        expect(res.body).toEqual({ code: 'INVITATION_SHARED_BLOCKED', message: BLOCKED });
+      }
+      expect(sendInvitation).not.toHaveBeenCalled();
+    });
+
+    it('la cuenta personal que se creó sí puede invitar a los demás socios, y esa invitación no se marca como compartida', async () => {
+      const s = await sharedBusiness('sh-then-personal');
+      const anaEmail = uniqueEmail();
+      await sharedInvite(s, s.ana, s.ana, anaEmail).expect(201);
+      await accept(lastToken()).expect(200);
+      const personalToken = await login(anaEmail);
+
+      const personal = (target: string, email: string) =>
+        request(app.getHttpServer()).post(`/api/v1/members/${target}/invitation`).auth(personalToken, { type: 'bearer' })
+          .set('x-member-id', s.ana).set('x-device-id', s.deviceId).send({ email });
+      await personal(s.beto, uniqueEmail()).expect(201);
+      const rows = await withTestTenant(s.contextId, () => prisma.accountInvitation.findMany({ where: { contextId: s.contextId, memberId: s.beto } }));
+      expect(rows[0]!.invitedViaSharedLogin).toBe(false);
+      // Quien ya tiene cuenta atada no se puede invitar.
+      await personal(s.ana, uniqueEmail()).expect(409);
+    });
+
+    it('la lista del equipo dice por cada socio si el acceso compartido puede invitarlo y por qué no', async () => {
+      const s = await sharedBusiness('sh-status');
+      const before = (await sharedStatus(s, s.ana).expect(200)).body;
+      expect(before.map((r: { memberId: string; invite: unknown }) => [r.memberId, r.invite])).toEqual([
+        [s.ana, { allowed: true, reason: null }],
+        [s.beto, { allowed: false, reason: SELF_ONLY }],
+      ]);
+
+      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
+      await accept(lastToken()).expect(200);
+      const after = (await sharedStatus(s, s.beto).expect(200)).body;
+      expect(after[0].invite).toEqual({ allowed: false, reason: null }); // ya tiene cuenta
+      expect(after[1].invite).toEqual({ allowed: false, reason: BLOCKED });
+    });
+
+    it('una cuenta personal de un colaborador no bloquea al acceso compartido', async () => {
+      const s = await sharedBusiness('sh-colab');
+      await withTestTenant(s.contextId, async () => {
+        const colab = await prisma.member.create({ data: { contextId: s.contextId, name: 'Colab', role: 'colaborador' } });
+        await prisma.account.create({ data: { username: uniqueEmail('colab'), passwordHash: 'x', contextId: s.contextId, memberId: colab.id } });
+      });
+      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
+    });
+
+    it('un negocio con un solo socio sigue igual que antes: el acceso compartido se invita a sí mismo', async () => {
+      const s = await sharedBusiness('sh-solo', 1);
+      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
+    });
+
+    it('de punta a punta: aprobar reglas con esa cuenta deja el origen "desde acceso compartido" en la aprobación y en el aviso, sin importar los días', async () => {
+      const s = await sharedBusiness('sh-approve', 1);
+      const email = uniqueEmail();
+      await sharedInvite(s, s.ana, s.ana, email).expect(201);
+      await accept(lastToken()).expect(200);
+      const token = await login(email);
+      const rules = (method: 'get' | 'put' | 'post', path: string, body?: object) => {
+        const r = request(app.getHttpServer())[method](`/api/v1/finance/rules${path}`).auth(token, { type: 'bearer' })
+          .set('x-member-id', s.ana).set('x-device-id', s.deviceId);
+        return body ? r.send(body) : r;
+      };
+      const cfg = {
+        schemaVersion: 1, profitBase: { partnerPct: 100, capitalPct: 0, workPct: 0 },
+        reinvestment: { currentPhase: 'operacion', arranquePct: 0, operacionPct: 0, cierrePct: 0, untilAmountMinor: null },
+        capitalRecovery: { mode: 'ninguna', timing: 'durante' },
+        work: { payHours: false, order: 'antes', pay: { kind: 'por_hora', rateMinorPerHour: 0 } },
+        partnerExpenses: 'no_reembolsar', reserves: { kind: 'porcentaje', pct: 0 }, partnerLoans: { repayBeforeCapital: false },
+      };
+      const draft = (await rules('put', '/draft', { config: cfg }).expect(200)).body;
+      await rules('post', `/${draft.id}/submit`).expect(200);
+      const done = (await rules('post', `/${draft.id}/approve`).expect(200)).body;
+
+      expect(done.status).toBe('vigente');
+      expect(done.approvals[0].origin).toMatchObject({ kind: 'invited_from_shared_login', recent: true });
+      expect(done.approvals[0].origin).not.toHaveProperty('invitedByName');
+      expect(done.recentInvitedApprovers).toEqual([
+        { memberId: s.ana, name: 'Ana', invitedByName: null, acceptedAt: expect.any(String), fromSharedLogin: true },
+      ]);
+      // Un año después sigue en el aviso: lo que guardó la aprobación no cambia.
+      await withTestTenant(s.contextId, () =>
+        prisma.accountInvitation.updateMany({ where: { contextId: s.contextId }, data: { usedAt: new Date(Date.now() - 400 * 24 * 3600_000) } }),
+      );
+      const view = (await rules('get', '').expect(200)).body;
+      expect(view.inForce.recentInvitedApprovers).toHaveLength(1);
+    });
+  });
+
   describe('estado de las cuentas para el equipo', () => {
     it('solo socios lo ven y muestra quién ya tiene cuenta, quién tiene invitación y cuándo puede reenviarse', async () => {
       const b = await business('status');
@@ -485,8 +626,8 @@ describe('account invitations', () => {
 
       const before = (await asSocio(b, request(app.getHttpServer()).get('/api/v1/members/account-status')).expect(200)).body;
       expect(before).toEqual([
-        { memberId: b.inviter.memberId, name: 'Ana', hasPersonalAccount: true, invitation: null },
-        { memberId: b.invitee, name: 'Beto', hasPersonalAccount: false, invitation: null },
+        { memberId: b.inviter.memberId, name: 'Ana', hasPersonalAccount: true, invite: { allowed: false, reason: null }, invitation: null },
+        { memberId: b.invitee, name: 'Beto', hasPersonalAccount: false, invite: { allowed: true, reason: null }, invitation: null },
       ]);
 
       const email = uniqueEmail();

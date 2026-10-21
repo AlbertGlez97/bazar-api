@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   Inject,
   Injectable,
@@ -26,6 +27,7 @@ import {
   generateInvitationToken,
   hashInvitationToken,
 } from './invitation-token.js';
+import { inviteRestriction } from './invite-rules.js';
 
 type Actor = Pick<AuthenticatedRequest, 'account' | 'selection'>;
 
@@ -61,6 +63,8 @@ export interface InvitationStatus {
   memberId: string;
   name: string;
   hasPersonalAccount: boolean;
+  /** Whether the person asking may invite this socio now, and why not when they may not. */
+  invite: { allowed: boolean; reason: string | null };
   invitation: null | {
     email: string;
     sentAt: string;
@@ -101,6 +105,15 @@ export class AccountInvitationsService {
         throw new UnprocessableEntityException(
           'Solo se puede invitar a un socio activo.',
         );
+      const sharedLogin = actor.account.memberId === null;
+      const restriction = inviteRestriction({
+        shared: sharedLogin,
+        selectedMemberId: inviterId,
+        targetMemberId: memberId,
+        businessHasPersonalSocio: sharedLogin && (await this.hasPersonalSocio(tx, contextId)),
+      });
+      // The shared login's restriction comes first: it explains what to do instead.
+      if (restriction) throw new ForbiddenException(restriction);
       if (await tx.account.findFirst({ where: { memberId, contextId } }))
         throw new ConflictException('Este socio ya tiene su cuenta personal.');
 
@@ -121,6 +134,7 @@ export class AccountInvitationsService {
           email,
           tokenHash: hash,
           invitedByMemberId: inviterId,
+          invitedViaSharedLogin: sharedLogin,
           createdAt: now,
           expiresAt,
         },
@@ -166,7 +180,19 @@ export class AccountInvitationsService {
         orderBy: { createdAt: 'desc' },
       }),
     ]);
+    const sharedLogin = actor.account.memberId === null;
+    const businessHasPersonalSocio = accounts.length > 0;
     return members.map((member) => {
+      const hasPersonalAccount = accounts.some((a) => a.memberId === member.id);
+      // What the screen needs to show the button enabled or disabled with its reason.
+      const restriction = hasPersonalAccount
+        ? null
+        : inviteRestriction({
+            shared: sharedLogin,
+            selectedMemberId: actor.selection!.memberId,
+            targetMemberId: member.id,
+            businessHasPersonalSocio,
+          });
       const mine = invitations.filter((i) => i.memberId === member.id);
       const latest = mine[0];
       const live =
@@ -175,7 +201,11 @@ export class AccountInvitationsService {
       return {
         memberId: member.id,
         name: member.name,
-        hasPersonalAccount: accounts.some((a) => a.memberId === member.id),
+        hasPersonalAccount,
+        invite: {
+          allowed: !hasPersonalAccount && !restriction,
+          reason: restriction?.message ?? null,
+        },
         invitation: live
           ? {
               email: live.email,
@@ -278,6 +308,18 @@ export class AccountInvitationsService {
         'INVITATION_NEW_DAILY_LIMIT',
         `Ya invitaste a ${INVITATION_MAX_NEW_PER_DAY} personas hoy. Intenta mañana.`,
       );
+  }
+
+  /** Some ACTIVE socio of the business already has a personal login (a collaborator's does not count). */
+  private async hasPersonalSocio(tx: Prisma.TransactionClient, contextId: string): Promise<boolean> {
+    const socios = await tx.member.findMany({
+      where: { contextId, role: 'socio', active: true },
+    });
+    if (!socios.length) return false;
+    const account = await tx.account.findFirst({
+      where: { contextId, memberId: { in: socios.map((m) => m.id) } },
+    });
+    return account !== null;
   }
 
   private limit(token: string, ip: string) {

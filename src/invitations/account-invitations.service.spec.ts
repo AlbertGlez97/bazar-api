@@ -34,8 +34,10 @@ const NOW = new Date('2026-10-20T12:00:00.000Z');
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
-const actor = (memberId = 'ana') =>
-  ({ account: { id: 'acc-ana', contextId: CONTEXT, memberId }, selection: { memberId, deviceId: 'dev' } }) as never;
+/** `bound` is the member the login belongs to; `null` is the shared login of the business. */
+const actor = (memberId = 'ana', bound: string | null = memberId) =>
+  ({ account: { id: 'acc-ana', contextId: CONTEXT, memberId: bound }, selection: { memberId, deviceId: 'dev' } }) as never;
+const sharedActor = (selected = 'ana') => actor(selected, null);
 
 function setup(opts: { accounts?: Row[]; invitations?: Row[]; members?: Row[]; email?: ReturnType<typeof vi.fn> } = {}) {
   const members = table(
@@ -246,6 +248,106 @@ describe('AccountInvitationsService.invite', () => {
   });
 });
 
+describe('AccountInvitationsService.invite: acceso compartido', () => {
+  // Negocio recién creado: nadie tiene cuenta personal todavía.
+  const fresh = (extra: Row[] = []) => ({ accounts: extra, invitations: [] as Row[] });
+  const shared = { id: 'sh', memberId: null, username: 'compartido', contextId: CONTEXT };
+
+  it('puede invitar al socio elegido cuando el negocio aún no tiene cuentas personales, y queda anotado', async () => {
+    const s = setup(fresh([shared]));
+    await expect(s.service.invite(sharedActor('ana'), 'ana', 'ana@example.test', NOW)).resolves.toMatchObject({ ok: true });
+    expect(s.invitations.rows[0]).toMatchObject({ memberId: 'ana', invitedByMemberId: 'ana', invitedViaSharedLogin: true });
+  });
+
+  it('no puede invitar a otro socio aunque no haya cuentas personales', async () => {
+    const s = setup(fresh([shared]));
+    const error = await s.service.invite(sharedActor('ana'), 'beto', 'beto@example.test', NOW).catch((e) => e);
+    expect(error.getStatus()).toBe(403);
+    expect(error.getResponse()).toEqual({
+      code: 'INVITATION_SHARED_SELF_ONLY',
+      message: 'Con el acceso compartido solo puedes invitar al socio que elegiste en este momento.',
+    });
+    expect(s.invitations.rows).toHaveLength(0);
+    expect(s.email).not.toHaveBeenCalled();
+  });
+
+  it('si ya hay una cuenta personal, no invita a nadie, ni a sí mismo, y explica qué hacer', async () => {
+    const s = setup(fresh([shared, { id: 'p1', memberId: 'ana', username: 'ana@example.test', contextId: CONTEXT }]));
+    for (const target of ['ana', 'beto']) {
+      const error = await s.service.invite(sharedActor('beto'), target, `${target}@example.test`, NOW).catch((e) => e);
+      expect(error.getStatus()).toBe(403);
+      expect(error.getResponse()).toEqual({
+        code: 'INVITATION_SHARED_BLOCKED',
+        message: 'Tu acceso es compartido y ya hay cuentas personales. Pídele a un socio con cuenta personal que te invite.',
+      });
+    }
+    expect(s.invitations.rows).toHaveLength(0);
+  });
+
+  it('una cuenta personal sí invita a otros socios sin cuenta, y no queda anotada como compartida', async () => {
+    const s = setup(fresh([{ id: 'p1', memberId: 'ana', username: 'ana@example.test', contextId: CONTEXT }]));
+    await s.service.invite(actor('ana'), 'beto', 'beto@example.test', NOW);
+    expect(s.invitations.rows[0]!.invitedViaSharedLogin).toBe(false);
+  });
+
+  it('solo cuentan las cuentas personales de socios activos: la de un colaborador o de un socio dado de baja no bloquea', async () => {
+    const s = setup({
+      accounts: [
+        shared,
+        { id: 'c1', memberId: 'carla', username: 'carla@example.test', contextId: CONTEXT },
+        { id: 'd1', memberId: 'dani', username: 'dani@example.test', contextId: CONTEXT },
+      ],
+      members: [
+        { id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 },
+        { id: 'carla', name: 'Carla', role: 'colaborador', active: true, contextId: CONTEXT, createdAt: 2 },
+        { id: 'dani', name: 'Dani', role: 'socio', active: false, contextId: CONTEXT, createdAt: 3 },
+      ],
+    });
+    await expect(s.service.invite(sharedActor('ana'), 'ana', 'ana@example.test', NOW)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('una cuenta personal de otro negocio no cuenta', async () => {
+    const s = setup(fresh([shared, { id: 'x', memberId: 'ana', username: 'x@example.test', contextId: 'otro' }]));
+    await expect(s.service.invite(sharedActor('ana'), 'ana', 'ana@example.test', NOW)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('un socio que ya tiene cuenta personal sigue sin poder ser invitado (409) por una cuenta personal', async () => {
+    const s = setup(fresh([{ id: 'p1', memberId: 'ana', username: 'ana@example.test', contextId: CONTEXT }, { id: 'p2', memberId: 'beto', username: 'beto@example.test', contextId: CONTEXT }]));
+    await expect(s.service.invite(actor('ana'), 'beto', 'otro@example.test', NOW)).rejects.toBeInstanceOf(ConflictException);
+  });
+});
+
+describe('AccountInvitationsService.status: quién puede invitar a quién', () => {
+  const personal = (memberId: string) => ({ id: `p-${memberId}`, memberId, username: `${memberId}@example.test`, contextId: CONTEXT });
+  const rowOf = (list: Awaited<ReturnType<AccountInvitationsService['status']>>, id: string) => list.find((r) => r.memberId === id)!;
+
+  it('una cuenta personal puede invitar a todo socio sin cuenta; a quien ya tiene no hay nada que invitar', async () => {
+    const s = setup({ accounts: [personal('ana')] });
+    const list = await s.service.status(actor('ana'), NOW);
+    expect(rowOf(list, 'ana').invite).toEqual({ allowed: false, reason: null });
+    expect(rowOf(list, 'beto').invite).toEqual({ allowed: true, reason: null });
+  });
+
+  it('el acceso compartido sin cuentas personales solo puede invitar al socio elegido; los demás explican por qué no', async () => {
+    const s = setup({ accounts: [] });
+    const list = await s.service.status(sharedActor('ana'), NOW);
+    expect(rowOf(list, 'ana').invite).toEqual({ allowed: true, reason: null });
+    expect(rowOf(list, 'beto').invite).toEqual({
+      allowed: false,
+      reason: 'Con el acceso compartido solo puedes invitar al socio que elegiste en este momento.',
+    });
+  });
+
+  it('el acceso compartido con cuentas personales no puede invitar a nadie y se lo explica en cada fila', async () => {
+    const s = setup({ accounts: [personal('ana')] });
+    const list = await s.service.status(sharedActor('beto'), NOW);
+    expect(rowOf(list, 'beto').invite).toEqual({
+      allowed: false,
+      reason: 'Tu acceso es compartido y ya hay cuentas personales. Pídele a un socio con cuenta personal que te invite.',
+    });
+  });
+});
+
 describe('AccountInvitationsService.status', () => {
   it('muestra quién tiene cuenta, quién tiene invitación vigente y cuántos envíos quedan', async () => {
     const s = setup();
@@ -253,9 +355,9 @@ describe('AccountInvitationsService.status', () => {
     const later = new Date(NOW.getTime() + 5 * MIN);
     const [ana, beto] = await s.service.status(actor(), later);
 
-    expect(ana).toEqual({ memberId: 'ana', name: 'Ana', hasPersonalAccount: true, invitation: null });
+    expect(ana).toEqual({ memberId: 'ana', name: 'Ana', hasPersonalAccount: true, invite: { allowed: false, reason: null }, invitation: null });
     expect(beto).toEqual({
-      memberId: 'beto', name: 'Beto', hasPersonalAccount: false,
+      memberId: 'beto', name: 'Beto', hasPersonalAccount: false, invite: { allowed: true, reason: null },
       invitation: {
         email: 'beto@example.test', sentAt: NOW.toISOString(), expiresAt: new Date(NOW.getTime() + 72 * HOUR).toISOString(),
         canResendAt: new Date(NOW.getTime() + MIN).toISOString(), resendsLeftToday: 2,
