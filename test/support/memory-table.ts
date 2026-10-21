@@ -8,10 +8,14 @@ export type Row = Record<string, any>;
 
 export const match = (row: Row, where: Row = {}): boolean =>
   Object.entries(where).every(([key, expected]) => {
+    // `NOT: { ... }` is true when the row does NOT match every condition inside.
+    if (key === 'NOT') return !match(row, expected);
     if (expected && typeof expected === 'object' && !(expected instanceof Date)) {
       if ('in' in expected) return (expected.in as unknown[]).includes(row[key]);
       if ('gte' in expected) return row[key] >= expected.gte;
+      if ('gt' in expected) return row[key] > expected.gt;
       if ('lt' in expected) return row[key] < expected.lt;
+      if ('not' in expected) return (row[key] ?? null) !== expected.not;
     }
     // A column that was never set reads as NULL, like in the database.
     return (row[key] ?? null) === expected;

@@ -96,10 +96,44 @@ class ResendRejectionError extends Error {
 
 type CredentialsEmailMode = 'socio' | 'relay' | 'backup';
 
-export interface FinanceRulesReminderEmailInput {
+/** One line of "what changed" between two versions of the rules. */
+export interface RuleChangeLine {
+  topic: string;
+  before: string;
+  after: string;
+}
+
+export interface FinanceRulesApprovalEmailInput {
   to: string;
   memberName: string;
   proposerName: string;
+  businessName: string;
+  version: number;
+  /** The rules in plain words (see `describeRules`). */
+  summary: string[];
+  /** Only for a new version of a proposal: what differs from the previous one. */
+  changes: RuleChangeLine[] | null;
+  /** Link to the public page; it carries the single-use token and nothing else. */
+  reviewUrl: string;
+  expiresInDays: number;
+}
+
+export interface MemberEmailConfirmationEmailInput {
+  /** The address being confirmed: the one that receives this message. */
+  to: string;
+  memberName: string;
+  businessName: string;
+  confirmUrl: string;
+  expiresInHours: number;
+}
+
+export interface MemberEmailRegisteredNoticeEmailInput {
+  /** Another socio of the business that already has an address. */
+  to: string;
+  memberName: string;
+  registeredName: string;
+  /** Masked: the notice says who registered an address, never the address itself. */
+  maskedCorreo: string;
   businessName: string;
 }
 
@@ -119,7 +153,9 @@ type EmailKind =
   | 'activation'
   | 'member credentials'
   | 'verification'
-  | 'finance rules reminder'
+  | 'finance rules approval'
+  | 'member email confirmation'
+  | 'member email notice'
   | 'account invitation';
 
 interface EmailMessage {
@@ -335,31 +371,87 @@ export class EmailService {
   }
 
   /**
-   * Tells a socio that a proposal of profit-sharing rules waits for their
-   * approval. Carries no link or secret: they approve from their own session.
+   * Asks a socio to review a proposal of profit-sharing rules. The email carries a single-use
+   * link and NOTHING that approves by itself: the page it opens has the two buttons, and
+   * opening it consumes nothing. Sent with the plain {@link deliver}, WITHOUT the approver
+   * fallback of the credentials emails: forwarding this link to the platform's approver
+   * address would let someone else answer for the socio.
    */
-  async sendFinanceRulesReminderEmail(
-    input: FinanceRulesReminderEmailInput,
+  async sendFinanceRulesApprovalEmail(
+    input: FinanceRulesApprovalEmailInput,
   ): Promise<void> {
-    const business = escapeHtml(input.businessName);
-    const name = escapeHtml(input.memberName);
-    const proposer = escapeHtml(input.proposerName);
     await withTimeout(
-      this.deliver('finance rules reminder', {
+      this.deliver('finance rules approval', {
         to: input.to,
-        subject: `Reglas de reparto por aprobar: ${input.businessName}`,
-        html:
-          `<p>Hola, ${name}.</p>` +
-          `<p>${proposer} propuso reglas de reparto para ${business}.</p>` +
-          '<p>Falta tu aprobación. Entra a Finanzas, abre el Simulador y revisa las reglas.</p>' +
-          '<p>Las reglas solo valen cuando todos los socios las aprueban.</p>',
-        text:
-          `Hola, ${input.memberName}.\n${input.proposerName} propuso reglas de reparto para ${input.businessName}.\n` +
-          'Falta tu aprobación. Entra a Finanzas, abre el Simulador y revisa las reglas.\n' +
-          'Las reglas solo valen cuando todos los socios las aprueban.',
+        subject: `Reglas de reparto para revisar: ${input.businessName}`,
+        html: renderFinanceRulesApprovalHtml(input),
+        text: renderFinanceRulesApprovalText(input),
       }),
       REGISTRATION_EMAIL_TIMEOUT_MS,
-      'Resend finance rules reminder email',
+      'Resend finance rules approval email',
+    );
+  }
+
+  /**
+   * Asks the owner of an address to confirm it is theirs ("Escribir mi correo"). Single-use link
+   * to a page with a button; opening the link changes nothing. Plain {@link deliver}, no
+   * approver fallback, for the same reason as the approval email.
+   */
+  async sendMemberEmailConfirmationEmail(
+    input: MemberEmailConfirmationEmailInput,
+  ): Promise<void> {
+    await withTimeout(
+      this.deliver('member email confirmation', {
+        to: input.to,
+        subject: `Confirma tu correo en ${input.businessName}`,
+        html: renderBusinessEmailShell(
+          'Confirma tu correo',
+          `<p>Hola, ${escapeHtml(input.memberName)}.</p>` +
+            `<p>Alguien pidió usar este correo para tus aprobaciones en ${escapeHtml(input.businessName)}.</p>` +
+            `<p>${businessEmailButton(input.confirmUrl, 'Confirmar mi correo', businessEmailColors.terracotta)}</p>` +
+            `<p style="color:${businessEmailColors.muted};font-size:14px;">Si el botón no funciona, copia este enlace en tu navegador:<br />${escapeHtml(input.confirmUrl)}</p>` +
+            `<p style="color:${businessEmailColors.muted};font-size:14px;">El enlace vence en ${input.expiresInHours} horas y solo puede usarse una vez.</p>` +
+            `<p style="color:${businessEmailColors.muted};font-size:14px;">Si no fuiste tú, ignora este mensaje. No pasará nada.</p>`,
+        ),
+        text: [
+          `Hola, ${input.memberName}.`,
+          `Alguien pidió usar este correo para tus aprobaciones en ${input.businessName}.`,
+          'Confirmar mi correo:',
+          input.confirmUrl,
+          `El enlace vence en ${input.expiresInHours} horas y solo puede usarse una vez.`,
+          'Si no fuiste tú, ignora este mensaje. No pasará nada.',
+        ].join('\n'),
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend member email confirmation email',
+    );
+  }
+
+  /**
+   * Tells the OTHER socios of a business that someone confirmed an address. It only says who and
+   * a masked address, so a wrong address typed for another person does not go unnoticed.
+   */
+  async sendMemberEmailRegisteredNoticeEmail(
+    input: MemberEmailRegisteredNoticeEmailInput,
+  ): Promise<void> {
+    await withTimeout(
+      this.deliver('member email notice', {
+        to: input.to,
+        subject: `${input.registeredName} registró su correo en ${input.businessName}`,
+        html: renderBusinessEmailShell(
+          'Se registró un correo',
+          `<p>Hola, ${escapeHtml(input.memberName)}.</p>` +
+            `<p>${escapeHtml(input.registeredName)} confirmó este correo para sus aprobaciones: ${escapeHtml(input.maskedCorreo)}.</p>` +
+            '<p>Si no lo reconoces, habla con esa persona. Las reglas de reparto se aprueban por correo.</p>',
+        ),
+        text: [
+          `Hola, ${input.memberName}.`,
+          `${input.registeredName} confirmó este correo para sus aprobaciones: ${input.maskedCorreo}.`,
+          'Si no lo reconoces, habla con esa persona. Las reglas de reparto se aprueban por correo.',
+        ].join('\n'),
+      }),
+      REGISTRATION_EMAIL_TIMEOUT_MS,
+      'Resend member email notice email',
     );
   }
 
@@ -808,6 +900,65 @@ function renderVerificationEmailHtml(
     <p style="color:${businessEmailColors.muted};font-size:14px;">Si no fuiste tú, ignora este mensaje. No pasará nada.</p>
   `,
   );
+}
+
+function renderFinanceRulesApprovalHtml(input: FinanceRulesApprovalEmailInput): string {
+  const c = businessEmailColors;
+  const rules = input.summary.map((line) => `<li>${escapeHtml(line)}</li>`).join('');
+  const changes = input.changes?.length
+    ? renderBusinessEmailCard(
+        'Qué cambió',
+        input.changes
+          .map(
+            (change) =>
+              `<p style="margin:0 0 12px;"><strong>${escapeHtml(change.topic)}</strong><br />Antes: ${escapeHtml(change.before)}<br />Ahora: ${escapeHtml(change.after)}</p>`,
+          )
+          .join(''),
+      )
+    : '';
+  return renderBusinessEmailShell(
+    'Reglas de reparto para revisar',
+    `
+    <p>Hola, ${escapeHtml(input.memberName)}.</p>
+    <p>${escapeHtml(input.proposerName)} propuso reglas de reparto para ${escapeHtml(input.businessName)} (versión ${input.version}).</p>
+    ${changes}
+    <p><strong>Estas son las reglas:</strong></p>
+    <ul style="padding-left:20px;">${rules}</ul>
+    <p>${businessEmailButton(input.reviewUrl, 'Revisar y responder', c.terracotta)}</p>
+    <p style="color:${c.muted};font-size:14px;">Abrir el enlace no aprueba nada. Tú decides en la página.</p>
+    <p style="color:${c.muted};font-size:14px;">Si el botón no funciona, copia este enlace en tu navegador:<br />${escapeHtml(input.reviewUrl)}</p>
+    <p style="color:${c.muted};font-size:14px;">El enlace es solo tuyo, sirve una vez y dura ${input.expiresInDays} días. No lo compartas.</p>
+    <p style="color:${c.muted};font-size:14px;">Las reglas valen cuando todos los socios las aprueban.</p>
+  `,
+  );
+}
+
+function renderFinanceRulesApprovalText(input: FinanceRulesApprovalEmailInput): string {
+  return [
+    `Hola, ${input.memberName}.`,
+    `${input.proposerName} propuso reglas de reparto para ${input.businessName} (versión ${input.version}).`,
+    '',
+    ...(input.changes?.length
+      ? [
+          'Qué cambió:',
+          ...input.changes.map(
+            (change) => `- ${change.topic}. Antes: ${change.before} Ahora: ${change.after}`,
+          ),
+          '',
+        ]
+      : []),
+    'Estas son las reglas:',
+    ...input.summary.map((line) => `- ${line}`),
+    '',
+    'Revisar y responder:',
+    input.reviewUrl,
+    '',
+    'Abrir el enlace no aprueba nada. Tú decides en la página.',
+    `El enlace es solo tuyo, sirve una vez y dura ${input.expiresInDays} días. No lo compartas.`,
+    'Las reglas valen cuando todos los socios las aprueban.',
+    '',
+    'De tu lado del mostrador, La Marchanta.',
+  ].join('\n');
 }
 
 function renderVerificationEmailText(

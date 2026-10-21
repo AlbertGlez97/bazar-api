@@ -35,9 +35,10 @@ const SOCIO_ROUTES = [
   'PUT /finance/rules/draft',
   'POST /finance/rules/:id/discard',
   'POST /finance/rules/:id/submit',
-  'POST /finance/rules/:id/withdraw',
-  'POST /finance/rules/:id/approve',
-  'POST /finance/rules/:id/remind',
+  'POST /finance/rules/:id/modify',
+  'POST /finance/rules/:id/resend',
+  'GET /members/me/email',
+  'PUT /members/me/email',
   'GET /finance/overview',
   'POST /finance/distribution-simulations',
   'POST /finance/distribution-agreements',
@@ -129,6 +130,11 @@ const PUBLIC_ROUTES = [
   // Invitation page: the link's single-use token is the only credential.
   'POST /invitations/inspect',
   'POST /invitations/accept',
+  // Approval page and "Escribir mi correo" page: each emailed link's token is the only credential.
+  'POST /agreements/inspect',
+  'POST /agreements/respond',
+  'POST /member-emails/inspect',
+  'POST /member-emails/confirm',
 ];
 
 const GENERIC_403 = 'Selection is not authorized for this context';

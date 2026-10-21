@@ -1,45 +1,47 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import {
-  FinanceRulesService,
-  REMINDER_COOLDOWN_MS,
-  SHARED_LOGIN_MESSAGE,
-} from './finance-rules.service.js';
+import { FinanceRulesService, listNames } from './finance-rules.service.js';
+import { FinanceRuleLinksService, RESEND_COOLDOWN_MS } from './finance-rule-links.service.js';
 import { FinanceRulesController } from './finance-rules.controller.js';
 import { RULES_SCHEMA_VERSION } from './finance-rules.config.js';
 import { table, type Row } from '../../test/support/memory-table.js';
 
 /**
- * Unit tests of the rules service against a small in-memory stand-in for
- * Prisma. The database guards (triggers, unique indexes, RLS) and real
+ * Unit tests of the rules service against a small in-memory stand-in for Prisma. The database
+ * guards (triggers, unique indexes, RLS), the SQL functions that record an answer, and real
  * concurrency are covered by test/finance-rules.e2e-spec.ts.
  */
 const CONTEXT = 'ctx-1';
+const HOUR = 3600_000;
 
-function setup(opts: { partners?: Row[]; accounts?: Row[]; invitations?: Row[]; email?: ReturnType<typeof vi.fn> } = {}) {
-  const members = table(
-    opts.partners ?? [
-      { id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 },
-      { id: 'beto', name: 'Beto', role: 'socio', active: true, contextId: CONTEXT, createdAt: 2 },
-    ],
-  );
+const partner = (id: string, name: string, createdAt: number, correo: string | null = `${id}@example.test`): Row => ({
+  id,
+  name,
+  correo,
+  role: 'socio',
+  active: true,
+  contextId: CONTEXT,
+  createdAt,
+});
+
+function setup(opts: { partners?: Row[]; settled?: boolean; sendApproval?: ReturnType<typeof vi.fn> } = {}) {
+  const members = table(opts.partners ?? [partner('ana', 'Ana', 1), partner('beto', 'Beto', 2)]);
   const sets = table([]);
   const approvals = table([]);
-  const reminders = table([]);
-  const accounts = table(
-    opts.accounts ?? [
-      { id: 'acc-ana', memberId: 'ana', username: 'ana@example.test', active: true, contextId: CONTEXT, createdAt: new Date('2026-09-01T00:00:00Z') },
-      { id: 'acc-beto', memberId: 'beto', username: 'beto-sin-correo', active: true, contextId: CONTEXT, createdAt: new Date('2026-09-02T00:00:00Z') },
-    ],
-  );
-  const invitations = table(opts.invitations ?? []);
+  const objections = table([]);
+  const links = table([]);
+  // The column defaults to false in the database; the stand-in must do the same.
+  const createLink = links.create;
+  links.create = ({ data }: Row) => createLink({ data: { emailSent: false, ...data } });
+  const confirmations = table([]);
   const raw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const sql = strings.join('?');
+    if (sql.includes('finance_rule_set_settle')) return [{ settled: opts.settled ?? false }];
     if (sql.includes('MAX("version")'))
       return [{ next: Math.max(0, ...sets.rows.map((r) => r.version)) + 1 }];
     if (sql.includes('FOR UPDATE'))
@@ -51,21 +53,23 @@ function setup(opts: { partners?: Row[]; accounts?: Row[]; invitations?: Row[]; 
     member: members,
     financeRuleSet: sets,
     financeRuleApproval: approvals,
-    financeRuleReminder: reminders,
-    account: accounts,
-    accountInvitation: invitations,
+    financeRuleObjection: objections,
+    financeRuleLink: links,
+    memberEmailConfirmation: confirmations,
     $queryRaw: raw,
     $executeRaw: async () => 1,
     $transaction: async (fn: (tx: Row) => unknown) => fn(prisma),
   };
-  const email = opts.email ?? vi.fn().mockResolvedValue(undefined);
-  const service = new FinanceRulesService(prisma as never, { sendFinanceRulesReminderEmail: email } as never);
-  return { service, members, sets, approvals, reminders, invitations, email };
+  const sendApproval = opts.sendApproval ?? vi.fn().mockResolvedValue(undefined);
+  const linksService = new FinanceRuleLinksService(prisma as never, { sendFinanceRulesApprovalEmail: sendApproval } as never);
+  const service = new FinanceRulesService(prisma as never, linksService);
+  return { service, members, sets, approvals, objections, links, confirmations, sendApproval };
 }
+type Env = ReturnType<typeof setup>;
 
-const actor = (memberId: string, boundTo: string | null = memberId) =>
+const actor = (memberId: string) =>
   ({
-    account: { id: `acc-${memberId}`, contextId: CONTEXT, memberId: boundTo },
+    account: { id: `acc-${memberId}`, contextId: CONTEXT, memberId },
     selection: { memberId, deviceId: 'dev' },
   }) as never;
 
@@ -80,38 +84,76 @@ const config = (reserve = 10) => ({
   partnerLoans: { repayBeforeCapital: true },
 });
 
-const propose = async (s: ReturnType<typeof setup>, who = 'ana') => {
-  const draft = await s.service.saveDraft(actor(who), config());
+const propose = async (s: Env, who = 'ana', reserve = 10) => {
+  const draft = await s.service.saveDraft(actor(who), config(reserve));
   return s.service.submit(actor(who), draft.id);
 };
+/** Marks a partner's answer the way the SQL function would. */
+const approve = (s: Env, setId: string, memberId: string) =>
+  s.approvals.rows.push({ id: `ap-${memberId}`, contextId: CONTEXT, ruleSetId: setId, memberId, correo: `${memberId}@example.test`, linkId: 'l', approvedAt: new Date() });
+const object = (s: Env, setId: string, memberId: string, reason = 'No') => {
+  s.objections.rows.push({ id: `ob-${memberId}`, contextId: CONTEXT, ruleSetId: setId, memberId, correo: `${memberId}@example.test`, reason, createdAt: new Date() });
+  s.sets.rows.find((r) => r.id === setId)!.status = 'en_revision';
+};
+
+beforeEach(() => {
+  vi.stubEnv('PUBLIC_SITE_URL', 'https://site.test');
+});
+afterEach(() => vi.unstubAllEnvs());
 
 describe('FinanceRulesService', () => {
   describe('overview', () => {
-    it('sin reglas: sin aprobar, sin versiones, con el aviso legal', async () => {
+    it('sin reglas: sin aprobar, sin versiones, con el aviso legal y mi correo enmascarado', async () => {
       const { service } = setup();
       const view = await service.overview(actor('ana'));
-      expect(view).toMatchObject({ state: 'sin_aprobar', inForce: null, pending: null, draft: null, history: [] });
-      expect(view.partners.map((p) => p.name)).toEqual(['Ana', 'Beto']);
+      expect(view).toMatchObject({ state: 'sin_aprobar', inForce: null, proposal: null, draft: null, history: [] });
+      expect(view.partners.map((p) => [p.name, p.hasCorreo, p.correo, p.response, p.link])).toEqual([
+        ['Ana', true, 'a***@e***.test', null, null],
+        ['Beto', true, 'b***@e***.test', null, null],
+      ]);
       expect(view.disclaimer).toContain('No es asesoría contable ni legal');
-      expect(view.me).toMatchObject({ memberId: 'ana', canApprove: true, isProposer: false, hasApproved: false });
+      expect(view.me).toEqual({ memberId: 'ana', correo: 'a***@e***.test', hasCorreo: true, pendingCorreo: null });
     });
 
-    it('pendiente: nombra a quien falta y distingue al proponente', async () => {
+    it('quien no tiene correo se ve sin correo, y un correo por confirmar se ve enmascarado', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1, null)] });
+      const now = new Date('2026-10-21T12:00:00Z');
+      s.confirmations.rows.push({ contextId: CONTEXT, memberId: 'ana', correo: 'nueva@example.test', usedAt: null, supersededAt: null, expiresAt: new Date(now.getTime() + HOUR), createdAt: now });
+      s.confirmations.rows.push({ contextId: CONTEXT, memberId: 'ana', correo: 'vieja@example.test', usedAt: null, supersededAt: null, expiresAt: new Date(now.getTime() - HOUR), createdAt: now });
+      const view = await s.service.overview(actor('ana'), now);
+      expect(view.me).toMatchObject({ correo: null, hasCorreo: false, pendingCorreo: { correo: 'n***@e***.test' } });
+      expect(view.partners[0]).toMatchObject({ hasCorreo: false, correo: null });
+    });
+
+    it('pendiente: dice quién falta, quién respondió, y cuándo se puede reenviar', async () => {
       const s = setup();
-      await propose(s);
-      await s.service.approve(actor('beto'), s.sets.rows[0]!.id);
+      const sent = await propose(s);
+      approve(s, sent.id, 'beto');
       const view = await s.service.overview(actor('ana'));
       expect(view.state).toBe('pendiente');
-      expect(view.pending!.missing.map((m) => m.name)).toEqual(['Ana']);
-      expect(view.pending!.approvals.map((a) => a.name)).toEqual(['Beto']);
-      expect(view.me.isProposer).toBe(true);
-      expect((await s.service.overview(actor('beto'))).me).toMatchObject({ hasApproved: true, isProposer: false });
+      expect(view.proposal!.missing.map((m) => m.name)).toEqual(['Ana']);
+      expect(view.proposal!.approvals.map((a) => [a.name, a.via, a.correo])).toEqual([['Beto', 'correo', 'b***@e***.test']]);
+      expect(view.partners.map((p) => p.response)).toEqual([null, 'aprobo']);
+      expect(view.partners[0]!.link).toMatchObject({ expired: false, canResendAt: null });
+    });
+
+    it('en revisión: muestra las objeciones con el correo enmascarado', async () => {
+      const s = setup();
+      const sent = await propose(s);
+      object(s, sent.id, 'beto', 'Más reservas');
+      const view = await s.service.overview(actor('ana'));
+      expect(view.state).toBe('en_revision');
+      expect(view.proposal!.objections).toEqual([
+        { memberId: 'beto', name: 'Beto', correo: 'b***@e***.test', reason: 'Más reservas', createdAt: expect.any(String) },
+      ]);
+      expect(view.partners.map((p) => p.response)).toEqual([null, 'objeto']);
     });
 
     it('vigente: separa lo vigente del historial y no mezcla el borrador', async () => {
-      const s = setup({ partners: [{ id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 }] });
-      const pending = await propose(s);
-      await s.service.approve(actor('ana'), pending.id);
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      const sent = await propose(s);
+      s.sets.rows[0]!.status = 'vigente';
+      approve(s, sent.id, 'ana');
       await s.service.saveDraft(actor('ana'), config(20));
       const view = await s.service.overview(actor('ana'));
       expect(view.state).toBe('vigente');
@@ -120,17 +162,21 @@ describe('FinanceRulesService', () => {
       expect(view.history.map((h) => h.status)).toEqual(['vigente']);
     });
 
-    it('un acceso compartido con varios socios ve por qué no puede aprobar', async () => {
-      const s = setup();
-      await propose(s);
-      const view = await s.service.overview(actor('beto', null));
-      expect(view.me).toMatchObject({ canApprove: false, cannotApproveReason: SHARED_LOGIN_MESSAGE });
+    it('una aprobación hecha antes (desde una sesión) se muestra sin correo y con su vía', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      const sent = await propose(s);
+      s.approvals.rows.push({ id: 'old', contextId: CONTEXT, ruleSetId: sent.id, memberId: 'ana', approvedAt: new Date(), correo: null, linkId: null });
+      const view = await s.service.overview(actor('ana'));
+      expect(view.proposal!.approvals).toEqual([expect.objectContaining({ via: 'sesion', correo: null })]);
     });
 
-    it('quien no es socio activo no puede aprobar', async () => {
-      const { service } = setup();
-      const view = await service.overview(actor('intruso'));
-      expect(view.me).toMatchObject({ canApprove: false, cannotApproveReason: 'Solo los socios activos pueden aprobar.' });
+    it('un enlace vencido se marca, y el reenvío reciente deja la fecha en que se podrá repetir', async () => {
+      const s = setup();
+      const now = new Date('2026-10-21T12:00:00Z');
+      await s.service.submit(actor('ana'), (await s.service.saveDraft(actor('ana'), config())).id, new Date(now.getTime() - 8 * 24 * HOUR));
+      await s.service.resend(actor('beto'), s.sets.rows[0]!.id, new Date(now.getTime() - HOUR));
+      const view = await s.service.overview(actor('ana'), now);
+      expect(view.partners[0]!.link).toMatchObject({ expired: false, canResendAt: new Date(now.getTime() - HOUR + RESEND_COOLDOWN_MS).toISOString() });
     });
   });
 
@@ -138,24 +184,21 @@ describe('FinanceRulesService', () => {
     it('rechaza reglas inválidas con todos los problemas y en español', async () => {
       const { service, sets } = setup();
       const bad = { ...config(), partnerExpenses: 'nunca', profitBase: { partnerPct: 1, capitalPct: 1, workPct: 1 } };
-      const error = await service.saveDraft(actor('ana'), bad).catch((e) => e);
-      expect(error).toBeInstanceOf(BadRequestException);
-      expect(error.getResponse()).toMatchObject({ code: 'FINANCE_RULES_INVALID' });
-      expect(error.getResponse().message).toContain('deben sumar 100');
-      expect(error.getResponse().message).toContain('partnerExpenses');
-      expect(sets.rows).toHaveLength(0);
+      await expect(service.saveDraft(actor('ana'), bad)).rejects.toMatchObject({
+        response: { code: 'FINANCE_RULES_INVALID', message: expect.stringContaining('deben sumar 100') },
+      });
+      await expect(service.saveDraft(actor('ana'), bad)).rejects.toBeInstanceOf(BadRequestException);
+      expect(sets.rows).toEqual([]);
     });
 
     it('crea la versión 1 y luego edita el mismo borrador', async () => {
       const { service, sets } = setup();
       const first = await service.saveDraft(actor('ana'), config(10));
       const second = await service.saveDraft(actor('ana'), config(80));
-      expect(first).toMatchObject({ version: 1, status: 'borrador' });
       expect(second.id).toBe(first.id);
-      expect(second.config.reserves).toEqual({ kind: 'porcentaje', pct: 80 });
-      expect(second.configHash).not.toBe(first.configHash);
-      expect(second.warnings.map((w) => w.code)).toContain('RESERVES_HIGH');
       expect(sets.rows).toHaveLength(1);
+      expect(second).toMatchObject({ version: 1, status: 'borrador', basedOn: null, changes: null });
+      expect(second.warnings.map((w) => w.code)).toContain('RESERVES_HIGH');
     });
 
     it('otro socio no puede tomar el borrador abierto', async () => {
@@ -165,331 +208,274 @@ describe('FinanceRulesService', () => {
         response: { code: 'FINANCE_RULES_DRAFT_OWNED' },
       });
     });
+  });
 
-    it('descartar lo deja retirado y la siguiente versión es la 2', async () => {
-      const { service } = setup();
+  describe('descartar', () => {
+    it('cualquier socio descarta un borrador: queda descartada, con quién y cuándo, y la siguiente versión es la 2', async () => {
+      const { service, sets } = setup();
       const draft = await service.saveDraft(actor('ana'), config());
-      expect((await service.discardDraft(actor('ana'), draft.id)).status).toBe('retirada');
+      const view = await service.discard(actor('beto'), draft.id);
+      expect(view).toMatchObject({ status: 'descartada', closedNote: 'Descartada por Beto.', discardedAt: expect.any(String) });
+      expect(sets.rows[0]!.status).toBe('descartada');
       expect((await service.saveDraft(actor('ana'), config())).version).toBe(2);
     });
 
-    it('solo se descarta un borrador y solo lo hace su dueño', async () => {
+    it('descarta una propuesta pendiente o en revisión y mata sus enlaces', async () => {
       const s = setup();
-      const draft = await s.service.saveDraft(actor('ana'), config());
-      await expect(s.service.discardDraft(actor('beto'), draft.id)).rejects.toMatchObject({
-        response: { code: 'FINANCE_RULES_NOT_PROPOSER' },
-      });
-      const pending = await s.service.submit(actor('ana'), draft.id);
-      await expect(s.service.discardDraft(actor('ana'), pending.id)).rejects.toBeInstanceOf(ConflictException);
+      const sent = await propose(s);
+      await s.service.discard(actor('beto'), sent.id);
+      expect(s.sets.rows[0]!.status).toBe('descartada');
+      expect(s.links.rows.every((l) => l.supersededAt)).toBe(true);
+
+      const again = await propose(s, 'ana', 30);
+      object(s, again.id, 'beto');
+      await s.service.discard(actor('ana'), again.id);
+      expect(s.sets.rows[1]!.status).toBe('descartada');
+    });
+
+    it('no descarta lo vigente ni una propuesta que no existe', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      const sent = await propose(s);
+      s.sets.rows[0]!.status = 'vigente';
+      await expect(s.service.discard(actor('ana'), sent.id)).rejects.toMatchObject({ response: { code: 'FINANCE_RULES_WRONG_STATE' } });
+      await expect(s.service.discard(actor('ana'), 'nada')).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
   describe('enviar', () => {
-    it('congela el borrador como pendiente, con fecha de envío', async () => {
+    it('congela el borrador como pendiente y manda a CADA socio su propio enlace', async () => {
       const s = setup();
-      const pending = await propose(s);
-      expect(pending).toMatchObject({ status: 'pendiente', missing: expect.any(Array) });
-      expect(pending.submittedAt).toEqual(expect.any(String));
-      expect(pending.missing).toHaveLength(2);
+      const sent = await propose(s);
+      expect(sent).toMatchObject({ status: 'pendiente', submittedAt: expect.any(String), emails: { sent: ['Ana', 'Beto'], failed: [] } });
+      expect(s.links.rows.map((l) => [l.memberId, l.correo, l.kind, l.emailSent])).toEqual([
+        ['ana', 'ana@example.test', 'envio', true],
+        ['beto', 'beto@example.test', 'envio', true],
+      ]);
+      expect(new Set(s.links.rows.map((l) => l.tokenHash)).size).toBe(2);
+      expect(s.links.rows.every((l) => l.expiresAt.getTime() - l.createdAt.getTime() === 7 * 24 * HOUR)).toBe(true);
+      expect(s.sendApproval).toHaveBeenCalledTimes(2);
+      expect(s.sendApproval.mock.calls[0]![0]).toMatchObject({
+        to: 'ana@example.test',
+        proposerName: 'Ana',
+        businessName: 'Bazar Sol',
+        version: 1,
+        expiresInDays: 7,
+        changes: null,
+        reviewUrl: expect.stringMatching(/^https:\/\/site\.test\/acuerdo\/[A-Za-z0-9_-]{43}$/),
+      });
     });
 
-    it('solo el proponente envía, y no puede haber dos propuestas pendientes', async () => {
+    it('no envía mientras a un socio le falta el correo, y dice a quién', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1), partner('beto', 'Beto', 2, null), partner('carla', 'Carla', 3, null)] });
+      const draft = await s.service.saveDraft(actor('ana'), config());
+      const error = await s.service.submit(actor('ana'), draft.id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        code: 'FINANCE_RULES_MISSING_EMAIL',
+        message: 'No se puede enviar. Falta el correo de Beto y Carla.',
+        missing: [{ memberId: 'beto', name: 'Beto' }, { memberId: 'carla', name: 'Carla' }],
+      });
+      expect(s.sets.rows[0]!.status).toBe('borrador');
+      expect(s.links.rows).toEqual([]);
+      expect(s.sendApproval).not.toHaveBeenCalled();
+    });
+
+    it('solo el proponente envía; una propuesta que no es borrador no se envía; ni dos abiertas', async () => {
       const s = setup();
       const draft = await s.service.saveDraft(actor('ana'), config());
       await expect(s.service.submit(actor('beto'), draft.id)).rejects.toBeInstanceOf(ForbiddenException);
       await s.service.submit(actor('ana'), draft.id);
+      await expect(s.service.submit(actor('ana'), draft.id)).rejects.toMatchObject({ response: { code: 'FINANCE_RULES_WRONG_STATE' } });
       const other = await s.service.saveDraft(actor('ana'), config(20));
-      await expect(s.service.submit(actor('ana'), other.id)).rejects.toMatchObject({
-        response: { code: 'FINANCE_RULES_PENDING_EXISTS' },
+      await expect(s.service.submit(actor('ana'), other.id)).rejects.toMatchObject({ response: { code: 'FINANCE_RULES_PENDING_EXISTS' } });
+      await expect(s.service.submit(actor('ana'), 'nada')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('un correo que falla retira SOLO ese enlace y lo reporta; los demás salen', async () => {
+      const sendApproval = vi.fn(async (mail: { to: string }) => {
+        if (mail.to === 'beto@example.test') throw new Error('boom');
       });
+      const s = setup({ sendApproval });
+      const sent = await propose(s);
+      expect(sent.emails).toEqual({ sent: ['Ana'], failed: ['Beto'] });
+      const beto = s.links.rows.find((l) => l.memberId === 'beto')!;
+      expect(beto).toMatchObject({ emailSent: false });
+      expect(beto.supersededAt).toBeInstanceOf(Date);
+      expect(s.links.rows.find((l) => l.memberId === 'ana')).toMatchObject({ emailSent: true });
     });
 
-    it('una propuesta que no existe es un 404', async () => {
-      const { service } = setup();
-      await expect(service.submit(actor('ana'), 'nada')).rejects.toBeInstanceOf(NotFoundException);
-    });
-  });
-
-  describe('retirar', () => {
-    it('vuelve a borrador y borra las aprobaciones', async () => {
+    it('sin la dirección pública del sitio, ningún enlace sale y todos se reportan', async () => {
+      vi.stubEnv('PUBLIC_SITE_URL', '');
+      vi.stubEnv('NODE_ENV', 'production');
       const s = setup();
-      const pending = await propose(s);
-      await s.service.approve(actor('beto'), pending.id);
-      const back = await s.service.withdraw(actor('ana'), pending.id);
-      expect(back).toMatchObject({ status: 'borrador', submittedAt: null, approvals: [] });
-      expect(s.approvals.rows).toHaveLength(0);
+      const sent = await propose(s);
+      expect(sent.emails).toEqual({ sent: [], failed: ['Ana', 'Beto'] });
+      expect(s.sendApproval).not.toHaveBeenCalled();
     });
 
-    it('solo el proponente, solo si está pendiente y sin otro borrador abierto', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await expect(s.service.withdraw(actor('beto'), pending.id)).rejects.toBeInstanceOf(ForbiddenException);
-      await s.service.saveDraft(actor('ana'), config(30));
-      await expect(s.service.withdraw(actor('ana'), pending.id)).rejects.toMatchObject({
-        response: { code: 'FINANCE_RULES_DRAFT_EXISTS' },
-      });
-      const draft = s.sets.rows.find((r) => r.status === 'borrador')!;
-      await expect(s.service.withdraw(actor('ana'), draft.id)).rejects.toBeInstanceOf(ConflictException);
-    });
-  });
-
-  describe('aprobar', () => {
-    it('un solo socio aprueba y queda vigente al instante', async () => {
-      const s = setup({ partners: [{ id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 }] });
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('ana'), pending.id);
-      expect(done.status).toBe('vigente');
-      expect(done.activatedAt).toEqual(expect.any(String));
-    });
-
-    it('un acceso compartido aprueba solo si es el único socio', async () => {
-      const solo = setup({ partners: [{ id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 }] });
-      const pending = await propose(solo);
-      expect((await solo.service.approve(actor('ana', null), pending.id)).status).toBe('vigente');
-
-      const many = setup();
-      const other = await propose(many);
-      const error = await many.service.approve(actor('beto', null), other.id).catch((e) => e);
-      expect(error).toBeInstanceOf(ForbiddenException);
-      expect(error.getResponse()).toEqual({ code: 'FINANCE_RULES_SHARED_LOGIN', message: SHARED_LOGIN_MESSAGE });
-      expect(many.approvals.rows).toHaveLength(0);
-    });
-
-    it('activa con la última aprobación y reemplaza la vigente anterior', async () => {
-      const s = setup();
-      const v1 = await propose(s);
-      await s.service.approve(actor('ana'), v1.id);
-      expect((await s.service.approve(actor('beto'), v1.id)).status).toBe('vigente');
-      const v2 = await propose(s, 'beto');
-      await s.service.approve(actor('ana'), v2.id);
-      expect(s.sets.rows.find((r) => r.id === v1.id)!.status).toBe('vigente');
-      await s.service.approve(actor('beto'), v2.id);
-      expect(s.sets.rows.map((r) => [r.version, r.status])).toEqual([[1, 'reemplazada'], [2, 'vigente']]);
-      expect(s.sets.rows[0]!.supersededAt).toBeInstanceOf(Date);
-    });
-
-    it('aprobar dos veces no duplica ni da error; repetir tras la activación tampoco', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await s.service.approve(actor('ana'), pending.id);
-      const again = await s.service.approve(actor('ana'), pending.id);
-      expect(again.approvals).toHaveLength(1);
-      await s.service.approve(actor('beto'), pending.id);
-      expect((await s.service.approve(actor('beto'), pending.id)).status).toBe('vigente');
-      expect(s.approvals.rows).toHaveLength(2);
-    });
-
-    it('guarda el hash exacto que se aprobó', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await s.service.approve(actor('ana'), pending.id);
-      expect(s.approvals.rows[0]).toMatchObject({ approvedHash: pending.configHash, memberId: 'ana' });
-    });
-
-    it('un socio dado de baja deja de contar al repetir la aprobación', async () => {
-      const s = setup({
-        partners: [
-          { id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 },
-          { id: 'beto', name: 'Beto', role: 'socio', active: true, contextId: CONTEXT, createdAt: 2 },
-        ],
-      });
-      const pending = await propose(s);
-      await s.service.approve(actor('ana'), pending.id);
-      s.members.rows.find((m) => m.id === 'beto')!.active = false;
-      expect((await s.service.approve(actor('ana'), pending.id)).status).toBe('vigente');
-    });
-
-    it('no aprueba a quien no es socio activo, ni una propuesta que ya no espera', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await expect(s.service.approve(actor('intruso'), pending.id)).rejects.toBeInstanceOf(ForbiddenException);
-      const draft = await s.service.saveDraft(actor('ana'), config(40));
-      await expect(s.service.approve(actor('ana'), draft.id)).rejects.toMatchObject({
-        response: { code: 'FINANCE_RULES_WRONG_STATE' },
-      });
-    });
-  });
-
-  describe('trazabilidad: cómo se creó la cuenta de quien aprobó', () => {
-    const DAY = 24 * 60 * 60 * 1000;
-    const invited = (acceptedAgoMs: number) => ({
-      id: 'inv-1', contextId: CONTEXT, memberId: 'beto', invitedByMemberId: 'ana',
-      accountId: 'acc-beto', createdAt: new Date(Date.now() - acceptedAgoMs - 1000), usedAt: new Date(Date.now() - acceptedAgoMs),
-    });
-
-    it('un socio único con acceso compartido queda anotado como tal', async () => {
-      const s = setup({ partners: [{ id: 'ana', name: 'Ana', role: 'socio', active: true, contextId: CONTEXT, createdAt: 1 }] });
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('ana', null), pending.id);
-      expect(done.approvals[0]!.origin).toEqual({ kind: 'shared_single_partner' });
-      expect(s.approvals.rows[0]!.accountOrigin).toEqual({ kind: 'shared_single_partner' });
-      expect(done.recentInvitedApprovers).toEqual([]);
-    });
-
-    it('una cuenta creada por invitación guarda quién invitó y cuándo, y si fue reciente', async () => {
-      const s = setup({ invitations: [invited(2 * DAY)] });
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('beto'), pending.id);
-      const origin = done.approvals[0]!.origin as Record<string, unknown>;
-      expect(origin).toMatchObject({ kind: 'invited', invitedByMemberId: 'ana', invitedByName: 'Ana', recent: true });
-      expect(origin.invitedAt).toEqual(expect.any(String));
-      expect(origin.acceptedAt).toEqual(expect.any(String));
-      expect(done.recentInvitedApprovers).toEqual([
-        { memberId: 'beto', name: 'Beto', invitedByName: 'Ana', acceptedAt: origin.acceptedAt, fromSharedLogin: false },
+    it('compara con las reglas vigentes: "qué cambió" va en la propuesta y en el correo', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      const first = await propose(s, 'ana', 10);
+      s.sets.rows[0]!.status = 'vigente';
+      s.sendApproval.mockClear();
+      const second = await propose(s, 'ana', 30);
+      expect(second.changes).toEqual([
+        { topic: 'Reservas', before: 'Se aparta 10 % para reservas antes de repartir.', after: 'Se aparta 30 % para reservas antes de repartir.' },
       ]);
+      expect(s.sendApproval.mock.calls[0]![0].changes).toEqual(second.changes);
+      expect(first.changes).toBeNull();
     });
 
-    it('una cuenta creada por invitación desde el acceso compartido tiene su propio origen y se avisa SIN importar cuántos días pasaron', async () => {
-      const old = 400 * DAY;
-      const s = setup({ invitations: [{ ...invited(old), invitedViaSharedLogin: true }] });
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('beto'), pending.id);
-      const origin = done.approvals[0]!.origin as Record<string, unknown>;
-      expect(origin).toEqual({
-        kind: 'invited_from_shared_login',
-        invitedAt: expect.any(String),
-        acceptedAt: expect.any(String),
-        recent: false,
-      });
-      expect(s.approvals.rows[0]!.accountOrigin).toEqual(origin);
-      expect(done.recentInvitedApprovers).toEqual([
-        { memberId: 'beto', name: 'Beto', invitedByName: null, acceptedAt: origin.acceptedAt, fromSharedLogin: true },
-      ]);
-    });
-
-    it('la invitación desde acceso compartido no guarda quién la hizo, porque no se puede saber', async () => {
-      const s = setup({ invitations: [{ ...invited(DAY), invitedViaSharedLogin: true }] });
-      const pending = await propose(s);
-      const origin = (await s.service.approve(actor('beto'), pending.id)).approvals[0]!.origin as Record<string, unknown>;
-      expect(origin).not.toHaveProperty('invitedByName');
-      expect(origin).not.toHaveProperty('invitedByMemberId');
-    });
-
-    it('"hace poco" son 7 días: pasado ese tiempo la cuenta invitada ya no se marca', async () => {
-      const s = setup({ invitations: [invited(7 * DAY + 1000)] });
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('beto'), pending.id);
-      expect(done.approvals[0]!.origin).toMatchObject({ kind: 'invited', recent: false });
-      expect(done.recentInvitedApprovers).toEqual([]);
-    });
-
-    it('una cuenta propia que no vino de invitación guarda cuándo se creó', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      const done = await s.service.approve(actor('ana'), pending.id);
-      expect(done.approvals[0]!.origin).toEqual({ kind: 'own_account', accountCreatedAt: expect.any(String) });
-    });
-
-    it('el dato queda guardado en la aprobación: cambiar la invitación después no lo cambia', async () => {
-      const s = setup({ invitations: [invited(DAY)] });
-      const pending = await propose(s);
-      await s.service.approve(actor('beto'), pending.id);
-      s.invitations.rows[0]!.invitedByMemberId = 'beto';
-      s.invitations.rows[0]!.usedAt = new Date(0);
-      const view = await s.service.overview(actor('ana'));
-      expect(view.pending!.approvals[0]!.origin).toMatchObject({ invitedByName: 'Ana', recent: true });
-    });
-
-    it('las aprobaciones sin dato (anteriores a este cambio) se muestran sin origen', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await s.service.approve(actor('ana'), pending.id);
-      delete s.approvals.rows[0]!.accountOrigin;
-      expect((await s.service.overview(actor('ana'))).pending!.approvals[0]!.origin).toBeNull();
+    it('si nada cambió respecto a lo vigente, no hay sección "qué cambió"', async () => {
+      const s = setup({ partners: [partner('ana', 'Ana', 1)] });
+      await propose(s);
+      s.sets.rows[0]!.status = 'vigente';
+      s.sendApproval.mockClear();
+      const same = await propose(s);
+      expect(same.changes).toBeNull();
+      expect(s.sendApproval.mock.calls[0]![0].changes).toBeNull();
     });
   });
 
-  describe('recordar', () => {
-    const NOW = new Date('2026-10-20T12:00:00Z');
-
-    it('avisa a quien falta: por correo si su usuario es un correo, y siempre en la app', async () => {
+  describe('modificar', () => {
+    it('copia la propuesta abierta en un borrador de quien lo pide, con las objeciones a la vista', async () => {
       const s = setup();
-      const pending = await propose(s);
-      const result = await s.service.remind(actor('ana'), pending.id, NOW);
-      expect(result.reminded).toEqual([
-        { memberId: 'ana', name: 'Ana', emailSent: true },
-        { memberId: 'beto', name: 'Beto', emailSent: false },
-      ]);
-      expect(s.email).toHaveBeenCalledTimes(1);
-      expect(s.email).toHaveBeenCalledWith({
-        to: 'ana@example.test', memberName: 'Ana', proposerName: 'Ana', businessName: 'Bazar Sol',
+      const sent = await propose(s);
+      object(s, sent.id, 'beto', 'Más reservas');
+      const draft = await s.service.modify(actor('beto'), sent.id);
+      expect(draft).toMatchObject({ status: 'borrador', version: 2, config: sent.config, configHash: sent.configHash, proposedBy: { name: 'Beto' } });
+      expect(draft.basedOn).toMatchObject({ id: sent.id, version: 1, objections: [expect.objectContaining({ name: 'Beto', reason: 'Más reservas' })] });
+      expect(s.sets.rows[0]!.status).toBe('en_revision');
+    });
+
+    it('enviar la versión nueva reemplaza la anterior, avisa a todos y no arrastra aprobaciones', async () => {
+      const s = setup();
+      const sent = await propose(s);
+      approve(s, sent.id, 'ana');
+      object(s, sent.id, 'beto', 'Más reservas');
+      const draft = await s.service.modify(actor('beto'), sent.id);
+      await s.service.saveDraft(actor('beto'), config(25));
+      s.sendApproval.mockClear();
+      const next = await s.service.submit(actor('beto'), draft.id);
+
+      expect(next).toMatchObject({ status: 'pendiente', version: 2, approvals: [] });
+      expect(next.changes).toEqual([expect.objectContaining({ topic: 'Reservas' })]);
+      expect(s.sets.rows[0]).toMatchObject({ status: 'descartada', closedNote: 'Reemplazada por la versión 2.' });
+      expect(s.sendApproval).toHaveBeenCalledTimes(2);
+      expect(s.sendApproval.mock.calls.map(([m]) => m.to)).toEqual(['ana@example.test', 'beto@example.test']);
+    });
+
+    it('también se puede modificar una propuesta que aún espera respuestas', async () => {
+      const s = setup();
+      const sent = await propose(s);
+      expect((await s.service.modify(actor('beto'), sent.id)).basedOn).toMatchObject({ id: sent.id, objections: [] });
+    });
+
+    it('solo una propuesta abierta, y solo si no hay otro borrador', async () => {
+      const s = setup();
+      const draft = await s.service.saveDraft(actor('ana'), config());
+      await expect(s.service.modify(actor('ana'), draft.id)).rejects.toMatchObject({ response: { code: 'FINANCE_RULES_WRONG_STATE' } });
+      await s.service.submit(actor('ana'), draft.id);
+      await s.service.saveDraft(actor('beto'), config(40));
+      await expect(s.service.modify(actor('ana'), draft.id)).rejects.toMatchObject({
+        response: { code: 'FINANCE_RULES_DRAFT_EXISTS', message: 'Beto ya tiene un borrador abierto. Que lo envíe o lo descarte primero.' },
       });
-      expect(s.reminders.rows).toHaveLength(2);
-      expect(s.reminders.rows.find((r) => r.memberId === 'ana')!.emailSent).toBe(true);
     });
+  });
 
-    it('no avisa a quien ya aprobó', async () => {
+  describe('reenviar', () => {
+    it('reenvía solo a quien falta, con enlace nuevo, y lo recuerda 24 horas', async () => {
       const s = setup();
-      const pending = await propose(s);
-      await s.service.approve(actor('beto'), pending.id);
-      const result = await s.service.remind(actor('ana'), pending.id, NOW);
-      expect(result.reminded.map((r) => r.memberId)).toEqual(['ana']);
+      const sent = await propose(s);
+      approve(s, sent.id, 'ana');
+      s.sendApproval.mockClear();
+      const now = new Date('2026-10-21T12:00:00Z');
+
+      const first = await s.service.resend(actor('ana'), sent.id, now);
+      expect(first).toEqual({ activated: false, resent: [{ memberId: 'beto', name: 'Beto', emailSent: true }], skipped: [], noEmail: [] });
+      expect(s.sendApproval).toHaveBeenCalledTimes(1);
+      expect(s.sendApproval.mock.calls[0]![0]).toMatchObject({ to: 'beto@example.test', proposerName: 'Ana' });
+      const betoLinks = s.links.rows.filter((l) => l.memberId === 'beto');
+      expect(betoLinks.map((l) => [l.kind, Boolean(l.supersededAt)])).toEqual([['envio', true], ['reenvio', false]]);
+
+      const soon = await s.service.resend(actor('ana'), sent.id, new Date(now.getTime() + 23 * HOUR));
+      expect(soon.resent).toEqual([]);
+      expect(soon.skipped).toEqual([{ memberId: 'beto', name: 'Beto', nextAt: new Date(now.getTime() + RESEND_COOLDOWN_MS).toISOString() }]);
+      const later = await s.service.resend(actor('ana'), sent.id, new Date(now.getTime() + 25 * HOUR));
+      expect(later.resent).toHaveLength(1);
     });
 
-    it('máximo una vez cada 24 horas por socio', async () => {
+    it('un reenvío que falló no cuenta para las 24 horas', async () => {
+      const sendApproval = vi.fn().mockResolvedValue(undefined);
+      const s = setup({ sendApproval });
+      const sent = await propose(s);
+      sendApproval.mockRejectedValueOnce(new Error('boom'));
+      const now = new Date('2026-10-21T12:00:00Z');
+      const failed = await s.service.resend(actor('ana'), sent.id, now);
+      expect(failed.resent.find((r) => r.name === 'Ana')).toMatchObject({ emailSent: false });
+      const again = await s.service.resend(actor('ana'), sent.id, new Date(now.getTime() + 1000));
+      expect(again.skipped.map((r) => r.name)).toEqual(['Beto']);
+      expect(again.resent.map((r) => r.name)).toEqual(['Ana']);
+    });
+
+    it('dice a quién no se le pudo mandar por no tener correo', async () => {
       const s = setup();
-      const pending = await propose(s);
-      await s.service.remind(actor('ana'), pending.id, NOW);
-      const soon = new Date(NOW.getTime() + REMINDER_COOLDOWN_MS - 1000);
-      const early = await s.service.remind(actor('ana'), pending.id, soon);
-      expect(early.reminded).toEqual([]);
-      expect(early.skipped.map((x) => x.memberId)).toEqual(['ana', 'beto']);
-      expect(early.skipped[0]!.nextAt).toBe(new Date(NOW.getTime() + REMINDER_COOLDOWN_MS).toISOString());
-      const later = new Date(NOW.getTime() + REMINDER_COOLDOWN_MS);
-      expect((await s.service.remind(actor('ana'), pending.id, later)).reminded).toHaveLength(2);
+      const sent = await propose(s);
+      s.members.rows.find((m) => m.id === 'beto')!.correo = null;
+      const res = await s.service.resend(actor('ana'), sent.id);
+      expect(res.noEmail).toEqual([{ memberId: 'beto', name: 'Beto' }]);
+      expect(res.resent.map((r) => r.name)).toEqual(['Ana']);
     });
 
-    it('si el correo falla, el aviso en la app queda y se sigue con los demás', async () => {
-      const email = vi.fn().mockRejectedValue(new Error('resend down'));
-      const s = setup({
-        email,
-        accounts: [
-          { id: 'a1', memberId: 'ana', username: 'ana@example.test', active: true, contextId: CONTEXT },
-          { id: 'a2', memberId: 'beto', username: 'beto@example.test', active: true, contextId: CONTEXT },
-        ],
+    it('si quien faltaba ya no es socio activo, reenviar deja la propuesta vigente', async () => {
+      const s = setup({ settled: true });
+      const sent = await propose(s);
+      s.sendApproval.mockClear();
+      expect(await s.service.resend(actor('ana'), sent.id)).toEqual({ activated: true, resent: [], skipped: [], noEmail: [] });
+      expect(s.sendApproval).not.toHaveBeenCalled();
+    });
+
+    it('en revisión no se reenvía, y tampoco un borrador', async () => {
+      const s = setup();
+      const draft = await s.service.saveDraft(actor('ana'), config());
+      await expect(s.service.resend(actor('ana'), draft.id)).rejects.toMatchObject({ response: { code: 'FINANCE_RULES_WRONG_STATE' } });
+      await s.service.submit(actor('ana'), draft.id);
+      object(s, draft.id, 'beto');
+      await expect(s.service.resend(actor('ana'), draft.id)).rejects.toMatchObject({
+        response: { code: 'FINANCE_RULES_IN_REVIEW', message: 'Esta propuesta está en revisión. Modifícala o descártala.' },
       });
-      const pending = await propose(s);
-      const result = await s.service.remind(actor('ana'), pending.id, NOW);
-      expect(email).toHaveBeenCalledTimes(2);
-      expect(result.reminded.every((r) => !r.emailSent)).toBe(true);
-      expect(s.reminders.rows).toHaveLength(2);
     });
+  });
 
-    it('solo el proponente, y solo si está pendiente', async () => {
-      const s = setup();
-      const pending = await propose(s);
-      await expect(s.service.remind(actor('beto'), pending.id, NOW)).rejects.toBeInstanceOf(ForbiddenException);
-      const draft = await s.service.saveDraft(actor('ana'), config(5));
-      await expect(s.service.remind(actor('ana'), draft.id, NOW)).rejects.toBeInstanceOf(ConflictException);
-    });
+  it('listNames une los nombres como se dice en voz alta', () => {
+    expect(listNames([])).toBe('');
+    expect(listNames(['Ana'])).toBe('Ana');
+    expect(listNames(['Ana', 'Beto'])).toBe('Ana y Beto');
+    expect(listNames(['Ana', 'Beto', 'Carla'])).toBe('Ana, Beto y Carla');
   });
 });
 
 describe('FinanceRulesController', () => {
   it('cada ruta pasa la petición y el id al servicio', async () => {
-    const calls: unknown[][] = [];
-    const record = (name: string) => async (...args: unknown[]) => {
-      calls.push([name, ...args]);
-      return name;
-    };
     const service = {
-      overview: record('overview'), saveDraft: record('saveDraft'), discardDraft: record('discardDraft'),
-      submit: record('submit'), withdraw: record('withdraw'), approve: record('approve'), remind: record('remind'),
+      overview: vi.fn().mockResolvedValue('overview'),
+      saveDraft: vi.fn().mockResolvedValue('draft'),
+      discard: vi.fn().mockResolvedValue('discard'),
+      submit: vi.fn().mockResolvedValue('submit'),
+      modify: vi.fn().mockResolvedValue('modify'),
+      resend: vi.fn().mockResolvedValue('resend'),
     };
     const controller = new FinanceRulesController(service as never);
-    const req = { account: {}, selection: {} } as never;
-    const id = 'id-1';
+    const req = actor('ana');
+    const id = 'a1b2c3d4-0000-7000-8000-000000000001';
 
     expect(await controller.overview(req)).toBe('overview');
-    expect(await controller.saveDraft(req, { config: { a: 1 } })).toBe('saveDraft');
-    expect(await controller.discard(req, id)).toBe('discardDraft');
+    expect(await controller.saveDraft(req, { config: { a: 1 } })).toBe('draft');
+    expect(await controller.discard(req, id)).toBe('discard');
     expect(await controller.submit(req, id)).toBe('submit');
-    expect(await controller.withdraw(req, id)).toBe('withdraw');
-    expect(await controller.approve(req, id)).toBe('approve');
-    expect(await controller.remind(req, id)).toBe('remind');
-    expect(calls).toEqual([
-      ['overview', req], ['saveDraft', req, { a: 1 }], ['discardDraft', req, id], ['submit', req, id],
-      ['withdraw', req, id], ['approve', req, id], ['remind', req, id],
-    ]);
+    expect(await controller.modify(req, id)).toBe('modify');
+    expect(await controller.resend(req, id)).toBe('resend');
+    expect(service.saveDraft).toHaveBeenCalledWith(req, { a: 1 });
+    expect(service.resend).toHaveBeenCalledWith(req, id);
   });
 });

@@ -705,41 +705,6 @@ describe('account invitations', () => {
       await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
     });
 
-    it('de punta a punta: aprobar reglas con esa cuenta deja el origen "desde acceso compartido" en la aprobación y en el aviso, sin importar los días', async () => {
-      const s = await sharedBusiness('sh-approve', 1);
-      const email = uniqueEmail();
-      await sharedInvite(s, s.ana, s.ana, email).expect(201);
-      await accept(lastToken()).expect(200);
-      const token = await login(email);
-      const rules = (method: 'get' | 'put' | 'post', path: string, body?: object) => {
-        const r = request(app.getHttpServer())[method](`/api/v1/finance/rules${path}`).auth(token, { type: 'bearer' })
-          .set('x-member-id', s.ana).set('x-device-id', s.deviceId);
-        return body ? r.send(body) : r;
-      };
-      const cfg = {
-        schemaVersion: 1, profitBase: { partnerPct: 100, capitalPct: 0, workPct: 0 },
-        reinvestment: { currentPhase: 'operacion', arranquePct: 0, operacionPct: 0, cierrePct: 0, untilAmountMinor: null },
-        capitalRecovery: { mode: 'ninguna', timing: 'durante' },
-        work: { payHours: false, order: 'antes', pay: { kind: 'por_hora', rateMinorPerHour: 0 } },
-        partnerExpenses: 'no_reembolsar', reserves: { kind: 'porcentaje', pct: 0 }, partnerLoans: { repayBeforeCapital: false },
-      };
-      const draft = (await rules('put', '/draft', { config: cfg }).expect(200)).body;
-      await rules('post', `/${draft.id}/submit`).expect(200);
-      const done = (await rules('post', `/${draft.id}/approve`).expect(200)).body;
-
-      expect(done.status).toBe('vigente');
-      expect(done.approvals[0].origin).toMatchObject({ kind: 'invited_from_shared_login', recent: true });
-      expect(done.approvals[0].origin).not.toHaveProperty('invitedByName');
-      expect(done.recentInvitedApprovers).toEqual([
-        { memberId: s.ana, name: 'Ana', invitedByName: null, acceptedAt: expect.any(String), fromSharedLogin: true },
-      ]);
-      // Un año después sigue en el aviso: lo que guardó la aprobación no cambia.
-      await withTestTenant(s.contextId, () =>
-        prisma.accountInvitation.updateMany({ where: { contextId: s.contextId }, data: { usedAt: new Date(Date.now() - 400 * 24 * 3600_000) } }),
-      );
-      const view = (await rules('get', '').expect(200)).body;
-      expect(view.inForce.recentInvitedApprovers).toHaveLength(1);
-    });
   });
 
   describe('estado de las cuentas para el equipo', () => {
