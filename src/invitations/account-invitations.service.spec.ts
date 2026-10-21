@@ -21,6 +21,8 @@ import {
   hashInvitationToken,
 } from './invitation-token.js';
 import { table, type Row } from '../../test/support/memory-table.js';
+import { Logger } from '@nestjs/common';
+import { hashDeviceToken } from '../common/device-secret.js';
 
 vi.mock('../common/password.js', () => ({ hashPassword: vi.fn(async (p: string) => `hashed:${p}`) }));
 
@@ -63,10 +65,14 @@ function setup(opts: { accounts?: Row[]; invitations?: Row[]; members?: Row[]; e
       row.usedAt = new Date();
       row.accountId = values[1];
       accounts.rows.push({ id: values[1], memberId: row.memberId, username: row.email, passwordHash: values[2] });
-      return [{ email: row.email }];
+      // The real function creates the device in the same statement block as the account.
+      const deviceName = `Dispositivo de ${member.name}`;
+      devices.rows.push({ id: values[3], identifier: values[4], tokenHash: values[5], name: deviceName, status: 'activo', authorized: true });
+      return [{ email: row.email, deviceName }];
     }
     return [];
   };
+  const devices = table([]);
   const prisma: Row = {
     member: members, account: accounts, accountInvitation: invitations,
     $queryRaw: raw,
@@ -74,7 +80,7 @@ function setup(opts: { accounts?: Row[]; invitations?: Row[]; members?: Row[]; e
   };
   const email = opts.email ?? vi.fn().mockResolvedValue(undefined);
   const service = new AccountInvitationsService(prisma as never, { sendAccountInvitationEmail: email } as never);
-  return { service, members, accounts, invitations, email };
+  return { service, members, accounts, invitations, devices, email };
 }
 
 const tokenOf = (email: ReturnType<typeof vi.fn>) => {
@@ -399,10 +405,44 @@ describe('AccountInvitationsService public page', () => {
 
   it('crear la contraseña crea la cuenta atada al socio con la contraseña elegida (hasheada) y gasta el enlace', async () => {
     const { s, token } = await live();
-    expect(await s.service.accept(token, 'mi-clave-larga-1', '1.1.1.1')).toEqual({ ok: true, email: 'beto@example.test' });
-    expect(s.accounts.rows.at(-1)).toMatchObject({ memberId: 'beto', username: 'beto@example.test', passwordHash: 'hashed:mi-clave-larga-1' });
+    const result = await s.service.accept(token, 'mi-clave-larga-1', '1.1.1.1');
+    expect(result).toEqual({
+      ok: true,
+      email: 'beto@example.test',
+      accountId: expect.any(String),
+      device: {
+        id: expect.any(String),
+        identifier: expect.any(String),
+        name: 'Dispositivo de Beto',
+        token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      },
+    });
+    expect(s.accounts.rows.at(-1)).toMatchObject({ id: result.accountId, memberId: 'beto', username: 'beto@example.test', passwordHash: 'hashed:mi-clave-larga-1' });
+    // The device is created together with the account; only the hash of its token is stored.
+    expect(s.devices.rows).toHaveLength(1);
+    expect(s.devices.rows[0]).toMatchObject({
+      id: result.device.id, identifier: result.device.identifier, name: 'Dispositivo de Beto',
+      status: 'activo', authorized: true, tokenHash: hashDeviceToken(result.device.token),
+    });
+    expect(JSON.stringify(s.devices.rows)).not.toContain(result.device.token);
     await expect(s.service.accept(token, 'otra-clave-larga', '1.1.1.1')).rejects.toBeInstanceOf(NotFoundException);
     await expect(s.service.inspect(token, '1.1.1.1')).rejects.toBeInstanceOf(NotFoundException);
+    expect(s.devices.rows).toHaveLength(1); // the second attempt created nothing
+  });
+
+  it('un enlace que no sirve no crea dispositivo, y el token del dispositivo nunca llega a los registros', async () => {
+    const { s, token } = await live();
+    const logged: string[] = [];
+    for (const level of ['log', 'warn', 'error', 'debug', 'verbose'] as const)
+      vi.spyOn(Logger.prototype, level).mockImplementation((...args: unknown[]) => void logged.push(JSON.stringify(args)));
+    s.invitations.rows[0]!.expiresAt = new Date(0);
+    await s.service.accept(token, 'mi-clave-larga-1', '1.1.1.1').catch(() => undefined);
+    expect(s.devices.rows).toHaveLength(0);
+
+    s.invitations.rows[0]!.expiresAt = new Date(Date.now() + HOUR);
+    const result = await s.service.accept(token, 'mi-clave-larga-1', '1.1.1.1');
+    expect(logged.join('')).not.toContain(result.device.token);
+    vi.restoreAllMocks();
   });
 
   it('un enlace desconocido, vencido o reemplazado da siempre la misma respuesta', async () => {

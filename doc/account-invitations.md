@@ -99,3 +99,19 @@ Al pasar una versión a vigente, la vista trae `recentInvitedApprovers`, con qui
 - Quien invita ve que el envío falla cuando el correo ya es una cuenta. Eso no distingue entre "ya existe" y "falló el correo",
   pero un envío exitoso sí se distingue de un fallo. Una respuesta idéntica para todo exigiría aceptar siempre (202).
 - El límite de intentos de la página pública está en memoria: se pierde al reiniciar el servidor.
+
+## Dispositivo que se registra al aceptar
+
+Al crear la contraseña, `account_invitation_accept` crea, en el mismo bloque que la cuenta y el enlace gastado, un
+dispositivo `activo` llamado "Dispositivo de <nombre del socio>". El servidor genera el token del dispositivo y guarda solo su
+SHA-256. La respuesta de `POST /invitations/accept` lo entrega **una sola vez**:
+
+```json
+{ "ok": true, "email": "...", "accountId": "...", "device": { "id": "...", "identifier": "...", "name": "Dispositivo de Beto", "token": "..." } }
+```
+
+- El token nunca va a registros ni a la base. La respuesta sigue con `no-store` y `no-referrer`.
+- El dispositivo aparece en Ajustes → Dispositivos y se revoca como cualquier otro.
+- Si dos envíos llegan a la vez, solo uno crea cuenta y dispositivo (el enlace queda bloqueado con `FOR UPDATE`).
+- Un enlace que no sirve no crea nada. Un socio con cuenta atada sigue dando 409 al invitarlo.
+- Si la persona luego usa otro teléfono, ese teléfono no tiene dispositivo: un socio le da un código desde Ajustes → Dispositivos.

@@ -13,6 +13,7 @@ import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import { normalizeSocioEmail } from '../business-registration/initial-credentials.js';
 import { SlidingWindowLimiter } from '../business-registration/rate-limiter.js';
 import { businessNameOf } from '../common/business-name.js';
+import { generateDeviceToken, hashDeviceToken } from '../common/device-secret.js';
 import { hashPassword } from '../common/password.js';
 import { createServerId } from '../common/server-id.js';
 import { stripQueryAndFragment, trimTrailingSlashes } from '../common/url-parts.js';
@@ -242,10 +243,24 @@ export class AccountInvitationsService {
     if (!live.length) throw invalidLink();
     const passwordHash = await hashPassword(password);
     const accountId = createServerId();
-    const rows = await this.prisma.$queryRaw<{ email: string }[]>`
-      SELECT "email" FROM account_invitation_accept(${tokenHash}, ${accountId}::uuid, ${passwordHash})`;
+    // The device this person is using right now is registered with the account. Its token is
+    // handed back ONCE; only the hash is stored, and nothing here ever logs it.
+    const device = {
+      id: createServerId(),
+      identifier: createServerId(),
+      token: generateDeviceToken(),
+    };
+    const rows = await this.prisma.$queryRaw<{ email: string; deviceName: string }[]>`
+      SELECT "email", "deviceName" FROM account_invitation_accept(
+        ${tokenHash}, ${accountId}::uuid, ${passwordHash},
+        ${device.id}::uuid, ${device.identifier}, ${hashDeviceToken(device.token)})`;
     if (!rows.length) throw invalidLink();
-    return { ok: true, email: rows[0]!.email };
+    return {
+      ok: true,
+      email: rows[0]!.email,
+      accountId,
+      device: { ...device, name: rows[0]!.deviceName },
+    };
   }
 
   // ───────────────────── helpers ─────────────────────

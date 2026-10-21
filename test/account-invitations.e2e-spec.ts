@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
-import type { INestApplication } from '@nestjs/common';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import request from 'supertest';
@@ -8,6 +8,7 @@ import { vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/database/prisma.service.js';
 import { EmailService } from '../src/email/email.service.js';
+import { hashDeviceToken } from '../src/common/device-secret.js';
 import { hashInvitationToken } from '../src/invitations/invitation-token.js';
 import { withTestTenant } from './tenant-scope.js';
 import { purgeRuleData } from './rules-cleanup.js';
@@ -289,10 +290,21 @@ describe('account invitations', () => {
       const token = lastToken();
 
       const res = await accept(token).expect(200);
-      expect(res.body).toEqual({ ok: true, email });
+      expect(res.body).toEqual({
+        ok: true,
+        email,
+        accountId: expect.any(String),
+        device: {
+          id: expect.any(String),
+          identifier: expect.any(String),
+          name: 'Dispositivo de Beto',
+          token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        },
+      });
       expect(res.headers['cache-control']).toBe('no-store');
       expect(res.headers['referrer-policy']).toBe('no-referrer');
-      expect(JSON.stringify(res.body)).not.toMatch(/token|jwt|accessToken/i);
+      // No session is handed out: only the device of this browser.
+      expect(JSON.stringify(res.body)).not.toMatch(/jwt|accessToken|passwordHash/i);
 
       const account = await prisma.account.findFirstOrThrow({ where: { username: email } });
       expect(account).toMatchObject({ contextId: b.contextId, memberId: b.invitee, active: true });
@@ -477,6 +489,117 @@ describe('account invitations', () => {
       const members = await asSocio(b, request(app.getHttpServer()).get('/api/v1/members')).expect(200);
       for (const body of [status.body, members.body, (await inspect(token)).body])
         expect(JSON.stringify(body)).not.toMatch(new RegExp(`${token}|${hash}`));
+    });
+  });
+
+  describe('el dispositivo que se registra al aceptar la invitación', () => {
+    const accepted = async (label: string) => {
+      const b = await business(label);
+      const email = uniqueEmail();
+      await invite(b, b.invitee, email).expect(201);
+      const res = await accept(lastToken()).expect(200);
+      const login = await request(app.getHttpServer()).post('/api/v1/auth/login').send({ username: email, password: PASSWORD }).expect(200);
+      return { b, email, device: res.body.device as { id: string; name: string; token: string; identifier: string }, jwt: login.body.accessToken as string };
+    };
+    const asNewAccount = (a: Awaited<ReturnType<typeof accepted>>, req: request.Test, o: { token?: string | null; deviceId?: string } = {}) => {
+      req.auth(a.jwt, { type: 'bearer' }).set('x-member-id', a.b.invitee).set('x-device-id', o.deviceId ?? a.device.id);
+      const token = o.token === undefined ? a.device.token : o.token;
+      return token ? req.set('x-device-token', token) : req;
+    };
+    const devicesOf = (b: Biz) => withTestTenant(b.contextId, () => prisma.device.findMany({ where: { contextId: b.contextId } }));
+
+    it('nace activo, con solo el hash de su token, y el nombre lleva el del socio', async () => {
+      const a = await accepted('dev-created');
+      const row = (await devicesOf(a.b)).find((d) => d.id === a.device.id)!;
+      expect(row).toMatchObject({ name: 'Dispositivo de Beto', status: 'activo', authorized: true, identifier: a.device.identifier });
+      expect(row.activatedAt).toBeInstanceOf(Date);
+      expect(row.tokenHash).toBe(hashDeviceToken(a.device.token));
+      expect(JSON.stringify(row)).not.toContain(a.device.token);
+    });
+
+    it('con la cuenta nueva y el token del dispositivo se entra; sin token, con otro token o con un dispositivo que no existe, no', async () => {
+      const a = await accepted('dev-works');
+      const rules = () => request(app.getHttpServer()).get('/api/v1/finance/rules');
+      expect((await asNewAccount(a, rules())).status).toBe(200);
+      expect((await asNewAccount(a, rules(), { token: null })).status).toBe(403);
+      expect((await asNewAccount(a, rules(), { token: 'x'.repeat(43) })).status).toBe(403);
+      expect((await asNewAccount(a, rules(), { deviceId: randomUUID() })).status).toBe(403);
+    });
+
+    it('aparece en la lista de dispositivos sin token ni hash, y no se puede volver a canjear con su identificador', async () => {
+      const a = await accepted('dev-listed');
+      const list = await asSocio(a.b, request(app.getHttpServer()).get('/api/v1/devices')).expect(200);
+      const mine = list.body.find((d: { id: string }) => d.id === a.device.id);
+      expect(mine).toMatchObject({ name: 'Dispositivo de Beto', status: 'activo', legacy: false });
+      expect(JSON.stringify(mine)).not.toMatch(new RegExp(`${a.device.token}|tokenHash|identifier`));
+      const again = await asNewAccount(a, request(app.getHttpServer()).post('/api/v1/devices/identify').send({ identifier: a.device.identifier, name: a.device.name }));
+      expect(again.status).toBe(409);
+    });
+
+    it('un socio lo revoca como a cualquier otro y deja de servir en la siguiente petición', async () => {
+      const a = await accepted('dev-revoke');
+      const rules = () => request(app.getHttpServer()).get('/api/v1/finance/rules');
+      expect((await asNewAccount(a, rules())).status).toBe(200);
+
+      await asSocio(a.b, request(app.getHttpServer()).patch(`/api/v1/devices/${a.device.id}/revoke`)).expect(200);
+
+      expect((await asNewAccount(a, rules())).status).toBe(403);
+      const after = (await asSocio(a.b, request(app.getHttpServer()).get('/api/v1/devices')).expect(200)).body;
+      expect(after.find((d: { id: string }) => d.id === a.device.id)).toMatchObject({ status: 'revocado' });
+    });
+
+    it('doble clic: tres envíos a la vez dejan una cuenta y un dispositivo, y solo uno recibe el token', async () => {
+      const b = await business('dev-race');
+      await invite(b, b.invitee, uniqueEmail()).expect(201);
+      const token = lastToken();
+      const before = (await devicesOf(b)).length;
+
+      const results = await Promise.all([accept(token), accept(token), accept(token)]);
+
+      expect(results.map((r) => r.status).sort((x, y) => x - y)).toEqual([200, 404, 404]);
+      expect(results.filter((r) => r.body.device).length).toBe(1);
+      expect((await devicesOf(b)).length).toBe(before + 1);
+    });
+
+    it('un enlace que no sirve no crea dispositivo', async () => {
+      const b = await business('dev-none');
+      const before = (await devicesOf(b)).length;
+      await accept('A'.repeat(43)).expect(404);
+      await invite(b, b.invitee, uniqueEmail()).expect(201);
+      const token = lastToken();
+      await accept(token, 'corta').expect(400);
+      await withTestTenant(b.contextId, () => prisma.member.update({ where: { id: b.invitee }, data: { active: false } }));
+      await accept(token).expect(404);
+      expect((await devicesOf(b)).length).toBe(before);
+    });
+
+    it('si el correo se ocupó mientras tanto no se crea ni cuenta ni dispositivo', async () => {
+      const b = await business('dev-taken');
+      const email = uniqueEmail();
+      await invite(b, b.invitee, email).expect(201);
+      const token = lastToken();
+      await prisma.account.create({ data: { username: email, passwordHash: 'x', contextId: 'otro-negocio-dev' } });
+      const before = (await devicesOf(b)).length;
+      await accept(token).expect(404);
+      expect((await devicesOf(b)).length).toBe(before);
+      await prisma.account.deleteMany({ where: { contextId: 'otro-negocio-dev' } });
+    });
+
+    it('un socio que ya tiene cuenta atada sigue sin poder ser invitado (409), sin crear dispositivo', async () => {
+      const b = await business('dev-409');
+      const before = (await devicesOf(b)).length;
+      await invite(b, b.inviter.memberId, uniqueEmail()).expect(409);
+      expect((await devicesOf(b)).length).toBe(before);
+    });
+
+    it('el token no aparece en ningún registro del servidor', async () => {
+      const logged: string[] = [];
+      const spies = (['log', 'warn', 'error', 'debug', 'verbose'] as const).map((level) =>
+        vi.spyOn(Logger.prototype, level).mockImplementation((...args: unknown[]) => void logged.push(JSON.stringify(args))),
+      );
+      const a = await accepted('dev-logs');
+      spies.forEach((s) => s.mockRestore());
+      expect(logged.join('')).not.toContain(a.device.token);
     });
   });
 
