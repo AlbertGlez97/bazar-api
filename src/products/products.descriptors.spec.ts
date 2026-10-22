@@ -70,7 +70,7 @@ function setup() {
   const findMany = vi.fn().mockReturnValue('findMany-query');
   const count = vi.fn().mockReturnValue('count-query');
   const prisma = {
-    product: { findMany, count, findFirst: vi.fn() },
+    product: { findMany, count, findFirst: vi.fn(), groupBy: vi.fn().mockResolvedValue([]) },
     member: { findFirst: vi.fn() },
     productAudit: { findMany: vi.fn(), count: vi.fn() },
     $transaction: vi.fn(async (arg: unknown) =>
@@ -306,7 +306,7 @@ describe('ProductsService.suggestions', () => {
 
     const result = await service.suggestions(CTX);
 
-    expect(result).toEqual({ brands: ['Adidas', 'Nike'], presentations: ['24 oz', 'XL'] });
+    expect(result).toEqual({ brands: ['Adidas', 'Nike'], presentations: ['24 oz', 'XL'], categories: [] });
     const [brandCall, presentationCall] = prisma.product.findMany.mock.calls.map(
       (c) => c[0] as Record<string, unknown>,
     );
@@ -333,5 +333,78 @@ describe('ProductsService.suggestions', () => {
     const result = await service.suggestions(CTX);
 
     expect(result.brands).toEqual(['Nike', 'Puma']);
+  });
+
+  const groups = (rows: Array<[string | null, number]>) =>
+    rows.map(([category, count]) => ({ category, _count: { _all: count } }));
+
+  it('pide las categorías agrupadas, solo de productos activos del negocio', async () => {
+    const { service, prisma } = setup();
+    prisma.product.findMany.mockResolvedValue([]);
+    prisma.product.groupBy.mockResolvedValue(groups([['Ropa', 2]]));
+
+    const result = await service.suggestions(CTX);
+
+    expect(result.categories).toEqual(['Ropa']);
+    expect(prisma.product.groupBy).toHaveBeenCalledWith({
+      by: ['category'],
+      where: { contextId: CTX, active: true, category: { not: null } },
+      _count: { _all: true },
+    });
+  });
+
+  it('junta categorías que solo cambian en mayúsculas, acentos o espacios y muestra la escritura más frecuente', async () => {
+    const { service, prisma } = setup();
+    prisma.product.findMany.mockResolvedValue([]);
+    prisma.product.groupBy.mockResolvedValue(
+      groups([
+        ['ropa', 1],
+        ['Ropa', 5],
+        ['  ROPA  ', 2],
+        ['Ro  pa', 1],
+        ['Café', 3],
+        ['Cafe', 1],
+        ['Hogar', 4],
+      ]),
+    );
+
+    const result = await service.suggestions(CTX);
+
+    // "Ro  pa" collapses to "ro pa": a different category, not "ropa".
+    expect(result.categories).toEqual(['Café', 'Hogar', 'Ro  pa', 'Ropa']);
+  });
+
+  it('elige la escritura con más productos', async () => {
+    const { service, prisma } = setup();
+    prisma.product.findMany.mockResolvedValue([]);
+    prisma.product.groupBy.mockResolvedValue(groups([['Ropa ', 3], [' Ropa', 3], ['ropa', 5]]));
+
+    expect((await service.suggestions(CTX)).categories).toEqual(['ropa']);
+  });
+
+  it('en un empate elige la escritura alfabéticamente primera, sin depender del orden de la base', async () => {
+    const { service, prisma } = setup();
+    prisma.product.findMany.mockResolvedValue([]);
+    const rows: Array<[string, number]> = [['ropa', 2], ['Ropa', 2]];
+    prisma.product.groupBy.mockResolvedValueOnce(groups(rows));
+    const first = (await service.suggestions(CTX)).categories;
+    prisma.product.groupBy.mockResolvedValueOnce(groups([...rows].reverse()));
+    const second = (await service.suggestions(CTX)).categories;
+
+    expect(first).toEqual(second);
+  });
+
+  it('ordena alfabéticamente en español, ignora vacías y nulas y topa en 200', async () => {
+    const { service, prisma } = setup();
+    prisma.product.findMany.mockResolvedValue([]);
+    prisma.product.groupBy.mockResolvedValue(
+      groups([['Zapatos', 1], ['Árboles', 1], ['Bazar', 1], ['   ', 1], [null, 4]]),
+    );
+    expect((await service.suggestions(CTX)).categories).toEqual(['Árboles', 'Bazar', 'Zapatos']);
+
+    prisma.product.groupBy.mockResolvedValue(
+      groups(Array.from({ length: 250 }, (_, i): [string, number] => [`Categoría ${String(i).padStart(3, '0')}`, 1])),
+    );
+    expect((await service.suggestions(CTX)).categories).toHaveLength(200);
   });
 });

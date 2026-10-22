@@ -110,11 +110,13 @@ export class ProductsController {
   // Declared before `:id` so "suggestions" is never read as a product id.
   @Get('suggestions')
   @ApiOperation({
-    summary: 'Brands and presentations already in use (socios only)',
+    summary: 'Brands, presentations and categories already in use (socios only)',
     description:
-      'Distinct brands and presentations of the active products of the ' +
-      'business, at most 200 of each, alphabetical, to suggest them in the ' +
-      'product form. Returns { brands: string[], presentations: string[] } ' +
+      'Distinct brands, presentations and categories of the active products ' +
+      'of the business, at most 200 of each, alphabetical, to suggest them in ' +
+      'the product form. Categories are grouped ignoring case, accents and ' +
+      'extra spaces and shown with their most frequent spelling. Returns ' +
+      '{ brands: string[], presentations: string[], categories: string[] } ' +
       'and nothing else about the products.',
   })
   @UseGuards(SocioGuard)

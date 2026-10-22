@@ -46,7 +46,7 @@ function snapshot(product: Product): Prisma.InputJsonObject {
   };
 }
 
-/** Most distinct brands (and presentations) offered as suggestions. */
+/** Most distinct brands, presentations and categories offered as suggestions. */
 const MAX_SUGGESTIONS = 200;
 
 /**
@@ -64,6 +64,47 @@ function distinctIgnoringCase(values: Array<string | null>): string[] {
     result.push(value);
   }
   return result;
+}
+
+/**
+ * Comparison key of a category: trimmed, lower case, without accents and with
+ * runs of whitespace collapsed ("  Ropa ", "ropa" and "Rópa" are one category).
+ */
+function categoryKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Distinct categories ignoring case, accents and extra spaces, each shown with
+ * its MOST FREQUENT spelling (ties: the alphabetically first one, so the answer
+ * does not depend on the database order). The result is alphabetical by that
+ * spelling, in Spanish.
+ */
+function distinctCategories(
+  rows: Array<{ category: string | null; count: number }>,
+): string[] {
+  const groups = new Map<string, Map<string, number>>();
+  for (const { category, count } of rows) {
+    if (category === null) continue;
+    const key = categoryKey(category);
+    if (key === '') continue;
+    const spellings = groups.get(key) ?? new Map<string, number>();
+    spellings.set(category, (spellings.get(category) ?? 0) + count);
+    groups.set(key, spellings);
+  }
+  const names: string[] = [];
+  for (const spellings of groups.values()) {
+    const [best] = [...spellings.entries()].sort(
+      ([a, countA], [b, countB]) => countB - countA || a.localeCompare(b),
+    )[0]!;
+    names.push(best);
+  }
+  return names.sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
 }
 
 /** Fields only a socio may read: what the product cost, who supplies it and the internal notes. */
@@ -513,14 +554,14 @@ export class ProductsService {
     return this.response(product, isSocio);
   }
   /**
-   * Distinct brands and presentations already used by the context's ACTIVE
+   * Distinct brands, presentations and categories already used by the context's ACTIVE
    * products, to offer them as suggestions in the product form (socios only).
    * Nothing else about the products is read or returned. At most
    * {@link MAX_SUGGESTIONS} of each, alphabetical; spellings that differ only
    * in upper/lower case count once.
    */
   async suggestions(contextId: string) {
-    const [brands, presentations] = await Promise.all([
+    const [brands, presentations, categories] = await Promise.all([
       this.prisma.product.findMany({
         where: { contextId, active: true, brand: { not: null } },
         distinct: ['brand'],
@@ -535,12 +576,23 @@ export class ProductsService {
         orderBy: { presentation: 'asc' },
         take: MAX_SUGGESTIONS,
       }),
+      this.prisma.product.groupBy({
+        by: ['category'],
+        where: { contextId, active: true, category: { not: null } },
+        _count: { _all: true },
+      }),
     ]);
     return {
       brands: distinctIgnoringCase(brands.map((row) => row.brand)),
       presentations: distinctIgnoringCase(
         presentations.map((row) => row.presentation),
       ),
+      categories: distinctCategories(
+        categories.map((row) => ({
+          category: row.category,
+          count: row._count._all,
+        })),
+      ).slice(0, MAX_SUGGESTIONS),
     };
   }
   /**
