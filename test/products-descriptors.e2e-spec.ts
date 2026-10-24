@@ -13,7 +13,9 @@ describe('product brand, presentation and description', () => {
   let prisma: PrismaService;
   const contextA = `pd-a-${randomUUID()}`;
   const contextB = `pd-b-${randomUUID()}`;
-  let tokenA: string;
+  let tokenA: string; // account of socioA
+  let colabTokenA: string; // account of colabA
+  let unassignedTokenA: string; // account without a person
   let tokenB: string;
   let socioA: string;
   let colabA: string;
@@ -23,12 +25,11 @@ describe('product brand, presentation and description', () => {
 
   type Who = { token: string; member: string; device: string };
   const socio = (): Who => ({ token: tokenA, member: socioA, device: deviceA });
-  const colab = (): Who => ({ token: tokenA, member: colabA, device: deviceA });
+  const colab = (): Who => ({ token: colabTokenA, member: colabA, device: deviceA });
   const otherSocio = (): Who => ({ token: tokenB, member: socioB, device: deviceB });
   const as = (req: request.Test, who: Who) =>
     req
       .auth(who.token, { type: 'bearer' })
-      .set('x-member-id', who.member)
       .set('x-device-id', who.device);
   const http = () => request(app.getHttpServer());
 
@@ -66,12 +67,20 @@ describe('product brand, presentation and description', () => {
     await app.init();
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
-    const account = (contextId: string) =>
-      prisma.account.create({
-        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId },
+    // One account per person; memberId is optional only for the unassigned probe.
+    const account = async (contextId: string, memberId?: string) =>
+      jwt.signAsync({
+        sub: (
+          await prisma.account.create({
+            data: {
+              username: randomUUID(),
+              passwordHash: 'not-a-login-fixture',
+              contextId,
+              ...(memberId ? { memberId } : {}),
+            },
+          })
+        ).id,
       });
-    tokenA = await jwt.signAsync({ sub: (await account(contextA)).id });
-    tokenB = await jwt.signAsync({ sub: (await account(contextB)).id });
     await withTestTenant(contextA, async () => {
       socioA = (await prisma.member.create({ data: { name: 'Socio A', role: 'socio', contextId: contextA } })).id;
       colabA = (await prisma.member.create({ data: { name: 'Colab A', role: 'colaborador', contextId: contextA } })).id;
@@ -81,6 +90,10 @@ describe('product brand, presentation and description', () => {
       socioB = (await prisma.member.create({ data: { name: 'Socio B', role: 'socio', contextId: contextB } })).id;
       deviceB = (await prisma.device.create({ data: { name: 'Tablet B', identifier: randomUUID(), contextId: contextB, authorized: true } })).id;
     });
+    tokenA = await account(contextA, socioA);
+    colabTokenA = await account(contextA, colabA);
+    unassignedTokenA = await account(contextA);
+    tokenB = await account(contextB, socioB);
   });
 
   afterAll(async () => {
@@ -220,16 +233,16 @@ describe('product brand, presentation and description', () => {
       // Un negocio propio para contar exactamente lo que hay.
       ctx = `pd-s-${randomUUID()}`;
       const jwt = app.get(JwtService);
-      const acc = await prisma.account.create({
-        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId: ctx },
-      });
-      const token = await jwt.signAsync({ sub: acc.id });
       let member = '';
       let device = '';
       await withTestTenant(ctx, async () => {
         member = (await prisma.member.create({ data: { name: 'S', role: 'socio', contextId: ctx } })).id;
         device = (await prisma.device.create({ data: { name: 'T', identifier: randomUUID(), contextId: ctx, authorized: true } })).id;
       });
+      const acc = await prisma.account.create({
+        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId: ctx, memberId: member },
+      });
+      const token = await jwt.signAsync({ sub: acc.id });
       who = { token, member, device };
       await seed({ brand: `Nike ${tag}`, presentation: 'XL' }, ctx);
       await seed({ brand: `Nike ${tag}`, presentation: '24 oz' }, ctx);
@@ -242,7 +255,7 @@ describe('product brand, presentation and description', () => {
     it('devuelve marcas y presentaciones distintas de productos activos, y nada más', async () => {
       const res = await as(http().get('/products/suggestions'), who).expect(200);
 
-      expect(Object.keys(res.body).sort()).toEqual(['brands', 'presentations']);
+      expect(Object.keys(res.body).sort()).toEqual(['brands', 'categories', 'presentations']);
       // "Nike" y "NIKE" son una sola sugerencia (la ortografía que queda depende del orden de la base).
       expect(res.body.brands.map((brand: string) => brand.toLowerCase())).toEqual([`adidas ${tag}`, `nike ${tag}`]);
       expect(res.body.presentations.map((p: string) => p.toLowerCase())).toEqual(['24 oz', 'xl']);
@@ -261,10 +274,6 @@ describe('product brand, presentation and description', () => {
 
     it('con más de 200 valores devuelve a lo sumo 200', async () => {
       const big = `pd-big-${randomUUID()}`;
-      const acc = await prisma.account.create({
-        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId: big },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: acc.id });
       let member = '';
       let device = '';
       await withTestTenant(big, async () => {
@@ -282,6 +291,10 @@ describe('product brand, presentation and description', () => {
           })),
         });
       });
+      const acc = await prisma.account.create({
+        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId: big, memberId: member },
+      });
+      const token = await app.get(JwtService).signAsync({ sub: acc.id });
 
       const res = await as(http().get('/products/suggestions'), { token, member, device }).expect(200);
 
@@ -314,10 +327,14 @@ describe('product brand, presentation and description', () => {
       expect(asSocio.body.purchaseCostMinor).toBe(9000);
     });
 
-    it('sin x-member-id tampoco hay costo', async () => {
+    it('una cuenta sin persona asignada tampoco ve el costo (ni con x-member-id de un socio)', async () => {
       const made = await create().expect(201);
 
-      const res = await http().get(`/products/${made.body.id}`).auth(tokenA, { type: 'bearer' }).expect(200);
+      const res = await http()
+        .get(`/products/${made.body.id}`)
+        .auth(unassignedTokenA, { type: 'bearer' })
+        .set('x-member-id', socioA)
+        .expect(200);
 
       expect(res.body).not.toHaveProperty('purchaseCostMinor');
     });
@@ -338,19 +355,10 @@ describe('product brand, presentation and description', () => {
 
     it('un colaborador no puede usar el encabezado de un socio (la cuenta ligada a un miembro)', async () => {
       const made = await create().expect(201);
-      const bound = await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'not-a-login-fixture',
-          contextId: contextA,
-          memberId: colabA,
-        },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: bound.id });
 
       const res = await http()
         .get(`/products/${made.body.id}`)
-        .auth(token, { type: 'bearer' })
+        .auth(colabTokenA, { type: 'bearer' })
         .set('x-member-id', socioA)
         .set('x-device-id', deviceA)
         .expect(200);
@@ -408,12 +416,9 @@ describe('product brand, presentation and description', () => {
 
     it('una cuenta ligada a un colaborador no obtiene nada de esto aunque nombre a un socio', async () => {
       const made = await create({ ...SECRET }).expect(201);
-      // Una cuenta ligada a un miembro solo puede haber una: se reutiliza la del test anterior.
-      const bound = await prisma.account.findFirstOrThrow({ where: { contextId: contextA, memberId: colabA } });
-      const token = await app.get(JwtService).signAsync({ sub: bound.id });
       const res = await http()
         .get(`/products/${made.body.id}`)
-        .auth(token, { type: 'bearer' })
+        .auth(colabTokenA, { type: 'bearer' })
         .set('x-member-id', socioA)
         .set('x-device-id', deviceA)
         .expect(200);

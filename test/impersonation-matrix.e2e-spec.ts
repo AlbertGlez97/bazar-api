@@ -137,7 +137,7 @@ const PUBLIC_ROUTES = [
   'POST /member-emails/confirm',
 ];
 
-const GENERIC_403 = 'Selection is not authorized for this context';
+const NO_PERSON_403 = 'Tu cuenta no tiene una persona asignada';
 const SOCIO_ONLY_403 = 'Only socios may access this resource';
 
 interface DiscoveredRoute {
@@ -199,13 +199,14 @@ describe('impersonation matrix: a bound login can only act as its own member', (
 
   const contextId = `matrix-${randomUUID()}`;
 
-  let socioId: string; // fixture socio (acts through the shared login)
+  let socioId: string; // fixture socio (has its own account)
   let inactiveMemberId: string;
   let deviceId: string;
   let activeProductId: string;
   let inactiveProductId: string;
 
-  let sharedToken: string; // the unbound shared business login
+  let socioToken: string; // the fixture socio's own account
+  let unassignedToken: string; // an account with no person assigned
   let colaboradorId: string; // created THROUGH POST /members
   let colaboradorToken: string;
   let boundSocioId: string; // a second socio created THROUGH POST /members
@@ -258,8 +259,7 @@ describe('impersonation matrix: a bound login can only act as its own member', (
   const createThroughApi = async (role: 'colaborador' | 'socio') => {
     const res = await http()
       .post('/members')
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', socioId)
+      .auth(socioToken, { type: 'bearer' })
       .set('x-device-id', deviceId)
       .send({
         nombre: `Matrix ${role}`,
@@ -339,14 +339,23 @@ describe('impersonation matrix: a bound login can only act as its own member', (
       ).id;
     });
 
-    const shared = await prisma.account.create({
+    const socioAccount = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId,
+        memberId: socioId,
+      },
+    });
+    socioToken = await jwt.signAsync({ sub: socioAccount.id });
+    const unassigned = await prisma.account.create({
       data: {
         username: randomUUID(),
         passwordHash: 'not-a-login-fixture',
         contextId,
       },
     });
-    sharedToken = await jwt.signAsync({ sub: shared.id });
+    unassignedToken = await jwt.signAsync({ sub: unassigned.id });
 
     ({ id: colaboradorId, token: colaboradorToken } =
       await createThroughApi('colaborador'));
@@ -437,61 +446,55 @@ describe('impersonation matrix: a bound login can only act as its own member', (
   });
 
   describe.each(SOCIO_ROUTES)('%s (SocioGuard)', (route) => {
-    it('a bound colaborador naming a socio is refused with the generic 403', async () => {
-      for (const target of [socioId, boundSocioId]) {
+    it('a bound colaborador is refused as a colaborador whatever x-member-id names (the header is ignored)', async () => {
+      const targets = [
+        null,
+        colaboradorId,
+        socioId,
+        boundSocioId,
+        inactiveMemberId,
+        randomUUID(),
+      ];
+      for (const target of targets) {
         const res = await call(route, colaboradorToken, target);
         expect(res.status).toBe(403);
-        expect(res.body.message).toBe(GENERIC_403);
+        expect(res.body.message).toBe(SOCIO_ONLY_403);
       }
     });
 
-    it('a bound colaborador using its own member is refused: only socios', async () => {
-      const res = await call(route, colaboradorToken, colaboradorId);
-      expect(res.status).toBe(403);
-      expect(res.body.message).toBe(SOCIO_ONLY_403);
-    });
-
-    it('a bound colaborador naming an inactive or unknown member is refused too', async () => {
-      for (const target of [inactiveMemberId, randomUUID()]) {
-        const res = await call(route, colaboradorToken, target);
-        expect(res.status).toBe(403);
+    it('CONTROL bound socio: passes the guard as itself, and naming another person changes nothing', async () => {
+      for (const target of [null, boundSocioId, socioId, colaboradorId]) {
+        const res = await call(route, boundSocioToken, target);
+        expect([401, 403]).not.toContain(res.status);
       }
     });
 
-    it('with no x-member-id at all it is refused', async () => {
-      const res = await call(route, colaboradorToken, null);
-      expect(res.status).toBe(403);
-    });
-
-    it('CONTROL bound socio: its own member passes the guard, another socio is refused', async () => {
-      const own = await call(route, boundSocioToken, boundSocioId);
-      expect([401, 403]).not.toContain(own.status);
-      const other = await call(route, boundSocioToken, socioId);
-      expect(other.status).toBe(403);
-      expect(other.body.message).toBe(GENERIC_403);
-    });
-
-    it('CONTROL shared (unbound) login: still picks a socio, and a colaborador is still refused', async () => {
-      const asSocio = await call(route, sharedToken, socioId);
-      expect([401, 403]).not.toContain(asSocio.status);
-      const asColaborador = await call(route, sharedToken, colaboradorId);
-      expect(asColaborador.status).toBe(403);
-      expect(asColaborador.body.message).toBe(SOCIO_ONLY_403);
+    it('an account without a person is refused, even naming a socio', async () => {
+      for (const target of [null, socioId]) {
+        const res = await call(route, unassignedToken, target);
+        expect(res.status).toBe(403);
+        expect(res.body.message).toBe(NO_PERSON_403);
+      }
     });
   });
 
   describe.each(CONTEXT_ROUTES)('%s (ContextGuard)', (route) => {
-    it('a bound colaborador naming a socio is refused with the generic 403', async () => {
+    it('a bound colaborador naming a socio is still the colaborador: the guard lets it in as itself', async () => {
       const res = await call(route, colaboradorToken, socioId);
-      expect(res.status).toBe(403);
-      expect(res.body.message).toBe(GENERIC_403);
+      // The empty probe body fails validation or finds nothing: what matters
+      // is that ContextGuard did NOT refuse it.
+      expect([401, 403]).not.toContain(res.status);
     });
 
     it('a bound colaborador acting as itself passes the guard (any active member may)', async () => {
       const res = await call(route, colaboradorToken, colaboradorId);
-      // The empty probe body fails validation or finds nothing: what matters
-      // is that ContextGuard did NOT refuse it.
       expect([401, 403]).not.toContain(res.status);
+    });
+
+    it('an account without a person is refused', async () => {
+      const res = await call(route, unassignedToken, null);
+      expect(res.status).toBe(403);
+      expect(res.body.message).toBe(NO_PERSON_403);
     });
   });
 
@@ -508,11 +511,11 @@ describe('impersonation matrix: a bound login can only act as its own member', (
       }
     });
 
-    it('GET /members?includeInactive=true lists them to the shared login choosing a socio (control)', async () => {
+    it('GET /members?includeInactive=true lists them to a socio account (control)', async () => {
       const res = await call(
         'GET /members',
-        sharedToken,
-        socioId,
+        socioToken,
+        null,
         '?includeInactive=true',
       ).expect(200);
       expect(JSON.stringify(res.body)).toContain(inactiveMemberId);
@@ -531,11 +534,11 @@ describe('impersonation matrix: a bound login can only act as its own member', (
       }
     });
 
-    it('GET /products?includeInactive=true lists them to the shared login choosing a socio (control)', async () => {
+    it('GET /products?includeInactive=true lists them to a socio account (control)', async () => {
       const res = await call(
         'GET /products',
-        sharedToken,
-        socioId,
+        socioToken,
+        null,
         '?includeInactive=true',
       ).expect(200);
       expect(JSON.stringify(res.body)).toContain(inactiveProductId);

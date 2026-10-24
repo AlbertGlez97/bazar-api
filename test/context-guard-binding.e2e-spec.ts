@@ -12,12 +12,12 @@ import {
 import { withTestTenant } from './tenant-scope.js';
 
 /**
- * BE-12 (task T3): what ContextGuard trusts.
+ * One account per person: what ContextGuard trusts.
  *
- * 1. Member binding. An Account with `memberId` set may only act as THAT
- *    Member; an Account without one (the shared business login every
- *    business has today) keeps choosing any Member of its context.
- * 2. Device token. A device with a `tokenHash` must present the matching
+ * 1. The person comes ONLY from `account.memberId`. The `x-member-id` header
+ *    is ignored, so it cannot be used to act as someone else.
+ * 2. An account with no person assigned is refused with a clear message.
+ * 3. Device token. A device with a `tokenHash` must present the matching
  *    `x-device-token`; a device without one is LEGACY and keeps working with
  *    `x-device-id` alone.
  *
@@ -26,17 +26,17 @@ import { withTestTenant } from './tenant-scope.js';
  * passes ContextGuard reaches the validation pipe and answers 400, and one
  * the guard rejects answers 403.
  */
-describe('ContextGuard: member binding and device tokens (BE-12)', () => {
+describe('ContextGuard: one account per person', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  const contextId = `be12-guard-${randomUUID()}`;
+  const contextId = `one-acct-guard-${randomUUID()}`;
 
-  let sharedToken: string; // unbound account (the legacy shared login)
-  let boundColaboradorToken: string; // account bound to the colaborador
-  let boundSocioToken: string; // account bound to the socio
+  let unassignedToken: string; // account without a person
+  let colaboradorToken: string; // account of the colaborador
+  let socioToken: string; // account of the socio
+  let inactiveToken: string; // account of a deactivated person
   let socioId: string;
   let colaboradorId: string;
-  let inactiveMemberId: string;
 
   let legacyDeviceId: string;
   let deviceAId: string;
@@ -47,24 +47,26 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
   const tokenRevoked = generateDeviceToken();
 
   const GENERIC_403 = 'Selection is not authorized for this context';
+  const NO_PERSON = 'Tu cuenta no tiene una persona asignada';
 
   const probe = (
     token: string,
-    memberId: string,
     deviceId: string,
     deviceToken?: string | string[],
+    memberHeader?: string,
   ) => {
     const req = request(app.getHttpServer())
       .post('/sales')
       .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
       .set('x-device-id', deviceId)
       .send({});
+    if (memberHeader !== undefined) req.set('x-member-id', memberHeader);
     // superagent's typings only allow a string here, but it accepts an array
     // at runtime and then sends the header once per element. The
     // repeated-header test below relies on exactly that, so the cast is
     // deliberate and not a way to hide a type error.
-    if (deviceToken !== undefined) req.set('x-device-token', deviceToken as string);
+    if (deviceToken !== undefined)
+      req.set('x-device-token', deviceToken as string);
     return req;
   };
 
@@ -77,6 +79,7 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
 
+    let inactiveMemberId = '';
     await withTestTenant(contextId, async () => {
       socioId = (
         await prisma.member.create({
@@ -99,10 +102,7 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
         })
       ).id;
 
-      const device = (
-        name: string,
-        extra: Record<string, unknown> = {},
-      ) =>
+      const device = (name: string, extra: Record<string, unknown> = {}) =>
         prisma.device
           .create({
             data: {
@@ -116,8 +116,12 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
           .then((d) => d.id);
 
       legacyDeviceId = await device('legacy'); // tokenHash null
-      deviceAId = await device('tokened A', { tokenHash: hashDeviceToken(tokenA) });
-      deviceBId = await device('tokened B', { tokenHash: hashDeviceToken(tokenB) });
+      deviceAId = await device('tokened A', {
+        tokenHash: hashDeviceToken(tokenA),
+      });
+      deviceBId = await device('tokened B', {
+        tokenHash: hashDeviceToken(tokenB),
+      });
       revokedDeviceId = await device('revoked', {
         tokenHash: hashDeviceToken(tokenRevoked),
         authorized: false,
@@ -137,9 +141,10 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
           },
         })
         .then((a) => jwt.signAsync({ sub: a.id }));
-    sharedToken = await account();
-    boundColaboradorToken = await account(colaboradorId);
-    boundSocioToken = await account(socioId);
+    unassignedToken = await account();
+    colaboradorToken = await account(colaboradorId);
+    socioToken = await account(socioId);
+    inactiveToken = await account(inactiveMemberId);
   });
 
   afterAll(async () => {
@@ -155,31 +160,46 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
     await app?.close();
   });
 
-  describe('member binding', () => {
-    it('a bound colaborador account acting as its own member passes', async () => {
-      await probe(boundColaboradorToken, colaboradorId, legacyDeviceId).expect(400);
+  describe('the person comes from the account', () => {
+    it('a colaborador account passes without sending any member header', async () => {
+      await probe(colaboradorToken, legacyDeviceId).expect(400);
     });
 
-    it('a bound socio account acting as its own member passes', async () => {
-      await probe(boundSocioToken, socioId, legacyDeviceId).expect(400);
+    it('a socio account passes without sending any member header', async () => {
+      await probe(socioToken, legacyDeviceId).expect(400);
     });
 
-    it("a bound colaborador account sending a socio's member id is refused with the generic 403", async () => {
-      const res = await probe(boundColaboradorToken, socioId, legacyDeviceId).expect(403);
-      expect(res.body.message).toBe(GENERIC_403);
+    it('an account with no person is refused with a clear message', async () => {
+      const res = await probe(unassignedToken, legacyDeviceId).expect(403);
+      expect(res.body.message).toBe(NO_PERSON);
     });
 
-    it('a bound account cannot even reach a socio-only route as the socio', async () => {
+    it('an account with no person is refused even if it names a valid member', async () => {
+      const res = await probe(
+        unassignedToken,
+        legacyDeviceId,
+        undefined,
+        socioId,
+      ).expect(403);
+      expect(res.body.message).toBe(NO_PERSON);
+    });
+
+    it("a colaborador sending a socio's x-member-id is still the colaborador", async () => {
+      // The guard ignores the header, so the request passes as the colaborador.
+      await probe(colaboradorToken, legacyDeviceId, undefined, socioId).expect(
+        400,
+      );
+    });
+
+    it('a manipulated x-member-id never reaches a socio-only route', async () => {
       const res = await request(app.getHttpServer())
         .patch(`/members/${colaboradorId}`)
-        .auth(boundColaboradorToken, { type: 'bearer' })
+        .auth(colaboradorToken, { type: 'bearer' })
         .set('x-member-id', socioId)
         .set('x-device-id', legacyDeviceId)
         .send({ name: 'Renamed by an impostor' })
         .expect(403);
-      // The refusal must come from the binding check (the generic message),
-      // not from any other 403 source on this route, and nothing was written.
-      expect(res.body.message).toBe(GENERIC_403);
+      expect(res.body.message).not.toBe(NO_PERSON);
       await withTestTenant(contextId, async () => {
         const unchanged = await prisma.member.findUniqueOrThrow({
           where: { id: colaboradorId },
@@ -188,44 +208,47 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
       });
     });
 
-    it('the shared (unbound) account keeps choosing any member of its context', async () => {
-      await probe(sharedToken, socioId, legacyDeviceId).expect(400);
-      await probe(sharedToken, colaboradorId, legacyDeviceId).expect(400);
+    it('a malformed x-member-id does not matter either', async () => {
+      await probe(socioToken, legacyDeviceId, undefined, 'not-a-uuid').expect(
+        400,
+      );
     });
 
-    it('GET /members?includeInactive=true: a bound colaborador naming a socio is NOT treated as that socio', async () => {
+    it('the account of a deactivated person is refused with the generic 403', async () => {
+      const res = await probe(inactiveToken, legacyDeviceId).expect(403);
+      expect(res.body.message).toBe(GENERIC_403);
+    });
+
+    it('a missing device is still refused', async () => {
+      await request(app.getHttpServer())
+        .post('/sales')
+        .auth(socioToken, { type: 'bearer' })
+        .send({})
+        .expect(403);
+    });
+
+    it('GET /members?includeInactive=true: a colaborador naming a socio is NOT treated as that socio', async () => {
       const res = await request(app.getHttpServer())
         .get('/members')
         .query({ includeInactive: 'true' })
-        .auth(boundColaboradorToken, { type: 'bearer' })
+        .auth(colaboradorToken, { type: 'bearer' })
         .set('x-member-id', socioId)
         .expect(200);
       const ids = res.body.map((m: { id: string }) => m.id);
       expect(ids).toContain(socioId);
-      expect(ids).not.toContain(inactiveMemberId);
+      expect(ids).toHaveLength(2);
     });
 
-    it('GET /members?includeInactive=true: a bound socio acting as itself sees inactive members', async () => {
+    it('GET /members?includeInactive=true: a socio sees inactive members with no header', async () => {
       const res = await request(app.getHttpServer())
         .get('/members')
         .query({ includeInactive: 'true' })
-        .auth(boundSocioToken, { type: 'bearer' })
-        .set('x-member-id', socioId)
+        .auth(socioToken, { type: 'bearer' })
         .expect(200);
-      expect(res.body.map((m: { id: string }) => m.id)).toContain(inactiveMemberId);
+      expect(res.body).toHaveLength(3);
     });
 
-    it('GET /members?includeInactive=true: the shared account naming a socio still sees inactive members (legacy pinned)', async () => {
-      const res = await request(app.getHttpServer())
-        .get('/members')
-        .query({ includeInactive: 'true' })
-        .auth(sharedToken, { type: 'bearer' })
-        .set('x-member-id', socioId)
-        .expect(200);
-      expect(res.body.map((m: { id: string }) => m.id)).toContain(inactiveMemberId);
-    });
-
-    it('GET /products?includeInactive=true honors the binding the same way', async () => {
+    it('GET /products?includeInactive=true follows the account, not the header', async () => {
       const inactive = await withTestTenant(contextId, () =>
         prisma.product.create({
           data: {
@@ -239,66 +262,63 @@ describe('ContextGuard: member binding and device tokens (BE-12)', () => {
           },
         }),
       );
-      const list = (token: string, memberId: string) =>
-        request(app.getHttpServer())
+      const list = (token: string, header?: string) => {
+        const req = request(app.getHttpServer())
           .get('/products')
           .query({ includeInactive: 'true' })
-          .auth(token, { type: 'bearer' })
-          .set('x-member-id', memberId)
-          .expect(200);
+          .auth(token, { type: 'bearer' });
+        if (header) req.set('x-member-id', header);
+        return req.expect(200);
+      };
       const has = (body: { items: Array<{ id: string }> }) =>
         body.items.some((p) => p.id === inactive.id);
 
-      expect(has((await list(boundColaboradorToken, socioId)).body)).toBe(false);
-      expect(has((await list(boundSocioToken, socioId)).body)).toBe(true);
-      expect(has((await list(sharedToken, socioId)).body)).toBe(true);
+      expect(has((await list(colaboradorToken, socioId)).body)).toBe(false);
+      expect(has((await list(socioToken)).body)).toBe(true);
+      expect(has((await list(unassignedToken, socioId)).body)).toBe(false);
     });
   });
 
   describe('device token', () => {
     it('a legacy device (no token hash) works with x-device-id alone', async () => {
-      await probe(sharedToken, socioId, legacyDeviceId).expect(400);
+      await probe(socioToken, legacyDeviceId).expect(400);
     });
 
     it('a legacy device ignores a token header it does not need', async () => {
-      await probe(sharedToken, socioId, legacyDeviceId, 'whatever').expect(400);
+      await probe(socioToken, legacyDeviceId, 'whatever').expect(400);
     });
 
     it('a tokened device without its token is refused with the generic 403', async () => {
-      const res = await probe(sharedToken, socioId, deviceAId).expect(403);
+      const res = await probe(socioToken, deviceAId).expect(403);
       expect(res.body.message).toBe(GENERIC_403);
     });
 
     it('a tokened device with a wrong token is refused', async () => {
-      await probe(sharedToken, socioId, deviceAId, generateDeviceToken()).expect(403);
+      await probe(socioToken, deviceAId, generateDeviceToken()).expect(403);
     });
 
     it('a tokened device with an empty token is refused', async () => {
-      await probe(sharedToken, socioId, deviceAId, '').expect(403);
+      await probe(socioToken, deviceAId, '').expect(403);
     });
 
     it('a tokened device with its right token passes', async () => {
-      await probe(sharedToken, socioId, deviceAId, tokenA).expect(400);
+      await probe(socioToken, deviceAId, tokenA).expect(400);
     });
 
     it("device A's token does not open device B", async () => {
-      await probe(sharedToken, socioId, deviceBId, tokenA).expect(403);
-      await probe(sharedToken, socioId, deviceBId, tokenB).expect(400);
+      await probe(socioToken, deviceBId, tokenA).expect(403);
+      await probe(socioToken, deviceBId, tokenB).expect(400);
     });
 
     it('a repeated x-device-token header is refused', async () => {
-      await probe(sharedToken, socioId, deviceAId, [tokenA, tokenA]).expect(403);
+      await probe(socioToken, deviceAId, [tokenA, tokenA]).expect(403);
     });
 
     it('a revoked device is refused even with its right token', async () => {
-      const res = await probe(sharedToken, socioId, revokedDeviceId, tokenRevoked).expect(403);
+      const res = await probe(socioToken, revokedDeviceId, tokenRevoked).expect(
+        403,
+      );
       expect(res.body.message).toBe(GENERIC_403);
-    });
-
-    it('the binding and the token are both required when both apply', async () => {
-      await probe(boundColaboradorToken, colaboradorId, deviceAId, tokenA).expect(400);
-      await probe(boundColaboradorToken, socioId, deviceAId, tokenA).expect(403);
-      await probe(boundColaboradorToken, colaboradorId, deviceAId).expect(403);
     });
   });
 });

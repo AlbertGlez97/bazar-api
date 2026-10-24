@@ -22,7 +22,8 @@ describe('context-scoped products', () => {
   let prisma: PrismaService;
   let products: ProductsService;
   let directory: string;
-  let token: string;
+  let token: string; // socio account token
+  let collaboratorToken: string;
   let accountId: string;
   let socio: string;
   let collaborator: string;
@@ -43,11 +44,9 @@ describe('context-scoped products', () => {
     account: { id: accountId, contextId },
     selection: { memberId: socio, deviceId: device },
   });
-  const write = (req: request.Test, member = socio) =>
-    req
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', member)
-      .set('x-device-id', device);
+  // The acting person is the one bound to the token's account.
+  const write = (req: request.Test, bearer = token) =>
+    req.auth(bearer, { type: 'bearer' }).set('x-device-id', device);
   const create = async (data = body()) => {
     const res = await write(request(app.getHttpServer()).post('/products'))
       .send(data)
@@ -67,15 +66,6 @@ describe('context-scoped products', () => {
     await app.init();
     prisma = app.get(PrismaService);
     products = app.get(ProductsService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    accountId = account.id;
-    token = await app.get(JwtService).signAsync({ sub: accountId });
     await withTestTenant(contextId, async () => {
       socio = (
         await prisma.member.create({
@@ -97,6 +87,23 @@ describe('context-scoped products', () => {
           },
         })
       ).id;
+    });
+    // One account per person: each token acts as exactly its own member.
+    const jwt = app.get(JwtService);
+    const accountFor = (memberId: string) =>
+      prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'not-a-login-fixture',
+          contextId,
+          memberId,
+        },
+      });
+    const socioAccount = await accountFor(socio);
+    accountId = socioAccount.id;
+    token = await jwt.signAsync({ sub: socioAccount.id });
+    collaboratorToken = await jwt.signAsync({
+      sub: (await accountFor(collaborator)).id,
     });
     otherProduct = await withTestTenant(otherContext, async () =>
       (
@@ -120,6 +127,8 @@ describe('context-scoped products', () => {
   });
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         await prisma.productAudit.deleteMany({
           where: { product: { contextId } },
@@ -179,22 +188,25 @@ describe('context-scoped products', () => {
   );
   it('prevents collaborator mutations but permits catalog and audit reading', async () => {
     const product = await create();
-    await write(request(app.getHttpServer()).post('/products'), collaborator)
+    await write(
+      request(app.getHttpServer()).post('/products'),
+      collaboratorToken,
+    )
       .send(body())
       .expect(403);
     await write(
       request(app.getHttpServer()).patch(`/products/${product.id}`),
-      collaborator,
+      collaboratorToken,
     )
       .send({ unitPriceMinor: 1 })
       .expect(403);
     await request(app.getHttpServer())
       .get('/products')
-      .auth(token, { type: 'bearer' })
+      .auth(collaboratorToken, { type: 'bearer' })
       .expect(200);
     await request(app.getHttpServer())
       .get(`/products/${product.id}/audit`)
-      .auth(token, { type: 'bearer' })
+      .auth(collaboratorToken, { type: 'bearer' })
       .expect(200);
   });
   it.each([
@@ -643,7 +655,7 @@ describe('context-scoped products', () => {
       .expect(413);
     await write(
       request(app.getHttpServer()).post(`/products/${product.id}/image`),
-      collaborator,
+      collaboratorToken,
     )
       .attach('image', image, { filename: 'ok.png', contentType: 'image/png' })
       .expect(403);

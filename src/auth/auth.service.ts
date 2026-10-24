@@ -69,10 +69,10 @@ export class AuthService {
 
   /**
    * Who is logged in, as far as the frontend needs to know: the username and
-   * the Member this login is bound to (BE-12), if any. A bound login can only
-   * ever act as that Member (see {@link ContextGuard}), so the frontend must
-   * not offer it the person selector; the shared business login (`memberId`
-   * null) keeps picking its person.
+   * the person this account belongs to. The account can only ever act as that
+   * Member (see {@link ContextGuard}), so there is no person to choose;
+   * `memberId` null means an account with no person assigned, which cannot
+   * enter.
    *
    * Exposes exactly `username`, `memberId` and `member` (`id`, `name`, `role`,
    * `active`): never the context, the account id or any credential. The

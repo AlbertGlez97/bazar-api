@@ -23,6 +23,8 @@ describe('finance overview HTTP and tenant snapshot', () => {
     memberId: string;
     collaboratorId: string;
     inactiveId: string;
+    collaboratorToken: string;
+    inactiveToken: string;
     deviceId: string;
     revokedDeviceId: string;
     productId: string;
@@ -32,13 +34,12 @@ describe('finance overview HTTP and tenant snapshot', () => {
   const get = (
     index = 0,
     query: Record<string, unknown> = period,
-    memberId?: string,
+    token?: string,
     deviceId?: string,
   ) =>
     request(app.getHttpServer())
       .get(endpoint)
-      .auth(actors[index].token, { type: 'bearer' })
-      .set('x-member-id', memberId ?? actors[index].memberId)
+      .auth(token ?? actors[index].token, { type: 'bearer' })
       .set('x-device-id', deviceId ?? actors[index].deviceId)
       .query(query);
   beforeAll(async () => {
@@ -50,14 +51,6 @@ describe('finance overview HTTP and tenant snapshot', () => {
     await app.init();
     prisma = app.get(PrismaService);
     for (const contextId of contexts) {
-      const account = await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'not-a-login-fixture',
-          contextId,
-        },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
       const fixture = await withTestTenant(contextId, async () => {
         const member = (role: 'socio' | 'colaborador', active = true) =>
           prisma.member.create({
@@ -98,7 +91,31 @@ describe('finance overview HTTP and tenant snapshot', () => {
           productId,
         };
       });
-      actors.push({ accountId: account.id, token, ...fixture });
+      // One account per person: the token decides who acts.
+      const accountFor = async (memberId: string) => {
+        const account = await prisma.account.create({
+          data: {
+            username: randomUUID(),
+            passwordHash: 'not-a-login-fixture',
+            contextId,
+            memberId,
+          },
+        });
+        return {
+          id: account.id,
+          token: await app.get(JwtService).signAsync({ sub: account.id }),
+        };
+      };
+      const socio = await accountFor(fixture.memberId);
+      const collaborator = await accountFor(fixture.collaboratorId);
+      const inactive = await accountFor(fixture.inactiveId);
+      actors.push({
+        accountId: socio.id,
+        token: socio.token,
+        collaboratorToken: collaborator.token,
+        inactiveToken: inactive.token,
+        ...fixture,
+      });
     }
   });
   afterAll(async () => {
@@ -116,10 +133,14 @@ describe('finance overview HTTP and tenant snapshot', () => {
           await prisma.saleItem.deleteMany({ where: { contextId } });
           await prisma.sale.deleteMany({ where: { contextId } });
           await prisma.product.deleteMany({ where: { contextId } });
+        });
+        // Accounts before Members (Account.memberId is ON DELETE RESTRICT),
+        // but after the finance rows that reference them.
+        await prisma.account.deleteMany({ where: { contextId } });
+        await withTestTenant(contextId, async () => {
           await prisma.device.deleteMany({ where: { contextId } });
           await prisma.member.deleteMany({ where: { contextId } });
         });
-        await prisma.account.deleteMany({ where: { contextId } });
       }
     await app?.close();
   });
@@ -134,12 +155,14 @@ describe('finance overview HTTP and tenant snapshot', () => {
   });
   it('denies unauthenticated, non-socio, inactive, foreign and unauthorized-device contexts', async () => {
     await request(app.getHttpServer()).get(endpoint).query(period).expect(401);
-    for (const memberId of [
-      actors[0].collaboratorId,
-      actors[0].inactiveId,
-      actors[1].memberId,
+    // Each token is the acting person: a colaborador, a deactivated socio and
+    // a socio of another business (against this business's device).
+    for (const token of [
+      actors[0].collaboratorToken,
+      actors[0].inactiveToken,
+      actors[1].token,
     ])
-      await get(0, period, memberId).expect(403);
+      await get(0, period, token).expect(403);
     await get(0, period, undefined, actors[0].revokedDeviceId).expect(403);
     await get(0, period, undefined, actors[1].deviceId).expect(403);
   });

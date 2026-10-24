@@ -220,7 +220,7 @@ export const operations: Record<string, Operation> = {
   authMe: {
     summary: 'Which member am I bound to?',
     description:
-      'Only the bearer token is needed (no x-member-id or x-device-id): call it right after login. memberId and member are null for the shared business login, which chooses its person from GET /members; when memberId is not null the login is bound to that member and can ONLY act as it, so the client must skip the person selector. A deactivated bound member is reported with active false. Never returns the context, the account id or any credential.',
+      'Only the bearer token is needed (no x-device-id): call it right after login. Every account belongs to ONE person and can ONLY act as it: memberId and member are that person. They are null only for an account with no person assigned, which cannot enter (403 "Tu cuenta no tiene una persona asignada" on every operational route). A deactivated person is reported with active false. Never returns the context, the account id or any credential.',
     access: 'jwt',
     responses: ok({
       username: 'carlos@example.com',
@@ -235,7 +235,7 @@ export const operations: Record<string, Operation> = {
   },
   changePassword: {
     summary: 'Change my own password',
-    description: `Any logged-in person (a socio, a colaborador or the shared business login) changes the password of their own account; only the bearer token is needed, no x-member-id or x-device-id. newPassword must have ${MIN_NEW_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.`,
+    description: `Any logged-in person (a socio or a colaborador) changes the password of their own account; only the bearer token is needed, no x-device-id. newPassword must have ${MIN_NEW_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters and differ from currentPassword; passwords are used exactly as sent (never trimmed). A wrong currentPassword answers 403, NOT 401, so the session is kept. Answers 204 with no body. Existing tokens stay valid until they expire. Placeholder passwords are not real account secrets.`,
     access: 'jwt',
     body: body(
       {

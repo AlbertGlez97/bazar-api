@@ -7,6 +7,9 @@ interface DriverAdapterCause {
   constraint?: { index?: unknown };
 }
 
+/** The first seeded socio: the person the seeded login belongs to. */
+const SEED_FOUNDER_ID = 'bf030001-0000-4000-8000-000000000001';
+
 /** The Postgres driver's own error, as Prisma 7 + adapter-pg nests it under `meta`. */
 function driverAdapterCause(error: unknown): DriverAdapterCause | undefined {
   const meta = (error as { meta?: unknown } | null | undefined)?.meta as
@@ -146,19 +149,8 @@ export async function seedContext(
     existing?.passwordHash ?? (await hashPassword(options.password));
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.context_id', ${options.contextId}, true)`;
-    const account = await tx.account.upsert({
-      where: { username: options.username },
-      update: {},
-      create: {
-        username: options.username,
-        passwordHash,
-        contextId: options.contextId,
-      },
-    });
-    if (account.contextId !== options.contextId)
-      throw new Error('Seed account context mismatch');
     for (const [id, name] of [
-      ['bf030001-0000-4000-8000-000000000001', 'Alberto'],
+      [SEED_FOUNDER_ID, 'Alberto'],
       ['bf030001-0000-4000-8000-000000000002', 'Adid'],
     ]) {
       try {
@@ -175,6 +167,24 @@ export async function seedContext(
         throw err;
       }
     }
+    // One account per person: the seeded login belongs to the first socio.
+    // An older seeded login that is still unbound gets tied to them too.
+    const account = await tx.account.upsert({
+      where: { username: options.username },
+      update: {},
+      create: {
+        username: options.username,
+        passwordHash,
+        contextId: options.contextId,
+        memberId: SEED_FOUNDER_ID,
+      },
+    });
+    if (account.contextId !== options.contextId)
+      throw new Error('Seed account context mismatch');
+    await tx.account.updateMany({
+      where: { id: account.id, memberId: null },
+      data: { memberId: SEED_FOUNDER_ID },
+    });
     for (const [identifier, name] of [
       ['shared-tablet', 'Shared tablet'],
       ['alberto-backup-phone', 'Alberto backup phone'],

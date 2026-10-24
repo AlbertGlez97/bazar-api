@@ -19,7 +19,6 @@ function setup() {
     service.list(
       'ctx-1',
       Object.assign(new ProductListDto(), query),
-      undefined,
       null,
     );
   const whereOf = () =>

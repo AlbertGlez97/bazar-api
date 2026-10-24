@@ -13,9 +13,9 @@ import { isUUID } from 'class-validator';
 
 export interface AuthenticatedRequest extends Request {
   /**
-   * `memberId` is the Member this login is bound to (BE-12), or `null` for
-   * the shared business login every business has today, which may act as any
-   * Member of its context. See {@link ContextGuard}.
+   * `memberId` is the person this account belongs to (one account per
+   * person). It is `null` only for an account that was never tied to a
+   * person, which {@link ContextGuard} refuses.
    */
   account: { id: string; contextId: string; memberId: string | null };
   selection?: { memberId: string; deviceId: string };

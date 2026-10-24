@@ -37,9 +37,9 @@ describe('devices: management and one-time activation (BE-12)', () => {
   const contextId = `be12-devices-${randomUUID()}`;
   const otherContextId = `be12-devices-other-${randomUUID()}`;
 
-  let sharedToken: string; // unbound login (the shared business login)
-  let boundColaboradorToken: string; // login bound to the colaborador
-  let otherToken: string; // login of the other business
+  let socioToken: string; // account of the socio
+  let colaboradorToken: string; // account of the colaborador
+  let otherToken: string; // account of the other business's socio
   let socioId: string;
   let colaboradorId: string;
   let otherSocioId: string;
@@ -53,20 +53,12 @@ describe('devices: management and one-time activation (BE-12)', () => {
 
   const asSocio = (req: request.Test) =>
     req
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', socioId)
+      .auth(socioToken, { type: 'bearer' })
       .set('x-device-id', actingDeviceId);
 
-  const asSharedColaborador = (req: request.Test) =>
+  const asColaborador = (req: request.Test) =>
     req
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorId)
-      .set('x-device-id', actingDeviceId);
-
-  const asBoundColaborador = (req: request.Test) =>
-    req
-      .auth(boundColaboradorToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorId)
+      .auth(colaboradorToken, { type: 'bearer' })
       .set('x-device-id', actingDeviceId);
 
   const http = () => request(app.getHttpServer());
@@ -74,15 +66,14 @@ describe('devices: management and one-time activation (BE-12)', () => {
   const probe = (deviceId: string, deviceToken?: string) => {
     const req = http()
       .post('/sales')
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', socioId)
+      .auth(socioToken, { type: 'bearer' })
       .set('x-device-id', deviceId)
       .send({});
     if (deviceToken !== undefined) req.set('x-device-token', deviceToken);
     return req;
   };
 
-  const identify = (identifier: string, name: string, token = sharedToken) =>
+  const identify = (identifier: string, name: string, token = socioToken) =>
     http()
       .post('/devices/identify')
       .auth(token, { type: 'bearer' })
@@ -200,9 +191,9 @@ describe('devices: management and one-time activation (BE-12)', () => {
           },
         })
         .then((a) => jwt.signAsync({ sub: a.id }));
-    sharedToken = await account(contextId);
-    boundColaboradorToken = await account(contextId, colaboradorId);
-    otherToken = await account(otherContextId);
+    socioToken = await account(contextId, socioId);
+    colaboradorToken = await account(contextId, colaboradorId);
+    otherToken = await account(otherContextId, otherSocioId);
   });
 
   beforeEach(() => {
@@ -440,7 +431,7 @@ describe('devices: management and one-time activation (BE-12)', () => {
     it('rejects unknown fields with 400', async () => {
       await http()
         .post('/devices/identify')
-        .auth(sharedToken, { type: 'bearer' })
+        .auth(socioToken, { type: 'bearer' })
         .send({ identifier: 'x', name: 'y', status: 'activo' })
         .expect(400);
     });
@@ -658,7 +649,6 @@ describe('devices: management and one-time activation (BE-12)', () => {
       const other = await http()
         .get('/devices')
         .auth(otherToken, { type: 'bearer' })
-        .set('x-member-id', otherSocioId)
         .set('x-device-id', otherActingDeviceId)
         .expect(200);
       const otherIds = other.body.map((d: { id: string }) => d.id);
@@ -668,17 +658,21 @@ describe('devices: management and one-time activation (BE-12)', () => {
   });
 
   describe('who may manage devices', () => {
-    it.each([
-      ['a colaborador on the shared login', asSharedColaborador],
-      ['a colaborador with their own bound login', asBoundColaborador],
-    ])('%s gets 403 on every management endpoint', async (_label, as) => {
+    it('a colaborador gets 403 on every management endpoint', async () => {
       const device = await create(`Vedado ${randomUUID()}`);
+      const as = asColaborador;
       await as(http().post('/devices')).send({ name: 'no' }).expect(403);
       await as(http().get('/devices')).expect(403);
       await as(http().patch(`/devices/${device.id}/revoke`)).expect(403);
       await as(http().patch(`/devices/${device.id}/reissue`)).expect(403);
       // Nothing changed.
       expect((await row(device.id)).status).toBe('pendiente_activacion');
+    });
+
+    it('ignores x-member-id: a colaborador cannot act as the socio by sending the header', async () => {
+      await asColaborador(http().get('/devices'))
+        .set('x-member-id', socioId)
+        .expect(403);
     });
 
     it('answers 401 without a login', async () => {

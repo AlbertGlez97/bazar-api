@@ -96,13 +96,12 @@ model Account {
   contextId                      String
   active                         Boolean                         @default(true)
   createdAt                      DateTime                        @default(now()) @db.Timestamptz(3)
-  // BE-12: the Member this login belongs to. Null = the shared login of a
-  // business (every account that exists before BE-12, including the founding
-  // socio's): whoever holds it may pick any active Member with x-member-id,
-  // which is the shared-tablet flow. Set = the account is bound to exactly
-  // that Member and ContextGuard must refuse any other x-member-id, so a
-  // colaborador's own login cannot act as a socio. Unique: one login per
-  // Member.
+  // One account per person: the Member this login belongs to. ContextGuard
+  // takes the acting person from here and from nowhere else (the x-member-id
+  // header is ignored), so a colaborador's login cannot act as a socio.
+  // Unique: one login per Member. Null only for an account that could not be
+  // tied to a person (migration 20261025120000): it is refused on every
+  // operational route. The column stays nullable so that migration is additive.
   //
   // ON DELETE RESTRICT (not SET NULL): if the Member row were ever hard
   // deleted, SET NULL would silently turn a bound colaborador login into an

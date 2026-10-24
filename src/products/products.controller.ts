@@ -4,7 +4,6 @@ import {
   Controller,
   Delete,
   Get,
-  Headers,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -43,8 +42,8 @@ const validate = (expectedType: new () => object) =>
  * {@link SocioGuard} (socio-only); reads (`list`, `findOne`, `audit`) only
  * require {@link AuthGuard}, since colaboradores must be able to browse
  * the catalog and price history to sell, even though they cannot change
- * it. `list`'s `includeInactive` is additionally gated to socios via the
- * optional `x-member-id` header, without requiring a full guard/selection
+ * it. `list`'s `includeInactive` is additionally gated to socios through the
+ * person of the account, without requiring a full guard/selection
  * (see {@link ProductsService.list}).
  */
 @ApiTags('products')
@@ -98,12 +97,10 @@ export class ProductsController {
   list(
     @Req() req: AuthenticatedRequest,
     @Query(validate(ProductListDto)) query: ProductListDto,
-    @Headers('x-member-id') requestingMemberId?: string,
   ) {
     return this.products.list(
       req.account.contextId,
       query,
-      requestingMemberId,
       req.account.memberId,
     );
   }
@@ -130,18 +127,16 @@ export class ProductsController {
       'Returns the product regardless of active status (a deactivated ' +
       "product is still individually fetchable; only the default list " +
       'hides it). 404 if it does not exist in this context. The purchase ' +
-      'cost is only included when x-member-id identifies an active socio.',
+      'cost is only included when the account belongs to an active socio.',
   })
   @UseGuards(AuthGuard)
   findOne(
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Headers('x-member-id') requestingMemberId?: string,
   ) {
     return this.products.findOne(
       req.account.contextId,
       id,
-      requestingMemberId,
       req.account.memberId,
     );
   }
@@ -152,13 +147,11 @@ export class ProductsController {
     @Req() req: AuthenticatedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Query(validate(ProductListDto)) query: ProductListDto,
-    @Headers('x-member-id') requestingMemberId?: string,
   ) {
     return this.products.audits(
       req.account.contextId,
       id,
       query,
-      requestingMemberId,
       req.account.memberId,
     );
   }

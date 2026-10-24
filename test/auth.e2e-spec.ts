@@ -133,6 +133,12 @@ describe('authenticated context', () => {
         .passwordHash,
     ).toBe(before.passwordHash);
   });
+  it('ties the seeded login to the first seeded socio, so it can enter', async () => {
+    const account = await prisma.account.findUniqueOrThrow({
+      where: { username },
+    });
+    expect(account.memberId).toBe(memberId);
+  });
   it('rolls back attempts to move seeded identities to another context', async () => {
     const conflictingUsername = `conflict-${randomUUID()}`;
     await expect(
@@ -249,24 +255,39 @@ describe('authenticated context', () => {
       .send({ identifier: foreign.identifier, name: foreign.name })
       .expect(403);
   });
-  it('accepts same-context selection and rejects cross-context or missing selection', async () => {
+  it('acts as the account person, ignores x-member-id and rejects cross-context or missing device', async () => {
     const probe = () =>
       request(app.getHttpServer())
         .get('/test-context')
         .auth(token, { type: 'bearer' });
-    await probe()
-      .set('x-member-id', memberId)
-      .set('x-device-id', deviceId)
-      .expect(200);
+    await probe().set('x-device-id', deviceId).expect(200);
+    // A manipulated x-member-id changes nothing: the token's person acts.
     await probe()
       .set('x-member-id', otherMemberId)
       .set('x-device-id', deviceId)
-      .expect(403);
-    await probe()
-      .set('x-member-id', memberId)
-      .set('x-device-id', otherDeviceId)
-      .expect(403);
+      .expect(200);
+    await probe().set('x-device-id', otherDeviceId).expect(403);
     await probe().expect(403);
+  });
+  it('rejects an account without an assigned person', async () => {
+    await prisma.account.update({
+      where: { username },
+      data: { memberId: null },
+    });
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/test-context')
+        .auth(token, { type: 'bearer' })
+        .set('x-member-id', memberId)
+        .set('x-device-id', deviceId)
+        .expect(403);
+      expect(res.body.message).toBe('Tu cuenta no tiene una persona asignada');
+    } finally {
+      await prisma.account.update({
+        where: { username },
+        data: { memberId },
+      });
+    }
   });
   it('respects device revocation, including after seed rerun', async () => {
     await withTestTenant(contextId, () =>
@@ -285,7 +306,6 @@ describe('authenticated context', () => {
       await request(app.getHttpServer())
         .get('/test-context')
         .auth(token, { type: 'bearer' })
-        .set('x-member-id', memberId)
         .set('x-device-id', deviceId)
         .expect(403);
     } finally {
@@ -323,7 +343,6 @@ describe('authenticated context', () => {
       await request(app.getHttpServer())
         .get('/test-context')
         .auth(token, { type: 'bearer' })
-        .set('x-member-id', memberId)
         .set('x-device-id', deviceId)
         .expect(403);
     } finally {

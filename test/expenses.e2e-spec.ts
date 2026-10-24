@@ -11,7 +11,8 @@ import { withTestTenant } from './tenant-scope.js';
 describe('business expenses', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  let token: string;
+  let token: string; // account of the recording socio
+  let collaboratorToken: string; // account of the colaborador
   let actorId: string;
   let payerSocioId: string;
   let collaboratorId: string;
@@ -21,13 +22,10 @@ describe('business expenses', () => {
   const contextId = `expenses-${randomUUID()}`;
   const otherContext = `expenses-other-${randomUUID()}`;
   const endpoint = '/finance/expenses';
-  const auth = (req: request.Test, memberId = actorId) =>
-    req
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
-      .set('x-device-id', deviceId);
-  const post = (dto: unknown, memberId = actorId) =>
-    auth(request(app.getHttpServer()).post(endpoint), memberId).send(
+  const auth = (req: request.Test, bearer = token) =>
+    req.auth(bearer, { type: 'bearer' }).set('x-device-id', deviceId);
+  const post = (dto: unknown, bearer = token) =>
+    auth(request(app.getHttpServer()).post(endpoint), bearer).send(
       dto as object,
     );
   const get = (path = endpoint, query: Record<string, unknown> = {}) =>
@@ -67,14 +65,6 @@ describe('business expenses', () => {
     app = module.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    token = await app.get(JwtService).signAsync({ sub: account.id });
     await withTestTenant(contextId, async () => {
       const member = (
         name: string,
@@ -100,11 +90,28 @@ describe('business expenses', () => {
           })
         ).id,
     );
+    // One account per person: the token's account carries the acting member.
+    const jwt = app.get(JwtService);
+    const accountToken = async (memberId: string) => {
+      const account = await prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'not-a-login-fixture',
+          contextId,
+          memberId,
+        },
+      });
+      return jwt.signAsync({ sub: account.id });
+    };
+    token = await accountToken(actorId);
+    collaboratorToken = await accountToken(collaboratorId);
   });
 
   afterAll(async () => {
     // Fixtures are isolated by unique context; the database is never reset.
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       for (const ctx of [contextId, otherContext])
         await withTestTenant(ctx, async () => {
           await prisma.expenseReversal.deleteMany({
@@ -114,7 +121,6 @@ describe('business expenses', () => {
           await prisma.device.deleteMany({ where: { contextId: ctx } });
           await prisma.member.deleteMany({ where: { contextId: ctx } });
         });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -198,19 +204,19 @@ describe('business expenses', () => {
     it('blocks collaborators from every endpoint', async () => {
       await post(
         body({ createdByMemberId: collaboratorId }),
-        collaboratorId,
+        collaboratorToken,
       ).expect(403);
       await auth(
         request(app.getHttpServer()).get(endpoint),
-        collaboratorId,
+        collaboratorToken,
       ).expect(403);
       await auth(
         request(app.getHttpServer()).get(endpoint + '/summary'),
-        collaboratorId,
+        collaboratorToken,
       ).expect(403);
       await auth(
         request(app.getHttpServer()).post(reversalPath(v7())),
-        collaboratorId,
+        collaboratorToken,
       )
         .send(reversalBody({ createdByMemberId: collaboratorId }))
         .expect(403);

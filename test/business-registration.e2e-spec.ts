@@ -211,17 +211,11 @@ describe('business registration (BE-11)', () => {
     });
     const createdContextIds: string[] = [];
     for (const { createdContextId } of requests) {
-      if (!createdContextId) continue;
-      createdContextIds.push(createdContextId);
-      // Approval creates a Device and a Member per new context (both RLS
-      // tables, so the delete needs the tenant scope) plus an Account.
-      await withTestTenant(createdContextId, async () => {
-        await prisma.device.deleteMany({ where: { contextId: createdContextId } });
-        await prisma.member.deleteMany({ where: { contextId: createdContextId } });
-      });
+      if (createdContextId) createdContextIds.push(createdContextId);
     }
     // Account has no RLS: it is removed by context, plus the fixture
-    // accounts these specs create by username.
+    // accounts these specs create by username. It goes first because
+    // Account.memberId is ON DELETE RESTRICT.
     await prisma.account.deleteMany({
       where: {
         OR: [
@@ -230,6 +224,14 @@ describe('business registration (BE-11)', () => {
         ],
       },
     });
+    for (const createdContextId of createdContextIds) {
+      // Approval creates a Device and a Member per new context (both RLS
+      // tables, so the delete needs the tenant scope) plus an Account.
+      await withTestTenant(createdContextId, async () => {
+        await prisma.device.deleteMany({ where: { contextId: createdContextId } });
+        await prisma.member.deleteMany({ where: { contextId: createdContextId } });
+      });
+    }
     await prisma.businessRegistrationRequest.deleteMany({
       where: { nombreNegocio: { endsWith: run } },
     });
@@ -498,6 +500,14 @@ describe('business registration (BE-11)', () => {
         prisma.member.findMany({ where: { contextId, role: 'socio' } }),
       );
       expect(founders).toHaveLength(1);
+      // One account per person: the founder's account is tied to the founder.
+      expect(account?.memberId).toBe(founders[0].id);
+      expect(founders[0].correo).toBe(email);
+      const me = await request(server())
+        .get('/api/v1/auth/me')
+        .auth(session.body.accessToken, { type: 'bearer' })
+        .expect(200);
+      expect(me.body.member).toMatchObject({ id: founders[0].id, role: 'socio' });
 
       const identified = await request(server())
         .post('/api/v1/devices/identify')

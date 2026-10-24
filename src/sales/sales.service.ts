@@ -268,7 +268,7 @@ export class SalesService {
    * outside this system.
    *
    * @throws ForbiddenException when the body's `memberId`/`deviceId` do not
-   * match the authenticated `x-member-id`/`x-device-id` selection (a
+   * match the authenticated account person and `x-device-id` selection (a
    * device cannot attribute a sale to a different member/device than the
    * one it was authorized for), or via {@link authorize}.
    * @throws ConflictException when `id` already exists with a payload that

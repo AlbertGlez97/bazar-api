@@ -23,13 +23,11 @@ describe('reports (BE-08)', () => {
   const asSocio = (req: request.Test) =>
     req
       .auth(socioToken, { type: 'bearer' })
-      .set('x-member-id', socioMemberId)
       .set('x-device-id', deviceId);
 
   const asColaborador = (req: request.Test) =>
     req
       .auth(colaboradorToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
   // BE-11: strict deny-by-default RLS now requires an explicit tenant
@@ -97,31 +95,12 @@ describe('reports (BE-08)', () => {
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
 
-    const socioAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    socioToken = await jwt.signAsync({ sub: socioAccount.id });
     await withTestTenant(contextId, async () => {
       socioMemberId = (
         await prisma.member.create({
           data: { name: 'Alberto Socio', role: 'socio', contextId },
         })
       ).id;
-    });
-
-    const colaboradorAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    await withTestTenant(contextId, async () => {
       colaboradorMemberId = (
         await prisma.member.create({
           data: {
@@ -143,10 +122,29 @@ describe('reports (BE-08)', () => {
         })
       ).id;
     });
+
+    // One account per person: each token acts as exactly its own member.
+    const tokenFor = async (memberId: string) =>
+      jwt.signAsync({
+        sub: (
+          await prisma.account.create({
+            data: {
+              username: randomUUID(),
+              passwordHash: 'not-a-login-fixture',
+              contextId,
+              memberId,
+            },
+          })
+        ).id,
+      });
+    socioToken = await tokenFor(socioMemberId);
+    colaboradorToken = await tokenFor(colaboradorMemberId);
   });
 
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         await prisma.incidencia.deleteMany({
           where: { sale: { member: { contextId } } },
@@ -169,7 +167,6 @@ describe('reports (BE-08)', () => {
         await prisma.device.deleteMany({ where: { contextId } });
         await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });

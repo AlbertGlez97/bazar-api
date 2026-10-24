@@ -148,16 +148,13 @@ was already used, or a revoked device, answers 409. A *legacy* device (created
 before BE-12, including the initial device of an approved business) still
 answers `{ deviceId }` with no token.
 
-Context-protected operations additionally require `x-member-id` and
-`x-device-id` UUID headers, plus `x-device-token` for a device activated
-through the one-time flow (a legacy device sends none). The account, selected
-member, and authorized device must belong to the same context. Socio-only
-operations check the stored role.
-**The shared business login is shared-tablet selection, not personal
-authentication**: a logged-in shared account can select a same-context socio
-without a PIN. Do not present this as proof of the individual operator's
-identity. Accounts created by `POST /members` (BE-12) are the exception: each is
-bound to its own member and can only act as that person.
+Context-protected operations additionally require an `x-device-id` UUID
+header, plus `x-device-token` for a device activated through the one-time flow
+(a legacy device sends none). **One account per person**: the acting person is
+`account.memberId` and nothing else, so the `x-member-id` header is ignored
+(an account with no person assigned answers 403 "Tu cuenta no tiene una persona
+asignada"). The account, its person, and the authorized device must belong to
+the same context. Socio-only operations check the stored role.
 
 ## Modules and routes
 

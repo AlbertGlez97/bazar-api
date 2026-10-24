@@ -33,13 +33,11 @@ describe('soft delete (BE-10)', () => {
   const asSocio = (req: request.Test) =>
     req
       .auth(socioToken, { type: 'bearer' })
-      .set('x-member-id', socioMemberId)
       .set('x-device-id', deviceId);
 
   const asColaborador = (req: request.Test) =>
     req
       .auth(colaboradorToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
   const createProduct = (data: {
@@ -70,23 +68,6 @@ describe('soft delete (BE-10)', () => {
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
 
-    const socioAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    socioToken = await jwt.signAsync({ sub: socioAccount.id });
-
-    const colaboradorAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
     await withTestTenant(contextId, async () => {
       socioMemberId = (
         await prisma.member.create({
@@ -114,10 +95,29 @@ describe('soft delete (BE-10)', () => {
         })
       ).id;
     });
+
+    // One account per person: each token acts as exactly its own member.
+    const tokenFor = async (memberId: string) =>
+      jwt.signAsync({
+        sub: (
+          await prisma.account.create({
+            data: {
+              username: randomUUID(),
+              passwordHash: 'not-a-login-fixture',
+              contextId,
+              memberId,
+            },
+          })
+        ).id,
+      });
+    socioToken = await tokenFor(socioMemberId);
+    colaboradorToken = await tokenFor(colaboradorMemberId);
   });
 
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         await prisma.abono.deleteMany({
           where: { deuda: { createdByMember: { contextId } } },
@@ -137,7 +137,6 @@ describe('soft delete (BE-10)', () => {
         await prisma.device.deleteMany({ where: { contextId } });
         await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -213,7 +212,6 @@ describe('soft delete (BE-10)', () => {
       const history = await request(app.getHttpServer())
         .get(`/sales/${saleRes.body.id}`)
         .auth(socioToken, { type: 'bearer' })
-        .set('x-member-id', socioMemberId)
         .set('x-device-id', deviceId)
         .expect(200);
       expect(
@@ -406,6 +404,7 @@ describe('soft delete (BE-10)', () => {
           username: randomUUID(),
           passwordHash: 'not-a-login-fixture',
           contextId,
+          memberId: colaborador.id,
         },
       });
       const colaboradorToken2 = await app
@@ -414,7 +413,6 @@ describe('soft delete (BE-10)', () => {
       await request(app.getHttpServer())
         .post('/sales')
         .auth(colaboradorToken2, { type: 'bearer' })
-        .set('x-member-id', colaborador.id)
         .set('x-device-id', deviceId)
         .send({
           id: createServerId(),
@@ -451,7 +449,6 @@ describe('soft delete (BE-10)', () => {
       await request(app.getHttpServer())
         .post('/sales')
         .auth(colaboradorToken2, { type: 'bearer' })
-        .set('x-member-id', colaborador.id)
         .set('x-device-id', deviceId)
         .send({
           id: createServerId(),

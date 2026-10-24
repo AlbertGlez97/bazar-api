@@ -37,13 +37,11 @@ describe('dashboard summary (BE-13)', () => {
   const asSocio = (req: request.Test) =>
     req
       .auth(socioToken, { type: 'bearer' })
-      .set('x-member-id', socioMemberId)
       .set('x-device-id', deviceId);
 
   const asColaborador = (req: request.Test) =>
     req
       .auth(colaboradorToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorMemberId)
       .set('x-device-id', deviceId);
 
   const createProduct = (
@@ -173,31 +171,13 @@ describe('dashboard summary (BE-13)', () => {
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
 
-    const socioAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    socioToken = await jwt.signAsync({ sub: socioAccount.id });
+    // One account per person: each token acts as the member its account is bound to.
     await withTestTenant(contextId, async () => {
       socioMemberId = (
         await prisma.member.create({
           data: { name: 'Alberto Socio', role: 'socio', contextId },
         })
       ).id;
-    });
-
-    const colaboradorAccount = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    colaboradorToken = await jwt.signAsync({ sub: colaboradorAccount.id });
-    await withTestTenant(contextId, async () => {
       colaboradorMemberId = (
         await prisma.member.create({
           data: {
@@ -219,6 +199,22 @@ describe('dashboard summary (BE-13)', () => {
         })
       ).id;
     });
+
+    const accountFor = (memberId: string) =>
+      prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'not-a-login-fixture',
+          contextId,
+          memberId,
+        },
+      });
+    socioToken = await jwt.signAsync({
+      sub: (await accountFor(socioMemberId)).id,
+    });
+    colaboradorToken = await jwt.signAsync({
+      sub: (await accountFor(colaboradorMemberId)).id,
+    });
   });
 
   afterAll(async () => {
@@ -236,9 +232,12 @@ describe('dashboard summary (BE-13)', () => {
         await prisma.sale.deleteMany({ where: { member: { contextId } } });
         await prisma.product.deleteMany({ where: { contextId } });
         await prisma.device.deleteMany({ where: { contextId } });
+      });
+      // Accounts go before Members: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
+      await withTestTenant(contextId, async () => {
         await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });
@@ -391,11 +390,6 @@ describe('dashboard summary (BE-13)', () => {
   it('an all-cost-less day reports gananciaHoyMinor: 0 (a real, non-negative sum of zero costed lines), never a guessed profit', async () => {
     // Fresh, isolated context so no other test's costed sale is on "today".
     const isolatedContextId = `be13-dashboard-allcostless-${randomUUID()}`;
-    const account = await prisma.account.create({
-      data: { username: randomUUID(), passwordHash: 'x', contextId: isolatedContextId },
-    });
-    const jwt = app.get(JwtService);
-    const token = await jwt.signAsync({ sub: account.id });
     const { memberId, deviceIdLocal } = await withTestTenant(isolatedContextId, async () => {
       const member = await prisma.member.create({
         data: { name: 'Socio Aislado', role: 'socio', contextId: isolatedContextId },
@@ -448,10 +442,14 @@ describe('dashboard summary (BE-13)', () => {
       return { memberId: member.id, deviceIdLocal: device.id };
     });
 
+    const account = await prisma.account.create({
+      data: { username: randomUUID(), passwordHash: 'x', contextId: isolatedContextId, memberId },
+    });
+    const token = await app.get(JwtService).signAsync({ sub: account.id });
+
     const res = await request(app.getHttpServer())
       .get('/dashboard/summary')
       .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
       .set('x-device-id', deviceIdLocal)
       .expect(200);
     expect(res.body.gananciaHoyMinor).toBe(0);
@@ -462,9 +460,12 @@ describe('dashboard summary (BE-13)', () => {
       await prisma.sale.deleteMany({ where: { member: { contextId: isolatedContextId } } });
       await prisma.product.deleteMany({ where: { contextId: isolatedContextId } });
       await prisma.device.deleteMany({ where: { contextId: isolatedContextId } });
+    });
+    // Accounts go before Members: Account.memberId is ON DELETE RESTRICT.
+    await prisma.account.deleteMany({ where: { contextId: isolatedContextId } });
+    await withTestTenant(isolatedContextId, async () => {
       await prisma.member.deleteMany({ where: { contextId: isolatedContextId } });
     });
-    await prisma.account.deleteMany({ where: { contextId: isolatedContextId } });
   });
 
   it('counts only pendiente incidencias, never resuelta', async () => {

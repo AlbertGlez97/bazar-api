@@ -115,11 +115,12 @@ describe('business registration v2: email verification', () => {
     });
     for (const { createdContextId } of rows) {
       if (!createdContextId) continue;
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId: createdContextId } });
       await withTestTenant(createdContextId, async () => {
         await prisma.device.deleteMany({ where: { contextId: createdContextId } });
         await prisma.member.deleteMany({ where: { contextId: createdContextId } });
       });
-      await prisma.account.deleteMany({ where: { contextId: createdContextId } });
     }
     await prisma.businessRegistrationRequest.deleteMany({ where: { id: { in: rows.map((r) => r.id) } } });
     await app.close();

@@ -45,6 +45,7 @@ describe('finance distribution simulator HTTP', () => {
   let prisma: PrismaService;
   const contexts = [`dist-${randomUUID()}`, `dist-other-${randomUUID()}`];
   const actors: Actor[] = [];
+  const tokenByMember = new Map<string, string>();
   const endpoint = '/api/v1/finance/distribution-simulations';
   const worked = {
     requestedAmountMinor: 600000,
@@ -75,8 +76,9 @@ describe('finance distribution simulator HTTP', () => {
   ) =>
     request(app.getHttpServer())
       .post(endpoint)
-      .auth(actors[index].token, { type: 'bearer' })
-      .set('x-member-id', memberId ?? actors[index].s1)
+      .auth(tokenByMember.get(memberId ?? actors[index].s1)!, {
+        type: 'bearer',
+      })
       .set('x-device-id', deviceId ?? actors[index].deviceId)
       .send(body as object);
   const simulate = async (
@@ -237,14 +239,6 @@ describe('finance distribution simulator HTTP', () => {
     await app.init();
     prisma = app.get(PrismaService);
     for (const contextId of contexts) {
-      const account = await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'not-a-login-fixture',
-          contextId,
-        },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
       const fixture = await withTestTenant(contextId, async () => {
         const member = async (
           name: string,
@@ -302,7 +296,32 @@ describe('finance distribution simulator HTTP', () => {
           productId,
         };
       });
-      actors.push({ accountId: account.id, token, ...fixture });
+      // One account (and token) per person: the token decides who acts.
+      const accountIds: Record<string, string> = {};
+      for (const memberId of [
+        fixture.s1,
+        fixture.collaborator,
+        fixture.inactiveSocio,
+      ]) {
+        const account = await prisma.account.create({
+          data: {
+            username: randomUUID(),
+            passwordHash: 'not-a-login-fixture',
+            contextId,
+            memberId,
+          },
+        });
+        accountIds[memberId] = account.id;
+        tokenByMember.set(
+          memberId,
+          await app.get(JwtService).signAsync({ sub: account.id }),
+        );
+      }
+      actors.push({
+        accountId: accountIds[fixture.s1],
+        token: tokenByMember.get(fixture.s1)!,
+        ...fixture,
+      });
     }
   });
   afterAll(async () => {
@@ -325,9 +344,13 @@ describe('finance distribution simulator HTTP', () => {
           await prisma.sale.deleteMany({ where: { contextId } });
           await prisma.product.deleteMany({ where: { contextId } });
           await prisma.device.deleteMany({ where: { contextId } });
-          await prisma.member.deleteMany({ where: { contextId } });
         });
+        // Accounts before Members (Account.memberId is ON DELETE RESTRICT)
+        // but after the rows that reference them.
         await prisma.account.deleteMany({ where: { contextId } });
+        await withTestTenant(contextId, () =>
+          prisma.member.deleteMany({ where: { contextId } }),
+        );
       }
     await app?.close();
   });
@@ -861,7 +884,6 @@ describe('finance distribution simulator HTTP', () => {
       const overview = await request(app.getHttpServer())
         .get('/api/v1/finance/overview')
         .auth(actors[0].token, { type: 'bearer' })
-        .set('x-member-id', actors[0].s1)
         .set('x-device-id', actors[0].deviceId)
         .query(period)
         .expect(200);

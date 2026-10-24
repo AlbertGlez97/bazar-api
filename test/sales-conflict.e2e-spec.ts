@@ -22,10 +22,7 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
   const occurredAt = new Date().toISOString();
 
   const write = (req: request.Test) =>
-    req
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
-      .set('x-device-id', deviceId);
+    req.auth(token, { type: 'bearer' }).set('x-device-id', deviceId);
 
   const createProduct = (data: {
     name: string;
@@ -69,14 +66,6 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
     app = module.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    token = await app.get(JwtService).signAsync({ sub: account.id });
     await withTestTenant(contextId, async () => {
       memberId = (
         await prisma.member.create({
@@ -94,10 +83,22 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
         })
       ).id;
     });
+    // One account per person: the token's account carries the acting member.
+    const account = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId,
+        memberId,
+      },
+    });
+    token = await app.get(JwtService).signAsync({ sub: account.id });
   });
 
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         await prisma.saleItem.deleteMany({
           where: { sale: { member: { contextId } } },
@@ -110,7 +111,6 @@ describe('sale idempotency and offline conflict handling (BE-06)', () => {
         await prisma.device.deleteMany({ where: { contextId } });
         await prisma.member.deleteMany({ where: { contextId } });
       });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });

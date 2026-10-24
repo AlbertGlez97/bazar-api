@@ -22,20 +22,48 @@ describe('planned finance reserves', () => {
     memberId: string;
     collaboratorId: string;
     inactiveId: string;
+    collaboratorToken: string;
+    inactiveToken: string;
     deviceId: string;
     revokedDeviceId: string;
   }[] = [];
   const endpoint = '/api/v1/finance/reserves';
+  // The token decides who acts (one account per person).
   const auth = (
     req: request.Test,
     index = 0,
-    memberId?: string,
+    token?: string,
     deviceId?: string,
   ) =>
     req
-      .auth(actors[index].token, { type: 'bearer' })
-      .set('x-member-id', memberId ?? actors[index].memberId)
+      .auth(token ?? actors[index].token, { type: 'bearer' })
       .set('x-device-id', deviceId ?? actors[index].deviceId);
+  const accountFor = async (contextId: string, memberId: string) => {
+    const account = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId,
+        memberId,
+      },
+    });
+    return {
+      id: account.id,
+      token: await app.get(JwtService).signAsync({ sub: account.id }),
+    };
+  };
+  // A second socio of the first business, with their own account.
+  const secondSocio = async () => {
+    const member = await withTestTenant(contexts[0], () =>
+      prisma.member.create({
+        data: { contextId: contexts[0], name: 'Second socio', role: 'socio' },
+      }),
+    );
+    return {
+      memberId: member.id,
+      ...(await accountFor(contexts[0], member.id)),
+    };
+  };
   const body = (overrides: Record<string, unknown> = {}, index = 0) => ({
     id: v7(),
     name: 'Rent buffer',
@@ -60,14 +88,6 @@ describe('planned finance reserves', () => {
     await app.init();
     prisma = app.get(PrismaService);
     for (const contextId of contexts) {
-      const account = await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'not-a-login-fixture',
-          contextId,
-        },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
       const fixture = await withTestTenant(contextId, async () => {
         const member = (role: 'socio' | 'colaborador', active = true) =>
           prisma.member.create({
@@ -94,7 +114,16 @@ describe('planned finance reserves', () => {
           revokedDeviceId,
         };
       });
-      actors.push({ accountId: account.id, token, ...fixture });
+      const socio = await accountFor(contextId, fixture.memberId);
+      const collaborator = await accountFor(contextId, fixture.collaboratorId);
+      const inactive = await accountFor(contextId, fixture.inactiveId);
+      actors.push({
+        accountId: socio.id,
+        token: socio.token,
+        collaboratorToken: collaborator.token,
+        inactiveToken: inactive.token,
+        ...fixture,
+      });
     }
   });
   afterAll(async () => {
@@ -105,10 +134,14 @@ describe('planned finance reserves', () => {
             where: { contextId },
           });
           await prisma.financeReserve.deleteMany({ where: { contextId } });
+        });
+        // Accounts before Members (Account.memberId is ON DELETE RESTRICT),
+        // but after the reserves that reference them.
+        await prisma.account.deleteMany({ where: { contextId } });
+        await withTestTenant(contextId, async () => {
           await prisma.device.deleteMany({ where: { contextId } });
           await prisma.member.deleteMany({ where: { contextId } });
         });
-        await prisma.account.deleteMany({ where: { contextId } });
       }
     await app?.close();
   });
@@ -181,7 +214,7 @@ describe('planned finance reserves', () => {
       ]),
     );
   });
-  it('conflicts on changed content or account, without exposing foreign identities', async () => {
+  it('conflicts on changed content or person, without exposing foreign identities', async () => {
     const dto = body();
     await post(dto).expect(201);
     for (const change of [
@@ -191,20 +224,13 @@ describe('planned finance reserves', () => {
       { note: 'Changed' },
     ])
       await post({ ...dto, ...change }).expect(409);
-    const second = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contexts[0],
-      },
-    });
-    const token = await app.get(JwtService).signAsync({ sub: second.id });
+    // Another socio (own account) replaying the same id is a conflict.
+    const second = await secondSocio();
     await request(app.getHttpServer())
       .post(endpoint)
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', actors[0].memberId)
+      .auth(second.token, { type: 'bearer' })
       .set('x-device-id', actors[0].deviceId)
-      .send(dto)
+      .send({ ...dto, createdByMemberId: second.memberId })
       .expect(409);
     await post(
       {
@@ -237,18 +263,19 @@ describe('planned finance reserves', () => {
     );
     await post(body({ deviceId: actors[0].revokedDeviceId })).expect(403);
     await request(app.getHttpServer()).post(endpoint).send(body()).expect(401);
-    for (const memberId of [
-      actors[0].collaboratorId,
-      actors[0].inactiveId,
-      actors[1].memberId,
+    // A colaborador, a deactivated socio and a socio of another business.
+    for (const [token, memberId] of [
+      [actors[0].collaboratorToken, actors[0].collaboratorId],
+      [actors[0].inactiveToken, actors[0].inactiveId],
+      [actors[1].token, actors[1].memberId],
     ]) {
-      await auth(request(app.getHttpServer()).post(endpoint), 0, memberId)
+      await auth(request(app.getHttpServer()).post(endpoint), 0, token)
         .send(body({ createdByMemberId: memberId }))
         .expect(403);
       await auth(
         request(app.getHttpServer()).get(endpoint),
         0,
-        memberId,
+        token,
       ).expect(403);
     }
     await auth(
@@ -508,20 +535,12 @@ describe('planned finance reserves', () => {
     ])
       await reverse(dto.id, { ...audit, ...changes }).expect(409);
     await reverse(v7(), audit).expect(409);
-    const second = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contexts[0],
-      },
-    });
-    const token = await app.get(JwtService).signAsync({ sub: second.id });
+    const second = await secondSocio();
     await request(app.getHttpServer())
       .post(`${endpoint}/${dto.id}/reversals`)
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', actors[0].memberId)
+      .auth(second.token, { type: 'bearer' })
       .set('x-device-id', actors[0].deviceId)
-      .send(audit)
+      .send({ ...audit, createdByMemberId: second.memberId })
       .expect(409);
     const device = await withTestTenant(contexts[0], () =>
       prisma.device.create({
@@ -601,15 +620,15 @@ describe('planned finance reserves', () => {
       .post(`${endpoint}/${dto.id}/reversals`)
       .send(cancellation())
       .expect(401);
-    for (const memberId of [
-      actors[0].collaboratorId,
-      actors[0].inactiveId,
-      actors[1].memberId,
+    for (const [token, memberId] of [
+      [actors[0].collaboratorToken, actors[0].collaboratorId],
+      [actors[0].inactiveToken, actors[0].inactiveId],
+      [actors[1].token, actors[1].memberId],
     ])
       await auth(
         request(app.getHttpServer()).post(`${endpoint}/${dto.id}/reversals`),
         0,
-        memberId,
+        token,
       )
         .send(cancellation({ createdByMemberId: memberId }))
         .expect(403);
@@ -721,7 +740,7 @@ describe('planned finance reserves', () => {
       account: {
         id: actors[0].accountId,
         contextId: contexts[0],
-        memberId: null,
+        memberId: actors[0].memberId,
       },
       selection: { memberId: actors[0].memberId, deviceId: actors[0].deviceId },
     };

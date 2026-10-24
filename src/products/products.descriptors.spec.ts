@@ -172,7 +172,7 @@ describe('ProductsService.patch: marca, presentación y descripción', () => {
 
 describe('ProductsService.list: búsqueda y filtro por marca', () => {
   const list = (service: ProductsService, query: Partial<ProductListDto>, member?: string) =>
-    service.list(CTX, Object.assign(new ProductListDto(), query), member, null);
+    service.list(CTX, Object.assign(new ProductListDto(), query), member ?? null);
   const whereOf = (findMany: ReturnType<typeof vi.fn>) =>
     (findMany.mock.calls[0][0] as { where: Record<string, unknown> }).where;
 
@@ -227,7 +227,7 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     const { service, prisma } = withRows();
     prisma.member.findFirst.mockResolvedValue(null);
 
-    const page = await service.list(CTX, new ProductListDto(), COLAB_ID, null);
+    const page = await service.list(CTX, new ProductListDto(), COLAB_ID);
 
     expect(page.items[0]).toMatchObject({ brand: 'Nike', presentation: 'XL', description: 'Algodón' });
     expect(page.items[0]).not.toHaveProperty('purchaseCostMinor');
@@ -235,10 +235,10 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     expect(page.items[0]).not.toHaveProperty('notes');
   });
 
-  it('list: sin encabezado de persona tampoco hay costo', async () => {
+  it('list: una cuenta sin persona tampoco recibe el costo', async () => {
     const { service } = withRows();
 
-    const page = await service.list(CTX, new ProductListDto(), undefined, null);
+    const page = await service.list(CTX, new ProductListDto(), null);
 
     expect(page.items[0]).not.toHaveProperty('purchaseCostMinor');
   });
@@ -247,7 +247,7 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     const { service, prisma } = withRows();
     prisma.member.findFirst.mockResolvedValue({ id: SOCIO_ID });
 
-    const page = await service.list(CTX, new ProductListDto(), SOCIO_ID, null);
+    const page = await service.list(CTX, new ProductListDto(), SOCIO_ID);
 
     expect(page.items[0]).toMatchObject({ purchaseCostMinor: 9000, supplier: 'Proveedor X', notes: 'nota interna' });
   });
@@ -256,8 +256,8 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
     const { service, prisma } = withRows();
     prisma.member.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: SOCIO_ID });
 
-    const asColab = await service.findOne(CTX, row.id, COLAB_ID, null);
-    const asSocio = await service.findOne(CTX, row.id, SOCIO_ID, null);
+    const asColab = await service.findOne(CTX, row.id, COLAB_ID);
+    const asSocio = await service.findOne(CTX, row.id, SOCIO_ID);
 
     expect(asColab).not.toHaveProperty('purchaseCostMinor');
     expect(asColab).not.toHaveProperty('supplier');
@@ -284,7 +284,7 @@ describe('ProductsService: el costo nunca llega a un colaborador', () => {
       1,
     ] as never);
 
-    const page = await service.audits(CTX, row.id, new ProductListDto(), COLAB_ID, null);
+    const page = await service.audits(CTX, row.id, new ProductListDto(), COLAB_ID);
 
     const item = page.items[0] as { before: Record<string, unknown>; after: Record<string, unknown> };
     expect(item.before).not.toHaveProperty('purchaseCostMinor');

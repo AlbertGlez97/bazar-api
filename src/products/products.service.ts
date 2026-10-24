@@ -447,13 +447,11 @@ export class ProductsService {
    * on the returned page, so `total` and pagination stay correct.
    *
    * Deactivated products are excluded by default (BE-10). `includeInactive:
-   * true` is only honored when the request also identifies an active
-   * socio via the optional `x-member-id` header ({@link isRequestingSocio})
-   * — this is a deliberately lightweight check (no `x-device-id`/full
-   * {@link ContextGuard} selection required) because this listing is also
-   * used *before* any Member has been selected (e.g. to populate the
-   * person selector), so it cannot require a selection to already exist.
-   * For a colaborador (or a request with no/invalid member header), the
+   * true` is only honored when the account belongs to an active socio
+   * ({@link isRequestingSocio}) — a deliberately lightweight check (no
+   * `x-device-id`/full {@link ContextGuard} selection required) because
+   * this listing needs no device.
+   * For a colaborador (or an account with no person), the
    * parameter is silently ignored rather than rejected with 403: the
    * overwhelmingly likely cause is a stale/accidental query parameter
    * from the frontend, not a malicious attempt to browse a deactivated
@@ -464,13 +462,11 @@ export class ProductsService {
   async list(
     contextId: string,
     query: ProductListDto,
-    requestingMemberId: string | undefined,
     accountMemberId: string | null,
   ) {
     const isSocio = await isRequestingSocio(
       this.prisma,
       contextId,
-      requestingMemberId,
       accountMemberId,
     );
     const includeInactive = query.includeInactive && isSocio;
@@ -538,7 +534,6 @@ export class ProductsService {
   async findOne(
     contextId: string,
     id: string,
-    requestingMemberId: string | undefined,
     accountMemberId: string | null,
   ) {
     const product = await this.prisma.product.findFirst({
@@ -548,7 +543,6 @@ export class ProductsService {
     const isSocio = await isRequestingSocio(
       this.prisma,
       contextId,
-      requestingMemberId,
       accountMemberId,
     );
     return this.response(product, isSocio);
@@ -676,7 +670,6 @@ export class ProductsService {
     contextId: string,
     id: string,
     query: ProductListDto,
-    requestingMemberId: string | undefined,
     accountMemberId: string | null,
   ) {
     if (!(await this.prisma.product.findFirst({ where: { id, contextId } })))
@@ -684,7 +677,6 @@ export class ProductsService {
     const isSocio = await isRequestingSocio(
       this.prisma,
       contextId,
-      requestingMemberId,
       accountMemberId,
     );
     const where = { productId: id, product: { contextId } };
