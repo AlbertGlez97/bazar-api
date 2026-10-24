@@ -36,7 +36,6 @@ describe('RLS strict deny-by-default (BE-11 follow-up)', () => {
   const asA = (req: request.Test) =>
     req
       .auth(tokenA, { type: 'bearer' })
-      .set('x-member-id', socioMemberIdA)
       .set('x-device-id', deviceIdA);
 
   beforeAll(async () => {
@@ -50,14 +49,6 @@ describe('RLS strict deny-by-default (BE-11 follow-up)', () => {
 
     // --- Context A: an authenticated socio who will try (and must fail)
     // to collect an abono against a Deuda that only exists in context B.
-    const accountA = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contextIdA,
-      },
-    });
-    tokenA = await jwt.signAsync({ sub: accountA.id });
     await withTestTenant(contextIdA, async () => {
       socioMemberIdA = (
         await prisma.member.create({
@@ -87,6 +78,16 @@ describe('RLS strict deny-by-default (BE-11 follow-up)', () => {
         })
       ).id;
     });
+    // The account is bound to the socio, so it is created after the Member.
+    const accountA = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId: contextIdA,
+        memberId: socioMemberIdA,
+      },
+    });
+    tokenA = await jwt.signAsync({ sub: accountA.id });
 
     // --- Context B: an unrelated Deudor/Deuda that must stay invisible
     // to context A, including through the raw FOR UPDATE lock query.
@@ -126,6 +127,10 @@ describe('RLS strict deny-by-default (BE-11 follow-up)', () => {
 
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({
+        where: { contextId: { in: [contextIdA, contextIdB] } },
+      });
       await withTestTenant(contextIdA, async () => {
         await prisma.product.deleteMany({ where: { contextId: contextIdA } });
         await prisma.device.deleteMany({ where: { contextId: contextIdA } });
@@ -138,9 +143,6 @@ describe('RLS strict deny-by-default (BE-11 follow-up)', () => {
         await prisma.deudor.deleteMany({ where: { contextId: contextIdB } });
         await prisma.product.deleteMany({ where: { contextId: contextIdB } });
         await prisma.member.deleteMany({ where: { contextId: contextIdB } });
-      });
-      await prisma.account.deleteMany({
-        where: { contextId: { in: [contextIdA, contextIdB] } },
       });
     }
     await app?.close();

@@ -86,9 +86,8 @@ export interface CreatedMember {
  * visible to a colaborador too — the selector's whole purpose is to let
  * someone identify themselves *before* any selection exists), and hides
  * deactivated colaboradores by default (BE-10) since a deactivated person
- * cannot act. `includeInactive` is only honored when the request also
- * identifies an active socio via the optional `x-member-id` header (see
- * {@link isRequestingSocio}); for anyone else it is silently ignored
+ * cannot act. `includeInactive` is only honored when the account belongs to
+ * an active socio (see {@link isRequestingSocio}); for anyone else it is silently ignored
  * rather than rejected with 403 (see `list`'s own doc for the rationale).
  *
  * `patch`, `deactivate` and `reactivate` are socio-only (enforced by
@@ -302,13 +301,11 @@ export class MembersService {
 
   /**
    * Deactivated colaboradores are excluded by default (BE-10).
-   * `includeInactive: true` is only honored when `requestingMemberId`
-   * (from the caller's optional `x-member-id` header) resolves to an
-   * active socio in this context — this endpoint is used *before* any
-   * Member has necessarily been selected (populating the person selector
-   * itself), so it cannot require a full {@link ContextGuard}/
-   * {@link SocioGuard} selection to already exist just to make this one
-   * parameter safe. For anyone else, the parameter is silently ignored
+   * `includeInactive: true` is only honored when the person of the account
+   * (`accountMemberId`) is an active socio in this context. The endpoint
+   * needs no device, so it cannot require a full {@link ContextGuard}/
+   * {@link SocioGuard} selection just to make this one parameter safe.
+   * For anyone else, the parameter is silently ignored
    * (not rejected with 403): the far more likely cause is a stale or
    * accidental query parameter from the frontend than a deliberate
    * attempt to browse deactivated staff, and the roster this exposes
@@ -317,17 +314,11 @@ export class MembersService {
   async list(
     contextId: string,
     query: MemberListDto,
-    requestingMemberId: string | undefined,
     accountMemberId: string | null,
   ) {
     const includeInactive =
       query.includeInactive &&
-      (await isRequestingSocio(
-        this.prisma,
-        contextId,
-        requestingMemberId,
-        accountMemberId,
-      ));
+      (await isRequestingSocio(this.prisma, contextId, accountMemberId));
     return this.prisma.member.findMany({
       where: {
         contextId,

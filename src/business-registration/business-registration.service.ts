@@ -549,7 +549,8 @@ export class BusinessRegistrationService {
     const temporaryPassword = generateTemporaryPassword();
     const deviceIdentifier = randomUUID();
 
-    await tx.member.create({
+    // The founding socio comes first: the account below belongs to this person.
+    const founder = await tx.member.create({
       data: {
         id: createServerId(),
         name: fullName(request.nombre, request.apellidos),
@@ -574,8 +575,22 @@ export class BusinessRegistrationService {
         username,
         passwordHash: await hashPassword(temporaryPassword),
         contextId,
+        memberId: founder.id,
       },
     });
+    // The verified registration address becomes the founder's correo. It is
+    // set last so a racing approval still collides on the username first, and
+    // only when no other person already has it (Member.correo is unique across
+    // businesses): losing the address must never cancel an approval.
+    if (socioEmail) {
+      const [{ taken }] = await tx.$queryRaw<{ taken: boolean }[]>`
+        SELECT member_correo_taken(${founder.id}::uuid, ${socioEmail}) AS taken`;
+      // Raw like the lookup: this transaction has no tenant scope for the
+      // Prisma extension, only the `app.context_id` it set at the start.
+      if (!taken)
+        await tx.$executeRaw`
+          UPDATE "Member" SET "correo" = ${socioEmail} WHERE "id" = ${founder.id}::uuid`;
+    }
 
     let delivery: CredentialsEmailResult;
     try {

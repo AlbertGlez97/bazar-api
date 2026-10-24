@@ -28,7 +28,6 @@ describe('multi-item cash sales', () => {
   const write = (req: request.Test) =>
     req
       .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
       .set('x-device-id', deviceId);
 
   const createProduct = (data: {
@@ -78,15 +77,6 @@ describe('multi-item cash sales', () => {
     await app.init();
     prisma = app.get(PrismaService);
     sales = app.get(SalesService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    accountId = account.id;
-    token = await app.get(JwtService).signAsync({ sub: accountId });
     await withTestTenant(contextId, async () => {
       memberId = (
         await prisma.member.create({
@@ -104,10 +94,23 @@ describe('multi-item cash sales', () => {
         })
       ).id;
     });
+    // The account belongs to the socio: the token alone identifies the person.
+    const account = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId,
+        memberId,
+      },
+    });
+    accountId = account.id;
+    token = await app.get(JwtService).signAsync({ sub: accountId });
   });
 
   afterAll(async () => {
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         await prisma.saleItem.deleteMany({
           where: { sale: { member: { contextId } } },
@@ -123,7 +126,6 @@ describe('multi-item cash sales', () => {
       await withTestTenant(otherContext, () =>
         prisma.product.deleteMany({ where: { contextId: otherContext } }),
       );
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });

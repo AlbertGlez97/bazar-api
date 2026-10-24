@@ -29,7 +29,7 @@ describe('payment methods', () => {
   const A = (): Who => ({ token: tokenA, member: socioA, device: deviceA });
   const B = (): Who => ({ token: tokenB, member: socioB, device: deviceB });
   const as = (req: request.Test, who: Who) =>
-    req.auth(who.token, { type: 'bearer' }).set('x-member-id', who.member).set('x-device-id', who.device);
+    req.auth(who.token, { type: 'bearer' }).set('x-device-id', who.device);
 
   const newProduct = (overrides: Record<string, unknown> = {}, contextId = contextA) =>
     withTestTenant(contextId, () =>
@@ -69,10 +69,15 @@ describe('payment methods', () => {
     await app.init();
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
-    const account = (contextId: string) =>
-      prisma.account.create({ data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId } });
-    tokenA = await jwt.signAsync({ sub: (await account(contextA)).id });
-    tokenB = await jwt.signAsync({ sub: (await account(contextB)).id });
+    // One account per person: the token alone identifies the acting member.
+    const tokenFor = async (contextId: string, memberId: string) =>
+      jwt.signAsync({
+        sub: (
+          await prisma.account.create({
+            data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId, memberId },
+          })
+        ).id,
+      });
     await withTestTenant(contextA, async () => {
       socioA = (await prisma.member.create({ data: { name: 'Socio A', role: 'socio', contextId: contextA } })).id;
       deviceA = (await prisma.device.create({ data: { name: 'Tablet A', identifier: randomUUID(), contextId: contextA, authorized: true } })).id;
@@ -81,6 +86,8 @@ describe('payment methods', () => {
       socioB = (await prisma.member.create({ data: { name: 'Socio B', role: 'socio', contextId: contextB } })).id;
       deviceB = (await prisma.device.create({ data: { name: 'Tablet B', identifier: randomUUID(), contextId: contextB, authorized: true } })).id;
     });
+    tokenA = await tokenFor(contextA, socioA);
+    tokenB = await tokenFor(contextB, socioB);
   });
 
   afterAll(async () => {
@@ -430,15 +437,17 @@ describe('payment methods', () => {
     /** A context of its own, so nothing else falls in the period. */
     async function freshContext() {
       const contextId = `pm-report-${randomUUID()}`;
-      const account = await prisma.account.create({ data: { username: randomUUID(), passwordHash: 'x', contextId } });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
       const ids = await withTestTenant(contextId, async () => ({
         socio: (await prisma.member.create({ data: { name: 'Socio R', role: 'socio', contextId } })).id,
         colab: (await prisma.member.create({ data: { name: 'Colab R', role: 'colaborador', commissionRateBps: 1000, contextId } })).id,
         device: (await prisma.device.create({ data: { name: 'Tablet R', identifier: randomUUID(), contextId, authorized: true } })).id,
       }));
-      const socio: Who = { token, member: ids.socio, device: ids.device };
-      const colab: Who = { token, member: ids.colab, device: ids.device };
+      const tokenOf = async (memberId: string) => {
+        const account = await prisma.account.create({ data: { username: randomUUID(), passwordHash: 'x', contextId, memberId } });
+        return app.get(JwtService).signAsync({ sub: account.id });
+      };
+      const socio: Who = { token: await tokenOf(ids.socio), member: ids.socio, device: ids.device };
+      const colab: Who = { token: await tokenOf(ids.colab), member: ids.colab, device: ids.device };
       // price 1000, cost 400 -> 600 of profit per piece, whatever the method
       const product = await newProduct({ stock: 100, unitPriceMinor: 1000, purchaseCostMinor: 400 }, contextId);
       return { contextId, socio, colab, product };

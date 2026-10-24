@@ -57,7 +57,7 @@ export class CreateSaleDto extends SalePaymentDto {
   // sale is self-describing and, later, comparable across resends.
   @ApiProperty({
     description:
-      'Must match the x-member-id selection already authenticated by ContextGuard, or the sale is rejected with 403.',
+      'Must be the person of the logged-in account (already authenticated by ContextGuard), or the sale is rejected with 403.',
   })
   @IsUUID()
   memberId!: string;

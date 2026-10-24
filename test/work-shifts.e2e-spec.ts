@@ -26,10 +26,11 @@ describe('business work shifts', () => {
   const contextId = `work-shifts-${randomUUID()}`;
   const otherContext = `work-shifts-other-${randomUUID()}`;
   const endpoint = '/finance/work-shifts';
+  // One account per person: the token of the person who acts.
+  const tokens = new Map<string, string>();
   const auth = (req: request.Test, memberId = actorId) =>
     req
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
+      .auth(tokens.get(memberId) ?? token, { type: 'bearer' })
       .set('x-device-id', deviceId);
   const post = (dto: unknown, memberId = actorId) =>
     auth(request(app.getHttpServer()).post(endpoint), memberId).send(
@@ -54,15 +55,6 @@ describe('business work shifts', () => {
     app = module.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    accountId = account.id;
-    token = await app.get(JwtService).signAsync({ sub: account.id });
     await withTestTenant(contextId, async () => {
       const member = (
         name: string,
@@ -79,6 +71,22 @@ describe('business work shifts', () => {
         })
       ).id;
     });
+    const jwt = app.get(JwtService);
+    const accountFor = async (memberId: string, ctx = contextId) =>
+      prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'not-a-login-fixture',
+          contextId: ctx,
+          memberId,
+        },
+      });
+    for (const memberId of [actorId, collaboratorId, payerSocioId]) {
+      const account = await accountFor(memberId);
+      tokens.set(memberId, await jwt.signAsync({ sub: account.id }));
+      if (memberId === actorId) accountId = account.id;
+    }
+    token = tokens.get(actorId)!;
     foreignMemberId = await withTestTenant(
       otherContext,
       async () =>
@@ -88,15 +96,7 @@ describe('business work shifts', () => {
           })
         ).id,
     );
-    foreignAccountId = (
-      await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'fixture',
-          contextId: otherContext,
-        },
-      })
-    ).id;
+    foreignAccountId = (await accountFor(foreignMemberId, otherContext)).id;
     foreignDeviceId = await withTestTenant(
       otherContext,
       async () =>
@@ -121,12 +121,16 @@ describe('business work shifts', () => {
             where: { contextId: ctx },
           });
           await prisma.workShift.deleteMany({ where: { contextId: ctx } });
-          await prisma.device.deleteMany({ where: { contextId: ctx } });
-          await prisma.member.deleteMany({ where: { contextId: ctx } });
         });
+      // Accounts go before Members: Account.memberId is ON DELETE RESTRICT.
       await prisma.account.deleteMany({
         where: { contextId: { in: [contextId, otherContext] } },
       });
+      for (const ctx of [contextId, otherContext])
+        await withTestTenant(ctx, async () => {
+          await prisma.device.deleteMany({ where: { contextId: ctx } });
+          await prisma.member.deleteMany({ where: { contextId: ctx } });
+        });
     }
     await app?.close();
   });
@@ -286,19 +290,11 @@ describe('business work shifts', () => {
   it('conflicts on replay from a different authenticated account', async () => {
     const dto = body({ workDate: '2026-03-02' });
     await post(dto).expect(201);
-    const another = await prisma.account.create({
-      data: { username: randomUUID(), passwordHash: 'fixture', contextId },
-    });
-    const anotherToken = await app
-      .get(JwtService)
-      .signAsync({ sub: another.id });
-    await request(app.getHttpServer())
-      .post(endpoint)
-      .auth(anotherToken, { type: 'bearer' })
-      .set('x-member-id', actorId)
-      .set('x-device-id', deviceId)
-      .send(dto)
-      .expect(409);
+    // Another person's account (one account per person) replays the same id
+    // as its own recorder.
+    await post({ ...dto, createdByMemberId: payerSocioId }, payerSocioId).expect(
+      409,
+    );
   });
   it('runs FORCE RLS as a non-bypass runtime role and hides foreign rows', async () => {
     const dto = body({ workDate: '2026-03-03' });
@@ -340,7 +336,7 @@ describe('business work shifts', () => {
   it('reauthorizes previously selected recorder/device inside the write transaction', async () => {
     const service = app.get(WorkShiftsService);
     const actor = {
-      account: { id: accountId, contextId, memberId: null },
+      account: { id: accountId, contextId, memberId: actorId },
       selection: { memberId: actorId, deviceId },
     };
     await withTestTenant(contextId, async () => {

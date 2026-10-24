@@ -68,9 +68,11 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
  * from a visitor's browser.
  *
  * Only the headers the API actually reads are allowed (`Authorization`,
- * `Content-Type`, `x-member-id`, `x-device-id` and, BE-12, `x-device-token`,
- * the secret a device activated through the one-time flow presents on every
- * request). Credentials/cookies are not used (the session travels in
+ * `Content-Type`, `x-device-id` and, BE-12, `x-device-token`, the secret a
+ * device activated through the one-time flow presents on every request).
+ * `x-member-id` stays on the list only so a frontend from before "one account
+ * per person" still passes the preflight during a deployment; the API ignores
+ * its value. Credentials/cookies are not used (the session travels in
  * `Authorization`), so they stay off.
  *
  * @throws Error at startup if an entry contains `*`, is not a valid http(s)

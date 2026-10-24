@@ -15,6 +15,7 @@ describe('product restock', () => {
   const contextB = `rs-b-${randomUUID()}`;
   let tokenA: string;
   let tokenB: string;
+  let collaboratorTokenA: string;
   let socioA: string;
   let collaboratorA: string;
   let deviceA: string;
@@ -23,13 +24,10 @@ describe('product restock', () => {
 
   const as = (
     req: request.Test,
-    who: { token: string; member: string; device: string },
+    who: { token: string; device: string },
   ) =>
-    req
-      .auth(who.token, { type: 'bearer' })
-      .set('x-member-id', who.member)
-      .set('x-device-id', who.device);
-  const socio = () => ({ token: tokenA, member: socioA, device: deviceA });
+    req.auth(who.token, { type: 'bearer' }).set('x-device-id', who.device);
+  const socio = () => ({ token: tokenA, device: deviceA });
 
   const newProduct = (
     overrides: Record<string, unknown> = {},
@@ -74,12 +72,13 @@ describe('product restock', () => {
     await app.init();
     prisma = app.get(PrismaService);
     const jwt = app.get(JwtService);
-    const account = (contextId: string) =>
-      prisma.account.create({
-        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId },
+    // One account per person: the token's account carries the acting member.
+    const accountToken = async (contextId: string, memberId: string) => {
+      const created = await prisma.account.create({
+        data: { username: randomUUID(), passwordHash: 'not-a-login-fixture', contextId, memberId },
       });
-    tokenA = await jwt.signAsync({ sub: (await account(contextA)).id });
-    tokenB = await jwt.signAsync({ sub: (await account(contextB)).id });
+      return jwt.signAsync({ sub: created.id });
+    };
     await withTestTenant(contextA, async () => {
       socioA = (await prisma.member.create({ data: { name: 'Socio A', role: 'socio', contextId: contextA } })).id;
       collaboratorA = (await prisma.member.create({ data: { name: 'Colab A', role: 'colaborador', contextId: contextA } })).id;
@@ -89,6 +88,9 @@ describe('product restock', () => {
       socioB = (await prisma.member.create({ data: { name: 'Socio B', role: 'socio', contextId: contextB } })).id;
       deviceB = (await prisma.device.create({ data: { name: 'Tablet B', identifier: randomUUID(), contextId: contextB, authorized: true } })).id;
     });
+    tokenA = await accountToken(contextA, socioA);
+    collaboratorTokenA = await accountToken(contextA, collaboratorA);
+    tokenB = await accountToken(contextB, socioB);
   });
 
   afterAll(async () => {
@@ -205,7 +207,7 @@ describe('product restock', () => {
 
       await restock(product.id, { quantity: 2, unitCostMinor: 1100 }).expect(201);
 
-      // The cost is part of the audit only for a socio (x-member-id).
+      // The cost is part of the audit only for a socio (the account's person).
       const audit = await as(
         request(app.getHttpServer()).get(`/products/${product.id}/audit`),
         socio(),
@@ -229,13 +231,13 @@ describe('product restock', () => {
     it('403 for a colaborador (socios only)', async () => {
       const product = await newProduct();
 
-      await restock(product.id, { quantity: 1 }, { token: tokenA, member: collaboratorA, device: deviceA }).expect(403);
+      await restock(product.id, { quantity: 1 }, { token: collaboratorTokenA, device: deviceA }).expect(403);
 
       expect((await reload(product.id)).stock).toBe(10);
       await noMovement(product.id);
     });
 
-    it('403 without the member/device headers', async () => {
+    it('403 without the device header', async () => {
       const product = await newProduct();
 
       await request(app.getHttpServer())
@@ -312,7 +314,7 @@ describe('product restock', () => {
     it("404 for another context's product; its stock and movements are untouched", async () => {
       const productA = await newProduct({ stock: 7 });
 
-      await restock(productA.id, { quantity: 5 }, { token: tokenB, member: socioB, device: deviceB }).expect(404);
+      await restock(productA.id, { quantity: 5 }, { token: tokenB, device: deviceB }).expect(404);
 
       expect((await reload(productA.id)).stock).toBe(7);
       expect(await movements(productA.id)).toHaveLength(0);
@@ -333,7 +335,7 @@ describe('product restock', () => {
     it('each context restocks its own products independently', async () => {
       const productB = await newProduct({ stock: 1 }, contextB);
 
-      await restock(productB.id, { quantity: 4 }, { token: tokenB, member: socioB, device: deviceB }).expect(201);
+      await restock(productB.id, { quantity: 4 }, { token: tokenB, device: deviceB }).expect(201);
 
       expect((await reload(productB.id, contextB)).stock).toBe(5);
       expect((await movements(productB.id, contextB))[0]?.memberId).toBe(socioB);

@@ -221,15 +221,15 @@ export class ProductListDto {
   umbral?: number;
   // Defaults to hiding deactivated products, since the everyday catalog
   // (sale screen) should never surface something that can no longer be
-  // sold. Only honored when the caller's `x-member-id` header resolves
-  // to an active socio (see ProductsService.list) — silently ignored
-  // otherwise, not rejected.
+  // sold. Only honored when the caller's account belongs to an active
+  // socio (see ProductsService.list) — silently ignored otherwise, not
+  // rejected.
   @ApiProperty({
     required: false,
     default: false,
     description:
       'Also include deactivated products. Only takes effect when the ' +
-      'x-member-id header identifies an active socio; ignored otherwise.',
+      'account belongs to an active socio; ignored otherwise.',
   })
   @IsOptional()
   // Query strings arrive as text ("true"/"false"), never real booleans;

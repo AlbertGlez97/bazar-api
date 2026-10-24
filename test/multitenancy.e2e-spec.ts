@@ -43,13 +43,11 @@ describe('multi-tenancy isolation (BE-11)', () => {
   const asA = (req: request.Test) =>
     req
       .auth(tokenA, { type: 'bearer' })
-      .set('x-member-id', memberIdA)
       .set('x-device-id', deviceIdA);
 
   const asB = (req: request.Test) =>
     req
       .auth(tokenB, { type: 'bearer' })
-      .set('x-member-id', memberIdB)
       .set('x-device-id', deviceIdB);
 
   beforeAll(async () => {
@@ -62,15 +60,8 @@ describe('multi-tenancy isolation (BE-11)', () => {
     const jwt = app.get(JwtService);
 
     // Account is not tenant-scoped (see tenant.extension.ts), so it does
-    // not need a tenant scope open — only Member/Device do.
-    const accountA = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contextIdA,
-      },
-    });
-    tokenA = await jwt.signAsync({ sub: accountA.id });
+    // not need a tenant scope open — only Member/Device do. The account is
+    // created after its Member because it is bound to that one person.
     await withTestTenant(contextIdA, async () => {
       memberIdA = (
         await prisma.member.create({
@@ -83,15 +74,16 @@ describe('multi-tenancy isolation (BE-11)', () => {
         })
       ).id;
     });
-
-    const accountB = await prisma.account.create({
+    const accountA = await prisma.account.create({
       data: {
         username: randomUUID(),
         passwordHash: 'not-a-login-fixture',
-        contextId: contextIdB,
+        contextId: contextIdA,
+        memberId: memberIdA,
       },
     });
-    tokenB = await jwt.signAsync({ sub: accountB.id });
+    tokenA = await jwt.signAsync({ sub: accountA.id });
+
     await withTestTenant(contextIdB, async () => {
       memberIdB = (
         await prisma.member.create({
@@ -104,9 +96,24 @@ describe('multi-tenancy isolation (BE-11)', () => {
         })
       ).id;
     });
+    const accountB = await prisma.account.create({
+      data: {
+        username: randomUUID(),
+        passwordHash: 'not-a-login-fixture',
+        contextId: contextIdB,
+        memberId: memberIdB,
+      },
+    });
+    tokenB = await jwt.signAsync({ sub: accountB.id });
   });
 
   afterAll(async () => {
+    if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({
+        where: { contextId: { in: [contextIdA, contextIdB] } },
+      });
+    }
     await app.close();
   });
 

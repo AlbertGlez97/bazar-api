@@ -61,19 +61,6 @@ export function ApiExample(name: OperationName) {
   if (operation.access === 'socio' || operation.access === 'context') {
     decorators.push(
       ApiHeader({
-        name: 'x-member-id',
-        required: true,
-        schema: {
-          type: 'string',
-          format: 'uuid',
-          example: operation.actor ?? ids.alberto,
-        },
-        description:
-          operation.access === 'socio'
-            ? 'Select Alberto or Adid (socio). Shared-tablet selection, not personal authentication.'
-            : 'Selected member (socio or colaborador); must match sale body memberId when present.',
-      }),
-      ApiHeader({
         name: 'x-device-id',
         required: true,
         schema: { type: 'string', format: 'uuid', example: ids.device },

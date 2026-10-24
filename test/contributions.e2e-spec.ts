@@ -11,7 +11,6 @@ import { withTestTenant } from './tenant-scope.js';
 describe('capital contributions', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  let token: string;
   let actorId: string;
   let contributorId: string;
   let collaboratorId: string;
@@ -20,11 +19,10 @@ describe('capital contributions', () => {
   const contextId = `contributions-${randomUUID()}`;
   const otherContext = `contributions-other-${randomUUID()}`;
   const endpoint = '/finance/contributions';
+  // One account (and token) per person: the token decides who acts.
+  const tokens: Record<string, string> = {};
   const auth = (req: request.Test, memberId = actorId) =>
-    req
-      .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
-      .set('x-device-id', deviceId);
+    req.auth(tokens[memberId], { type: 'bearer' }).set('x-device-id', deviceId);
   const body = (overrides: Record<string, unknown> = {}) => ({
     id: v7(),
     memberId: contributorId,
@@ -43,14 +41,6 @@ describe('capital contributions', () => {
     app = module.createNestApplication();
     await app.init();
     prisma = app.get(PrismaService);
-    const account = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId,
-      },
-    });
-    token = await app.get(JwtService).signAsync({ sub: account.id });
     await withTestTenant(contextId, async () => {
       actorId = (
         await prisma.member.create({
@@ -73,6 +63,19 @@ describe('capital contributions', () => {
         })
       ).id;
     });
+    for (const memberId of [actorId, collaboratorId]) {
+      const account = await prisma.account.create({
+        data: {
+          username: randomUUID(),
+          passwordHash: 'not-a-login-fixture',
+          contextId,
+          memberId,
+        },
+      });
+      tokens[memberId] = await app
+        .get(JwtService)
+        .signAsync({ sub: account.id });
+    }
     foreignMemberId = await withTestTenant(
       otherContext,
       async () =>
@@ -87,6 +90,8 @@ describe('capital contributions', () => {
   afterAll(async () => {
     // Test fixtures are isolated by unique context, never reset the database.
     if (prisma) {
+      // Accounts first: Account.memberId is ON DELETE RESTRICT.
+      await prisma.account.deleteMany({ where: { contextId } });
       await withTestTenant(contextId, async () => {
         if ('contributionReversal' in prisma)
           await prisma.contributionReversal.deleteMany({
@@ -104,7 +109,6 @@ describe('capital contributions', () => {
         await prisma.device.deleteMany({ where: { contextId: otherContext } });
         await prisma.member.deleteMany({ where: { contextId: otherContext } });
       });
-      await prisma.account.deleteMany({ where: { contextId } });
     }
     await app?.close();
   });

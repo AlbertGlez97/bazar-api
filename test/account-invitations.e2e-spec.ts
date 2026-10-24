@@ -65,7 +65,7 @@ describe('account invitations', () => {
   };
 
   const asSocio = (b: Biz, req: request.Test, who = b.inviter) =>
-    req.auth(who.token, { type: 'bearer' }).set('x-member-id', who.memberId).set('x-device-id', b.deviceId);
+    req.auth(who.token, { type: 'bearer' }).set('x-device-id', b.deviceId);
   const invite = (b: Biz, memberId: string, email: string, who = b.inviter) =>
     asSocio(b, request(app.getHttpServer()).post(`/api/v1/members/${memberId}/invitation`).send({ email }), who);
   const inspect = (token: string) => request(app.getHttpServer()).post('/api/v1/invitations/inspect').send({ token });
@@ -326,10 +326,16 @@ describe('account invitations', () => {
       await accept(lastToken()).expect(200);
       const login = await request(app.getHttpServer()).post('/api/v1/auth/login').send({ username: email, password: PASSWORD }).expect(200);
       const token = (login.body.accessToken ?? login.body.access_token ?? login.body.token) as string;
-      const ask = (memberId: string) =>
-        request(app.getHttpServer()).get('/api/v1/finance/rules').auth(token, { type: 'bearer' }).set('x-member-id', memberId).set('x-device-id', b.deviceId);
-      expect((await ask(b.invitee)).status).toBe(200);
-      expect((await ask(b.inviter.memberId)).status).toBe(403);
+      // The token's person is the actor; a manipulated x-member-id changes nothing.
+      const ask = (memberHeader?: string) => {
+        const req = request(app.getHttpServer()).get('/api/v1/finance/rules').auth(token, { type: 'bearer' }).set('x-device-id', b.deviceId);
+        return memberHeader ? req.set('x-member-id', memberHeader) : req;
+      };
+      expect((await ask()).status).toBe(200);
+      expect((await ask(b.colaborador.memberId)).status).toBe(200);
+      // The bound person is a socio: the colaborador's rules restriction would not apply.
+      const account = await prisma.account.findFirstOrThrow({ where: { username: email } });
+      expect(account.memberId).toBe(b.invitee);
     });
 
     it('doble clic: dos envíos a la vez dejan una sola cuenta y un solo ganador', async () => {
@@ -502,7 +508,7 @@ describe('account invitations', () => {
       return { b, email, device: res.body.device as { id: string; name: string; token: string; identifier: string }, jwt: login.body.accessToken as string };
     };
     const asNewAccount = (a: Awaited<ReturnType<typeof accepted>>, req: request.Test, o: { token?: string | null; deviceId?: string } = {}) => {
-      req.auth(a.jwt, { type: 'bearer' }).set('x-member-id', a.b.invitee).set('x-device-id', o.deviceId ?? a.device.id);
+      req.auth(a.jwt, { type: 'bearer' }).set('x-device-id', o.deviceId ?? a.device.id);
       const token = o.token === undefined ? a.device.token : o.token;
       return token ? req.set('x-device-token', token) : req;
     };
@@ -604,8 +610,6 @@ describe('account invitations', () => {
   });
 
   describe('acceso compartido (cuenta sin socio atado)', () => {
-    const BLOCKED = 'Tu acceso es compartido y ya hay cuentas personales. Pídele a un socio con cuenta personal que te invite.';
-    const SELF_ONLY = 'Con el acceso compartido solo puedes invitar al socio que elegiste en este momento.';
     interface Shared { contextId: string; deviceId: string; token: string; ana: string; beto: string }
 
     /** A business as every legacy one starts: one shared login, two socios, nobody with a personal login. */
@@ -623,88 +627,20 @@ describe('account invitations', () => {
     };
     const asShared = (s: Shared, as: string, req: request.Test) =>
       req.auth(s.token, { type: 'bearer' }).set('x-member-id', as).set('x-device-id', s.deviceId);
-    const sharedInvite = (s: Shared, as: string, target: string, email: string) =>
-      asShared(s, as, request(app.getHttpServer()).post(`/api/v1/members/${target}/invitation`).send({ email }));
-    const sharedStatus = (s: Shared, as: string) =>
-      asShared(s, as, request(app.getHttpServer()).get('/api/v1/members/account-status'));
-    const login = async (email: string) =>
-      (await request(app.getHttpServer()).post('/api/v1/auth/login').send({ username: email, password: PASSWORD }).expect(200)).body.accessToken as string;
 
-    it('puede invitar al socio elegido si nadie tiene cuenta personal, y la invitación queda anotada', async () => {
-      const s = await sharedBusiness('sh-self');
-      const email = uniqueEmail();
-      await sharedInvite(s, s.ana, s.ana, email).expect(201);
-      const [row] = await withTestTenant(s.contextId, () => prisma.accountInvitation.findMany({ where: { contextId: s.contextId } }));
-      expect(row).toMatchObject({ memberId: s.ana, invitedByMemberId: s.ana, invitedViaSharedLogin: true });
-    });
-
-    it('no puede invitar a otro socio, ni siquiera cuando todavía no hay cuentas personales', async () => {
-      const s = await sharedBusiness('sh-other');
-      const res = await sharedInvite(s, s.ana, s.beto, uniqueEmail()).expect(403);
-      expect(res.body).toEqual({ code: 'INVITATION_SHARED_SELF_ONLY', message: SELF_ONLY });
+    // The shared-login invitation rules (INVITATION_SHARED_SELF_ONLY / _BLOCKED)
+    // only existed for accounts without a person. Such an account is now refused
+    // by ContextGuard on every guarded route, so those rules are unreachable.
+    it('una cuenta sin persona asignada no puede invitar ni ver el estado del equipo, aunque nombre a un socio', async () => {
+      const s = await sharedBusiness('sh-refused');
+      const invited = await asShared(s, s.ana, request(app.getHttpServer()).post(`/api/v1/members/${s.ana}/invitation`).send({ email: uniqueEmail() }));
+      const status = await asShared(s, s.ana, request(app.getHttpServer()).get('/api/v1/members/account-status'));
+      expect(invited.status).toBe(403);
+      expect(status.status).toBe(403);
+      expect(invited.body.message).toBe('Tu cuenta no tiene una persona asignada');
       expect(sendInvitation).not.toHaveBeenCalled();
       expect(await withTestTenant(s.contextId, () => prisma.accountInvitation.count({ where: { contextId: s.contextId } }))).toBe(0);
     });
-
-    it('en cuanto existe una cuenta personal, el acceso compartido no invita a nadie y se le explica qué hacer', async () => {
-      const s = await sharedBusiness('sh-blocked');
-      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
-      await accept(lastToken()).expect(200);
-      sendInvitation.mockClear();
-
-      for (const [as, target] of [[s.beto, s.beto], [s.ana, s.beto], [s.beto, s.ana]] as const) {
-        const res = await sharedInvite(s, as, target, uniqueEmail()).expect(403);
-        expect(res.body).toEqual({ code: 'INVITATION_SHARED_BLOCKED', message: BLOCKED });
-      }
-      expect(sendInvitation).not.toHaveBeenCalled();
-    });
-
-    it('la cuenta personal que se creó sí puede invitar a los demás socios, y esa invitación no se marca como compartida', async () => {
-      const s = await sharedBusiness('sh-then-personal');
-      const anaEmail = uniqueEmail();
-      await sharedInvite(s, s.ana, s.ana, anaEmail).expect(201);
-      await accept(lastToken()).expect(200);
-      const personalToken = await login(anaEmail);
-
-      const personal = (target: string, email: string) =>
-        request(app.getHttpServer()).post(`/api/v1/members/${target}/invitation`).auth(personalToken, { type: 'bearer' })
-          .set('x-member-id', s.ana).set('x-device-id', s.deviceId).send({ email });
-      await personal(s.beto, uniqueEmail()).expect(201);
-      const rows = await withTestTenant(s.contextId, () => prisma.accountInvitation.findMany({ where: { contextId: s.contextId, memberId: s.beto } }));
-      expect(rows[0]!.invitedViaSharedLogin).toBe(false);
-      // Quien ya tiene cuenta atada no se puede invitar.
-      await personal(s.ana, uniqueEmail()).expect(409);
-    });
-
-    it('la lista del equipo dice por cada socio si el acceso compartido puede invitarlo y por qué no', async () => {
-      const s = await sharedBusiness('sh-status');
-      const before = (await sharedStatus(s, s.ana).expect(200)).body;
-      expect(before.map((r: { memberId: string; invite: unknown }) => [r.memberId, r.invite])).toEqual([
-        [s.ana, { allowed: true, reason: null }],
-        [s.beto, { allowed: false, reason: SELF_ONLY }],
-      ]);
-
-      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
-      await accept(lastToken()).expect(200);
-      const after = (await sharedStatus(s, s.beto).expect(200)).body;
-      expect(after[0].invite).toEqual({ allowed: false, reason: null }); // ya tiene cuenta
-      expect(after[1].invite).toEqual({ allowed: false, reason: BLOCKED });
-    });
-
-    it('una cuenta personal de un colaborador no bloquea al acceso compartido', async () => {
-      const s = await sharedBusiness('sh-colab');
-      await withTestTenant(s.contextId, async () => {
-        const colab = await prisma.member.create({ data: { contextId: s.contextId, name: 'Colab', role: 'colaborador' } });
-        await prisma.account.create({ data: { username: uniqueEmail('colab'), passwordHash: 'x', contextId: s.contextId, memberId: colab.id } });
-      });
-      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
-    });
-
-    it('un negocio con un solo socio sigue igual que antes: el acceso compartido se invita a sí mismo', async () => {
-      const s = await sharedBusiness('sh-solo', 1);
-      await sharedInvite(s, s.ana, s.ana, uniqueEmail()).expect(201);
-    });
-
   });
 
   describe('estado de las cuentas para el equipo', () => {

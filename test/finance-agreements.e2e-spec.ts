@@ -25,6 +25,13 @@ interface Actor {
   collaborator: string;
   inactiveSocio: string;
   inactiveCollaborator: string;
+  // One account (token) per acting person.
+  tokens: {
+    s2: string;
+    collaborator: string;
+    inactiveSocio: string;
+    inactiveCollaborator: string;
+  };
   deviceId: string;
   revokedDeviceId: string;
   productId: string;
@@ -64,7 +71,6 @@ describe('finance distribution agreements HTTP', () => {
   let prisma: PrismaService;
   const contexts = [`agr-${randomUUID()}`, `agr-other-${randomUUID()}`];
   const actors: Actor[] = [];
-  let secondAccount: { id: string; token: string };
   const base = '/api/v1/finance';
   const endpoint = `${base}/distribution-agreements`;
   const worked: Rule = {
@@ -93,13 +99,11 @@ describe('finance distribution agreements HTTP', () => {
   const auth = (
     req: request.Test,
     index = 0,
-    memberId?: string,
-    deviceId?: string,
     token?: string,
+    deviceId?: string,
   ) =>
     req
       .auth(token ?? actors[index].token, { type: 'bearer' })
-      .set('x-member-id', memberId ?? actors[index].s1)
       .set('x-device-id', deviceId ?? actors[index].deviceId);
   const http = () => request(app.getHttpServer());
   const post = (path: string, body: unknown, index = 0) =>
@@ -282,14 +286,6 @@ describe('finance distribution agreements HTTP', () => {
     await app.init();
     prisma = app.get(PrismaService);
     for (const contextId of contexts) {
-      const account = await prisma.account.create({
-        data: {
-          username: randomUUID(),
-          passwordHash: 'not-a-login-fixture',
-          contextId,
-        },
-      });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
       const fixture = await withTestTenant(contextId, async () => {
         const member = async (
           name: string,
@@ -347,19 +343,35 @@ describe('finance distribution agreements HTTP', () => {
           productId,
         };
       });
-      actors.push({ accountId: account.id, token, ...fixture });
+      // One account per person; created after the Members it is bound to.
+      const accountFor = async (memberId: string) => {
+        const account = await prisma.account.create({
+          data: {
+            username: randomUUID(),
+            passwordHash: 'not-a-login-fixture',
+            contextId,
+            memberId,
+          },
+        });
+        return {
+          id: account.id,
+          token: await app.get(JwtService).signAsync({ sub: account.id }),
+        };
+      };
+      const socio = await accountFor(fixture.s1);
+      actors.push({
+        accountId: socio.id,
+        token: socio.token,
+        tokens: {
+          s2: (await accountFor(fixture.s2)).token,
+          collaborator: (await accountFor(fixture.collaborator)).token,
+          inactiveSocio: (await accountFor(fixture.inactiveSocio)).token,
+          inactiveCollaborator: (await accountFor(fixture.inactiveCollaborator))
+            .token,
+        },
+        ...fixture,
+      });
     }
-    const other = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contexts[0],
-      },
-    });
-    secondAccount = {
-      id: other.id,
-      token: await app.get(JwtService).signAsync({ sub: other.id }),
-    };
   });
   afterAll(async () => {
     // Agreement tables reject DELETE for the runtime role: purge as owner first.
@@ -374,10 +386,14 @@ describe('finance distribution agreements HTTP', () => {
           await prisma.saleItem.deleteMany({ where: { contextId } });
           await prisma.sale.deleteMany({ where: { contextId } });
           await prisma.product.deleteMany({ where: { contextId } });
+        });
+        // Accounts before Members (Account.memberId is ON DELETE RESTRICT),
+        // but after the rows that reference them.
+        await prisma.account.deleteMany({ where: { contextId } });
+        await withTestTenant(contextId, async () => {
           await prisma.device.deleteMany({ where: { contextId } });
           await prisma.member.deleteMany({ where: { contextId } });
         });
-        await prisma.account.deleteMany({ where: { contextId } });
       }
     await app?.close();
   });
@@ -509,14 +525,14 @@ describe('finance distribution agreements HTTP', () => {
         const res = await post(endpoint, { ...dto, ...patch }).expect(409);
         expect(res.body.code).toBe('FINANCE_AGREEMENT_ID_CONFLICT');
       }
+      // Another (active) socio, with their own account, replaying the id.
+      await setPartners(0, [actors[0].s2]);
       const foreignAccount = await auth(
         http().post(endpoint),
         0,
-        undefined,
-        undefined,
-        secondAccount.token,
+        actors[0].tokens.s2,
       )
-        .send(dto)
+        .send({ ...dto, createdByMemberId: actors[0].s2 })
         .expect(409);
       expect(foreignAccount.body.code).toBe('FINANCE_AGREEMENT_ID_CONFLICT');
       expect(await counts()).toEqual(before);
@@ -967,7 +983,7 @@ describe('finance distribution agreements HTTP', () => {
       );
       const a = actors[0];
       const selected = {
-        account: { id: a.accountId, contextId: contexts[0], memberId: null },
+        account: { id: a.accountId, contextId: contexts[0], memberId: a.s1 },
         selection: { memberId: a.s1, deviceId: a.deviceId },
       } as Parameters<FinanceAgreementsService['create']>[0];
       await expect(tenant(0, () => service.create(selected, dto))).rejects.toBe(
@@ -1554,17 +1570,18 @@ describe('finance distribution agreements HTTP', () => {
       const sc = await scenario();
       const created = (await create(sc).expect(201)).body;
       const a = actors[0];
+      // [label, token of the acting person, device]
       const selections: [string, string, string][] = [
-        ['collaborator', a.collaborator, a.deviceId],
-        ['inactive socio', a.inactiveSocio, a.deviceId],
-        ['inactive collaborator', a.inactiveCollaborator, a.deviceId],
-        ['revoked device', a.s1, a.revokedDeviceId],
-        ['foreign member', actors[1].s1, a.deviceId],
-        ['foreign device', a.s1, actors[1].deviceId],
+        ['collaborator', a.tokens.collaborator, a.deviceId],
+        ['inactive socio', a.tokens.inactiveSocio, a.deviceId],
+        ['inactive collaborator', a.tokens.inactiveCollaborator, a.deviceId],
+        ['revoked device', a.token, a.revokedDeviceId],
+        ['foreign member', actors[1].token, a.deviceId],
+        ['foreign device', a.token, actors[1].deviceId],
       ];
-      for (const [label, memberId, deviceId] of selections)
+      for (const [label, token, deviceId] of selections)
         for (const route of routes(created.id))
-          await auth(route(), 0, memberId, deviceId)
+          await auth(route(), 0, token, deviceId)
             .send(body(sc))
             .expect((res) => expect([label, res.status]).toEqual([label, 403]));
       await http().get(endpoint).auth(a.token, { type: 'bearer' }).expect(403);
@@ -1580,12 +1597,8 @@ describe('finance distribution agreements HTTP', () => {
   });
 
   describe('the same available amount is never agreed twice', () => {
-    const commitment = (period: Period, index = 0, memberId?: string) =>
-      auth(
-        http().get(`${endpoint}/commitment`).query(period),
-        index,
-        memberId,
-      );
+    const commitment = (period: Period, index = 0, token?: string) =>
+      auth(http().get(`${endpoint}/commitment`).query(period), index, token);
     const rule = (requestedAmountMinor: number): Rule => ({
       ...worked,
       requestedAmountMinor,
@@ -1741,7 +1754,7 @@ describe('finance distribution agreements HTTP', () => {
 
     it('only socios can read it; dates are validated', async () => {
       const period = nextPeriod();
-      await commitment(period, 0, actors[0].collaborator).expect(403);
+      await commitment(period, 0, actors[0].tokens.collaborator).expect(403);
       await http().get(`${endpoint}/commitment`).query(period).expect(401);
       await get(`${endpoint}/commitment`, { from: 'x', to: period.to }).expect(
         400,

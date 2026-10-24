@@ -30,9 +30,9 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
   const contextId = `be12-members-${randomUUID()}`;
   const otherContextId = `be12-members-other-${randomUUID()}`;
 
-  let sharedToken: string; // unbound login (the shared business login)
-  let boundColaboradorToken: string; // login bound to the colaborador
-  let otherToken: string; // login of the other business
+  let socioToken: string; // login bound to the socio
+  let colaboradorToken: string; // login bound to the colaborador
+  let otherToken: string; // login bound to the socio of the other business
   let socioId: string;
   let colaboradorId: string;
   let otherSocioId: string;
@@ -43,26 +43,17 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
 
   const asSocio = (req: request.Test) =>
     req
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', socioId)
+      .auth(socioToken, { type: 'bearer' })
       .set('x-device-id', actingDeviceId);
 
-  const asSharedColaborador = (req: request.Test) =>
+  const asColaborador = (req: request.Test) =>
     req
-      .auth(sharedToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorId)
-      .set('x-device-id', actingDeviceId);
-
-  const asBoundColaborador = (req: request.Test) =>
-    req
-      .auth(boundColaboradorToken, { type: 'bearer' })
-      .set('x-member-id', colaboradorId)
+      .auth(colaboradorToken, { type: 'bearer' })
       .set('x-device-id', actingDeviceId);
 
   const asOtherSocio = (req: request.Test) =>
     req
       .auth(otherToken, { type: 'bearer' })
-      .set('x-member-id', otherSocioId)
       .set('x-device-id', otherActingDeviceId);
 
   const uniqueCorreo = () => `${randomUUID()}@example.test`;
@@ -88,11 +79,10 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
   const memberRow = (id: string, ctx = contextId) =>
     withTestTenant(ctx, () => prisma.member.findUnique({ where: { id } }));
 
-  const probe = (token: string, memberId: string) =>
+  const probe = (token: string) =>
     http()
       .post('/sales')
       .auth(token, { type: 'bearer' })
-      .set('x-member-id', memberId)
       .set('x-device-id', actingDeviceId)
       .send({});
 
@@ -149,20 +139,20 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       ).id;
     });
 
-    const account = (ctx: string, memberId?: string) =>
+    const account = (ctx: string, memberId: string) =>
       prisma.account
         .create({
           data: {
             username: randomUUID(),
             passwordHash: 'not-a-login-fixture',
             contextId: ctx,
-            ...(memberId ? { memberId } : {}),
+            memberId,
           },
         })
         .then((a) => jwt.signAsync({ sub: a.id }));
-    sharedToken = await account(contextId);
-    boundColaboradorToken = await account(contextId, colaboradorId);
-    otherToken = await account(otherContextId);
+    socioToken = await account(contextId, socioId);
+    colaboradorToken = await account(contextId, colaboradorId);
+    otherToken = await account(otherContextId, otherSocioId);
   });
 
   beforeEach(() => {
@@ -382,7 +372,8 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
 
       const list = await http()
         .get('/members')
-        .auth(sharedToken, { type: 'bearer' })
+        .auth(socioToken, { type: 'bearer' })
+        .set('x-device-id', actingDeviceId)
         .expect(200);
 
       expect(list.body).toContainEqual({
@@ -442,13 +433,10 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
   });
 
   describe('who may add people', () => {
-    it.each([
-      ['a colaborador using the shared login', asSharedColaborador],
-      ['a colaborador using its own bound login', asBoundColaborador],
-    ])('answers 403 to %s and creates nothing', async (_label, as) => {
+    it('answers 403 to a colaborador and creates nothing', async () => {
       const before = await withTestTenant(contextId, () => prisma.member.count());
 
-      await as(http().post('/members')).send(valid()).expect(403);
+      await asColaborador(http().post('/members')).send(valid()).expect(403);
 
       expect(sendCredentials).not.toHaveBeenCalled();
       expect(await withTestTenant(contextId, () => prisma.member.count())).toBe(
@@ -461,10 +449,10 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       expect(sendCredentials).not.toHaveBeenCalled();
     });
 
-    it('answers 403 when a bound colaborador claims a socio member', async () => {
+    it('answers 403 to a colaborador even if it sends a socio in x-member-id (the header is ignored)', async () => {
       await http()
         .post('/members')
-        .auth(boundColaboradorToken, { type: 'bearer' })
+        .auth(colaboradorToken, { type: 'bearer' })
         .set('x-member-id', socioId)
         .set('x-device-id', actingDeviceId)
         .send(valid())
@@ -514,16 +502,17 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       const token = session.body.accessToken as string;
 
       // ContextGuard lets it through as its OWN member ...
-      await probe(token, created.body.id).expect(400);
-      // ... and refuses it as a socio (the Account.memberId binding).
-      await probe(token, socioId).expect(403);
-      await probe(token, colaboradorId).expect(403);
+      await probe(token).expect(400);
+      // ... and naming someone else in x-member-id changes nothing.
+      await probe(token)
+        .set('x-member-id', socioId)
+        .expect(400);
 
-      // A colaborador cannot add people.
+      // A colaborador cannot add people, whoever the header names.
       await http()
         .post('/members')
         .auth(token, { type: 'bearer' })
-        .set('x-member-id', created.body.id)
+        .set('x-member-id', socioId)
         .set('x-device-id', actingDeviceId)
         .send(valid())
         .expect(403);
@@ -548,7 +537,6 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       const child = await http()
         .post('/members')
         .auth(token, { type: 'bearer' })
-        .set('x-member-id', newSocio.body.id)
         .set('x-device-id', actingDeviceId)
         .send(valid({ nombre: 'Hija', apellidos: 'DelSegundo' }))
         .expect(201);
@@ -557,14 +545,15 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
       expect((await memberRow(child.body.id))?.createdByMemberId).toBe(
         newSocio.body.id,
       );
-      // A bound socio cannot pretend to be the founding socio.
-      await http()
+      // Naming the founding socio in x-member-id does not make it the actor.
+      const spoofed = await http()
         .post('/members')
         .auth(token, { type: 'bearer' })
         .set('x-member-id', socioId)
         .set('x-device-id', actingDeviceId)
         .send(valid())
-        .expect(403);
+        .expect(201);
+      expect(spoofed.body.createdByMemberId).toBe(newSocio.body.id);
     });
   });
 
@@ -601,7 +590,8 @@ describe('members: adding socios and colaboradores (BE-12)', () => {
 
       const list = await http()
         .get('/members')
-        .auth(sharedToken, { type: 'bearer' })
+        .auth(socioToken, { type: 'bearer' })
+        .set('x-device-id', actingDeviceId)
         .expect(200);
 
       expect(

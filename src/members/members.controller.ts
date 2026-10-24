@@ -4,7 +4,6 @@ import {
   Controller,
   Delete,
   Get,
-  Headers,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -37,14 +36,11 @@ const validate = (expectedType: new () => object) =>
 
 /**
  * `list` is read-only and available to any authenticated account
- * regardless of role: the shared-tablet person selector needs every
- * eligible member visible, not just socios, so a colaborador can pick
- * themselves before selling. It hides deactivated colaboradores by
- * default (BE-10) — `includeInactive` is only honored for a request that
- * also identifies an active socio via the optional `x-member-id` header
- * (see {@link MembersService.list}); it does not require a full
- * {@link SocioGuard} selection, since this endpoint is used *before* any
- * Member has necessarily been selected.
+ * regardless of role: the team screen shows every member, not just socios.
+ * It hides deactivated colaboradores by default (BE-10) — `includeInactive`
+ * is only honored when the account belongs to an active socio (see
+ * {@link MembersService.list}); it does not require a full
+ * {@link SocioGuard} selection, since no device is needed to list people.
  *
  * `create`, `setCommissionRate`, `patch`, `deactivate` and `reactivate` all
  * require {@link SocioGuard}: adding people, configuring pay and
@@ -66,12 +62,10 @@ export class MembersController {
   list(
     @Req() request: AuthenticatedRequest,
     @Query(validate(MemberListDto)) query: MemberListDto,
-    @Headers('x-member-id') requestingMemberId?: string,
   ) {
     return this.members.list(
       request.account.contextId,
       query,
-      requestingMemberId,
       request.account.memberId,
     );
   }

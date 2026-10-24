@@ -14,6 +14,7 @@ import { withTestTenant } from './tenant-scope.js';
 interface Actor {
   accountId: string;
   token: string;
+  collaboratorToken: string;
   s1: string;
   collaborator: string;
   deviceId: string;
@@ -63,7 +64,7 @@ describe('finance distribution payments HTTP', () => {
   let prisma: PrismaService;
   const contexts = [`pay-${randomUUID()}`, `pay-other-${randomUUID()}`];
   const actors: Actor[] = [];
-  let secondAccount: { id: string; token: string };
+  let secondAccount: { id: string; token: string; memberId: string };
   let folioCounter = 90000;
   const base = '/api/v1/finance';
   const agreementsPath = `${base}/distribution-agreements`;
@@ -74,7 +75,6 @@ describe('finance distribution payments HTTP', () => {
   const auth = (req: request.Test, index = 0, token?: string) =>
     req
       .auth(token ?? actors[index].token, { type: 'bearer' })
-      .set('x-member-id', actors[index].s1)
       .set('x-device-id', actors[index].deviceId);
   const post = (path: string, body: unknown, index = 0, token?: string) =>
     auth(http().post(path), index, token).send(body as object);
@@ -240,15 +240,22 @@ describe('finance distribution payments HTTP', () => {
     app.setGlobalPrefix('api/v1');
     await app.init();
     prisma = app.get(PrismaService);
-    for (const contextId of contexts) {
+    // One account (and token) per person: the token decides who acts.
+    const accountFor = async (contextId: string, memberId: string) => {
       const account = await prisma.account.create({
         data: {
           username: randomUUID(),
           passwordHash: 'not-a-login-fixture',
           contextId,
+          memberId,
         },
       });
-      const token = await app.get(JwtService).signAsync({ sub: account.id });
+      return {
+        id: account.id,
+        token: await app.get(JwtService).signAsync({ sub: account.id }),
+      };
+    };
+    for (const contextId of contexts) {
       const fixture = await withTestTenant(contextId, async () => {
         const s1 = (
           await prisma.member.create({
@@ -267,18 +274,28 @@ describe('finance distribution payments HTTP', () => {
         ).id;
         return { s1, collaborator, deviceId };
       });
-      actors.push({ accountId: account.id, token, ...fixture });
+      const socio = await accountFor(contextId, fixture.s1);
+      const colaborador = await accountFor(contextId, fixture.collaborator);
+      actors.push({
+        accountId: socio.id,
+        token: socio.token,
+        collaboratorToken: colaborador.token,
+        ...fixture,
+      });
     }
-    const other = await prisma.account.create({
-      data: {
-        username: randomUUID(),
-        passwordHash: 'not-a-login-fixture',
-        contextId: contexts[0],
-      },
-    });
+    // A second socio (another person, another account) in the first context.
+    const secondMemberId = await withTestTenant(
+      contexts[0],
+      async () =>
+        (
+          await prisma.member.create({
+            data: { contextId: contexts[0], name: 'Socio Two', role: 'socio' },
+          })
+        ).id,
+    );
     secondAccount = {
-      id: other.id,
-      token: await app.get(JwtService).signAsync({ sub: other.id }),
+      ...(await accountFor(contexts[0], secondMemberId)),
+      memberId: secondMemberId,
     };
   });
   afterAll(async () => {
@@ -288,9 +305,12 @@ describe('finance distribution payments HTTP', () => {
         await withTestTenant(contextId, async () => {
           await prisma.expense.deleteMany({ where: { contextId } });
           await prisma.device.deleteMany({ where: { contextId } });
-          await prisma.member.deleteMany({ where: { contextId } });
         });
+        // Accounts before Members (Account.memberId is ON DELETE RESTRICT).
         await prisma.account.deleteMany({ where: { contextId } });
+        await withTestTenant(contextId, () =>
+          prisma.member.deleteMany({ where: { contextId } }),
+        );
       }
     await app?.close();
   });
@@ -586,9 +606,10 @@ describe('finance distribution payments HTTP', () => {
         participantMemberId: b.members[0],
       }).expect(409);
       expect(otherAgreement.body.code).toBe('FINANCE_PAYMENT_ID_CONFLICT');
+      // Another person (another account) replaying the same payment id.
       const otherAccount = await post(
         `${agreementsPath}/${a.id}/payments`,
-        dto,
+        { ...dto, createdByMemberId: secondAccount.memberId },
         0,
         secondAccount.token,
       ).expect(409);
@@ -773,8 +794,7 @@ describe('finance distribution payments HTTP', () => {
           );
         await call(method).send(body).expect(401);
         await call(method)
-          .auth(actors[0].token, { type: 'bearer' })
-          .set('x-member-id', actors[0].collaborator)
+          .auth(actors[0].collaboratorToken, { type: 'bearer' })
           .set('x-device-id', actors[0].deviceId)
           .send(body)
           .expect(403);
